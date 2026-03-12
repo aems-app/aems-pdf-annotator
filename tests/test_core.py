@@ -1,0 +1,271 @@
+# tests/test_core.py
+import pytest
+from pathlib import Path
+from aems_pdf_annotator._fitz import fitz
+from aems_pdf_annotator.core import (
+    PDFAnnotator,
+    _encode_subject_metadata,
+    _decode_subject_metadata,
+    _format_pdf_datetime,
+    _normalize_pdf_author_name,
+    _pdf_rect_to_pymupdf,
+    _pymupdf_rect_to_pdf,
+    ANNOTATION_TYPE_NAMES,
+)
+from aems_pdf_annotator.models import (
+    PDFAnnotation, BBox, AnnotationColor, AnnotationType, AnnotationSource,
+)
+
+
+@pytest.fixture
+def sample_pdf(tmp_path) -> Path:
+    """Create a minimal single-page PDF for testing."""
+    pdf_path = tmp_path / "test.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)  # US Letter
+    page.insert_text((72, 72), "Sample exam answer text here.", fontsize=12)
+    doc.save(str(pdf_path))
+    doc.close()
+    return pdf_path
+
+
+class TestCoordinateConversion:
+    def test_pymupdf_to_pdf_round_trip(self):
+        page_height = 792.0
+        pdf_rect = (100, 600, 200, 700)  # bottom-left origin
+        pymupdf_rect = _pdf_rect_to_pymupdf(pdf_rect, page_height)
+        assert pymupdf_rect[0] == 100  # x0 unchanged
+        assert pymupdf_rect[2] == 200  # x1 unchanged
+
+    def test_pdf_to_pymupdf(self):
+        page_height = 792.0
+        pdf_rect = (50, 100, 200, 300)
+        result = _pdf_rect_to_pymupdf(pdf_rect, page_height)
+        assert result == (50, 792 - 300, 200, 792 - 100)
+
+    def test_round_trip_pymupdf_to_pdf_to_pymupdf(self):
+        """Verify that converting PyMuPDF -> PDF -> PyMuPDF gives back original."""
+        page_height = 792.0
+        # Create a fitz.Rect to simulate PyMuPDF rect
+        original = fitz.Rect(50, 100, 200, 300)
+        pdf_coords = _pymupdf_rect_to_pdf(original, page_height)
+        back = _pdf_rect_to_pymupdf(pdf_coords, page_height)
+        assert abs(back[0] - original.x0) < 0.001
+        assert abs(back[1] - original.y0) < 0.001
+        assert abs(back[2] - original.x1) < 0.001
+        assert abs(back[3] - original.y1) < 0.001
+
+
+class TestMetadataEncoding:
+    def test_encode_decode_round_trip(self):
+        encoded = _encode_subject_metadata(
+            "abc-123", "AI",
+            original_source="AI",
+            is_verdict=True,
+        )
+        decoded = _decode_subject_metadata(encoded)
+        assert decoded["stable_id"] == "abc-123"
+        assert decoded["source"] == "AI"
+        assert decoded["is_verdict"] is True
+
+    def test_encode_drawing_metadata(self):
+        encoded = _encode_subject_metadata(
+            "draw-1", "HUMAN",
+            drawing_style="pen",
+            stroke_width=2.0,
+            stroke_opacity=1.0,
+            stroke_color_rgb=[255, 0, 0],
+        )
+        decoded = _decode_subject_metadata(encoded)
+        assert decoded["drawing_style"] == "pen"
+        assert decoded["stroke_width"] == 2.0
+        assert decoded["stroke_color_rgb"] == [255, 0, 0]
+
+    def test_encode_textbox_metadata(self):
+        encoded = _encode_subject_metadata(
+            "tb-1", "AI",
+            textbox_color_rgb=[0, 128, 255],
+        )
+        decoded = _decode_subject_metadata(encoded)
+        assert decoded["textbox_color_rgb"] == [0, 128, 255]
+
+    def test_decode_empty_string(self):
+        decoded = _decode_subject_metadata("")
+        assert decoded["stable_id"] is None
+        assert decoded["source"] is None
+
+    def test_decode_plain_id(self):
+        decoded = _decode_subject_metadata("some-uuid-here")
+        assert decoded["stable_id"] == "some-uuid-here"
+        assert decoded["source"] is None
+
+
+class TestAuthorNormalization:
+    def test_strips_role_suffix(self):
+        assert _normalize_pdf_author_name("Alice Smith (Teacher)") == "Alice Smith"
+
+    def test_preserves_plain_name(self):
+        assert _normalize_pdf_author_name("Bob Jones") == "Bob Jones"
+
+    def test_strips_swedish_role(self):
+        assert _normalize_pdf_author_name("Erik Svensson (Lid)") == "Erik Svensson"
+
+    def test_empty_string(self):
+        assert _normalize_pdf_author_name("") == ""
+
+    def test_whitespace_only(self):
+        assert _normalize_pdf_author_name("   ") == ""
+
+
+class TestFormatPdfDatetime:
+    def test_format_produces_valid_prefix(self):
+        result = _format_pdf_datetime()
+        assert result.startswith("D:")
+
+    def test_format_with_utc(self):
+        from datetime import datetime, timezone
+        dt = datetime(2026, 3, 12, 14, 30, 0, tzinfo=timezone.utc)
+        result = _format_pdf_datetime(dt)
+        assert result == "D:20260312143000+00'00'"
+
+
+class TestAnnotationTypeNames:
+    def test_contains_common_types(self):
+        assert "Highlight" in ANNOTATION_TYPE_NAMES
+        assert "Text" in ANNOTATION_TYPE_NAMES
+        assert "Ink" in ANNOTATION_TYPE_NAMES
+
+
+class TestPDFAnnotator:
+    def test_add_highlight(self, sample_pdf):
+        with PDFAnnotator(sample_pdf) as annotator:
+            result = annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=50, y0=50, x1=200, y1=80),
+                kind=AnnotationType.HIGHLIGHT,
+                color=AnnotationColor.GREEN,
+                comment="Correct",
+                grader_name="Test Grader",
+            ))
+            assert result is True
+            output = annotator.save(sample_pdf.parent / "out.pdf")
+        assert output.exists()
+
+    def test_add_squiggly(self, sample_pdf):
+        with PDFAnnotator(sample_pdf) as annotator:
+            result = annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=50, y0=100, x1=200, y1=130),
+                kind=AnnotationType.SQUIGGLY,
+                color=AnnotationColor.RED,
+                comment="Error",
+                grader_name="Test Grader",
+            ))
+            assert result is True
+            output = annotator.save(sample_pdf.parent / "out.pdf")
+        doc = fitz.open(str(output))
+        page = doc[0]
+        annots = list(page.annots())
+        assert len(annots) >= 1
+        doc.close()
+
+    def test_add_text_note(self, sample_pdf):
+        with PDFAnnotator(sample_pdf) as annotator:
+            result = annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=50, y0=200, x1=80, y1=230),
+                kind=AnnotationType.TEXT,
+                color=AnnotationColor.AMBER,
+                comment="Needs review",
+                grader_name="Test Grader",
+            ))
+            assert result is True
+            output = annotator.save(sample_pdf.parent / "out.pdf")
+        assert output.exists()
+
+    def test_add_drawing(self, sample_pdf):
+        with PDFAnnotator(sample_pdf) as annotator:
+            result = annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=50, y0=300, x1=200, y1=350),
+                kind=AnnotationType.DRAWING,
+                color=AnnotationColor.RED,
+                drawing_style="pen",
+                points=[[50, 300], [100, 320], [200, 350]],
+                stroke_width=2.0,
+                stroke_opacity=1.0,
+                grader_name="Test Grader",
+            ))
+            assert result is True
+            output = annotator.save(sample_pdf.parent / "out.pdf")
+        assert output.exists()
+
+    def test_invalid_page_index(self, sample_pdf):
+        with PDFAnnotator(sample_pdf) as annotator:
+            result = annotator.add_annotation(PDFAnnotation(
+                page_index=99,
+                bbox=BBox(x0=50, y0=50, x1=200, y1=80),
+                kind=AnnotationType.HIGHLIGHT,
+                color=AnnotationColor.GREEN,
+            ))
+            assert result is False
+
+    def test_file_not_found(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            PDFAnnotator(tmp_path / "nonexistent.pdf")
+
+    def test_add_annotations_batch(self, sample_pdf):
+        annotations = [
+            PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=50, y0=50 + i * 40, x1=200, y1=80 + i * 40),
+                kind=AnnotationType.HIGHLIGHT,
+                color=AnnotationColor.GREEN,
+                comment=f"Item {i}",
+                grader_name="Batch Grader",
+            )
+            for i in range(3)
+        ]
+        with PDFAnnotator(sample_pdf) as annotator:
+            count = annotator.add_annotations(annotations)
+            assert count == 3
+            output = annotator.save(sample_pdf.parent / "out.pdf")
+        doc = fitz.open(str(output))
+        assert len(list(doc[0].annots())) == 3
+        doc.close()
+
+    def test_context_manager_closes(self, sample_pdf):
+        """Verify the context manager properly closes the document."""
+        annotator = PDFAnnotator(sample_pdf)
+        assert annotator.doc is not None
+        annotator.close()
+        assert annotator.doc is None
+
+    def test_save_to_same_path(self, sample_pdf):
+        """Verify incremental save when output_path matches pdf_path."""
+        with PDFAnnotator(sample_pdf) as annotator:
+            annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=50, y0=50, x1=200, y1=80),
+                kind=AnnotationType.HIGHLIGHT,
+                color=AnnotationColor.GREEN,
+                grader_name="Grader",
+            ))
+            output = annotator.save()  # Save to same path
+        assert output == sample_pdf
+        assert output.exists()
+
+    def test_get_annotations_on_page(self, sample_pdf):
+        """Verify reading back annotations from a page."""
+        with PDFAnnotator(sample_pdf) as annotator:
+            annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=50, y0=50, x1=200, y1=80),
+                kind=AnnotationType.HIGHLIGHT,
+                color=AnnotationColor.GREEN,
+                comment="Test comment",
+                grader_name="Reader Grader",
+            ))
+            annots = annotator.get_annotations_on_page(0)
+            assert len(annots) >= 1
+            assert annots[0]["color"] == "green"
