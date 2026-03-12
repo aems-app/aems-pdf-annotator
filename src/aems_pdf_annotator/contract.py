@@ -7,6 +7,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from pydantic import ValidationError
+
 from aems_pdf_annotator.models import (
     PDFAnnotation, BBox, AnnotationColor, AnnotationType, AnnotationSource,
 )
@@ -28,8 +30,56 @@ class ContractValidationError(ValueError):
     pass
 
 
+def _require_number(
+    value: Any,
+    field_name: str,
+    *,
+    minimum: Optional[float] = None,
+    maximum: Optional[float] = None,
+) -> float:
+    """Validate a numeric contract field and return it as float."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ContractValidationError(f"{field_name} must be a number")
+
+    numeric = float(value)
+    if minimum is not None and numeric < minimum:
+        raise ContractValidationError(f"{field_name} must be >= {minimum}")
+    if maximum is not None and numeric > maximum:
+        raise ContractValidationError(f"{field_name} must be <= {maximum}")
+    return numeric
+
+
+def _validate_feedback_item(item: Any, index: int) -> None:
+    """Validate the required structure of one feedback item."""
+    if not isinstance(item, dict):
+        raise ContractValidationError(f"feedback_items[{index}] must be an object")
+
+    page = item.get("page")
+    if isinstance(page, bool) or not isinstance(page, int):
+        raise ContractValidationError(f"feedback_items[{index}].page must be an integer")
+    if page < 1:
+        raise ContractValidationError(f"feedback_items[{index}].page must be >= 1")
+
+    _require_number(
+        item.get("x_normalized"),
+        f"feedback_items[{index}].x_normalized",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    _require_number(
+        item.get("y_normalized"),
+        f"feedback_items[{index}].y_normalized",
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+    comment = item.get("comment")
+    if not isinstance(comment, str) or not comment.strip():
+        raise ContractValidationError(f"feedback_items[{index}].comment must be a non-empty string")
+
+
 def validate_contract_version(payload: Dict[str, Any]) -> bool:
-    """Validate that payload contains a supported contract version.
+    """Validate that payload matches the supported v1 annotation contract.
 
     Args:
         payload: JSON payload with annotation_contract_version field.
@@ -38,8 +88,12 @@ def validate_contract_version(payload: Dict[str, Any]) -> bool:
         True if valid.
 
     Raises:
-        ContractValidationError: If version is missing or unsupported.
+        ContractValidationError: If the payload is missing required fields or
+            uses unsupported metadata.
     """
+    if not isinstance(payload, dict):
+        raise ContractValidationError("Contract payload must be an object")
+
     version = payload.get("annotation_contract_version")
     if version is None:
         raise ContractValidationError(
@@ -56,6 +110,16 @@ def validate_contract_version(payload: Dict[str, Any]) -> bool:
             f"Unsupported coordinate_space: {coordinate_space!r}. "
             f"Expected: {CURRENT_COORDINATE_SPACE!r}"
         )
+
+    feedback_items = payload.get("feedback_items")
+    if feedback_items is None:
+        raise ContractValidationError("Missing required field: feedback_items")
+    if not isinstance(feedback_items, list):
+        raise ContractValidationError("feedback_items must be an array")
+
+    for index, item in enumerate(feedback_items):
+        _validate_feedback_item(item, index)
+
     return True
 
 
@@ -85,7 +149,7 @@ def _normalized_to_bbox(
     page_height: float,
     kind: AnnotationType,
 ) -> BBox:
-    """Convert normalized coordinates to a BBox in PDF space (bottom-left origin).
+    """Convert normalized coordinates to a BBox in visual top-left page space.
 
     Args:
         x_norm: Horizontal position 0.0-1.0 (left to right).
@@ -95,27 +159,26 @@ def _normalized_to_bbox(
         kind: Annotation type (affects bbox dimensions).
 
     Returns:
-        BBox in PDF coordinate space.
+        BBox in the same top-left coordinate space consumed by PDFAnnotator.
     """
     x = x_norm * page_width
-    # y_norm is top-to-bottom (web convention); PDF is bottom-to-top
-    y_pdf = page_height - (y_norm * page_height)
+    y = y_norm * page_height
 
     if kind == AnnotationType.TEXT:
         # Text notes are point annotations; give them a small bbox
         half = _TEXT_NOTE_SIZE / 2
         return BBox(
             x0=max(0, x - half),
-            y0=max(0, y_pdf - half),
+            y0=max(0, y - half),
             x1=min(page_width, x + half),
-            y1=min(page_height, y_pdf + half),
+            y1=min(page_height, y + half),
         )
     else:
         # Highlights/squiggly: horizontal strip
         x0 = max(0, x)
         x1 = min(page_width, x + _HIGHLIGHT_WIDTH)
-        y0 = max(0, y_pdf - _HIGHLIGHT_HEIGHT / 2)
-        y1 = min(page_height, y_pdf + _HIGHLIGHT_HEIGHT / 2)
+        y0 = max(0, y - _HIGHLIGHT_HEIGHT / 2)
+        y1 = min(page_height, y + _HIGHLIGHT_HEIGHT / 2)
         return BBox(x0=x0, y0=y0, x1=x1, y1=y1)
 
 
@@ -211,3 +274,28 @@ def feedback_items_to_annotations(
         annotations.append(annot)
 
     return annotations
+
+
+def payload_to_annotations(
+    payload: Dict[str, Any],
+    page_dimensions: List[Tuple[float, float]],
+    grader_name: Optional[str] = None,
+) -> List[PDFAnnotation]:
+    """Materialize PDF annotations from a validated contract payload."""
+    validate_contract_version(payload)
+
+    rendered_annotations = payload.get("rendered_annotations")
+    if rendered_annotations is not None:
+        if not isinstance(rendered_annotations, list):
+            raise ContractValidationError("rendered_annotations must be an array")
+        try:
+            return [PDFAnnotation.model_validate(item) for item in rendered_annotations]
+        except ValidationError as exc:
+            raise ContractValidationError("rendered_annotations failed validation") from exc
+
+    effective_grader_name = grader_name or payload.get("grader_name")
+    return feedback_items_to_annotations(
+        payload["feedback_items"],
+        page_dimensions,
+        grader_name=effective_grader_name,
+    )

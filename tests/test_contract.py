@@ -1,10 +1,12 @@
 # tests/test_contract.py
 import pytest
+from aems_pdf_annotator import apply_annotations
 from aems_pdf_annotator.contract import (
     CURRENT_CONTRACT_VERSION,
     validate_contract_version,
     feedback_item_to_annotation,
     feedback_items_to_annotations,
+    payload_to_annotations,
     ContractValidationError,
 )
 from aems_pdf_annotator.models import (
@@ -31,6 +33,32 @@ class TestContractValidation:
 
     def test_current_version_is_1(self):
         assert CURRENT_CONTRACT_VERSION == 1
+
+    def test_missing_feedback_items_raises(self):
+        with pytest.raises(ContractValidationError, match="feedback_items"):
+            validate_contract_version(
+                {
+                    "annotation_contract_version": 1,
+                    "coordinate_space": "visual_top_left_normalized_v1",
+                }
+            )
+
+    def test_invalid_feedback_item_type_raises(self):
+        with pytest.raises(ContractValidationError, match=r"feedback_items\[0\]\.page"):
+            validate_contract_version(
+                {
+                    "annotation_contract_version": 1,
+                    "coordinate_space": "visual_top_left_normalized_v1",
+                    "feedback_items": [
+                        {
+                            "page": "not-an-int",
+                            "x_normalized": 0.1,
+                            "y_normalized": 0.2,
+                            "comment": "Bad item",
+                        }
+                    ],
+                }
+            )
 
 
 class TestFeedbackItemConversion:
@@ -188,3 +216,66 @@ class TestBatchConversion:
         annotations = feedback_items_to_annotations(items, [(612, 792), (612, 792)])
         # Should clamp to last valid page
         assert annotations[0].page_index == 1
+
+    def test_visual_top_left_coordinates_render_near_top_of_page(self, tmp_path):
+        from aems_pdf_annotator._fitz import fitz
+
+        pdf_path = tmp_path / "submission.pdf"
+        doc = fitz.open()
+        page = doc.new_page(width=612, height=792)
+        page.insert_text((72, 72), "Student answer", fontsize=12)
+        doc.save(str(pdf_path))
+        doc.close()
+
+        items = [
+            {
+                "check_id": "Q1_SUMMARY",
+                "page": 1,
+                "x_normalized": 0.1,
+                "y_normalized": 0.1,
+                "comment": "Near top",
+                "priority": "low",
+                "verdict": "PASS",
+                "is_verdict": True,
+            }
+        ]
+        annotations = feedback_items_to_annotations(items, [(612, 792)])
+        output_path, count = apply_annotations(pdf_path, annotations, tmp_path / "annotated.pdf")
+
+        assert count == 1
+
+        rendered = fitz.open(str(output_path))
+        page = rendered[0]
+        annots = list(page.annots())
+        assert annots[0].rect.y0 < 120
+        rendered.close()
+
+    def test_payload_to_annotations_prefers_rendered_annotations(self):
+        payload = {
+            "annotation_contract_version": 1,
+            "coordinate_space": "visual_top_left_normalized_v1",
+            "feedback_items": [
+                {
+                    "page": 1,
+                    "x_normalized": 0.1,
+                    "y_normalized": 0.2,
+                    "comment": "Fallback item",
+                }
+            ],
+            "rendered_annotations": [
+                {
+                    "id": "ann-1",
+                    "page_index": 0,
+                    "bbox": {"x0": 10, "y0": 20, "x1": 30, "y1": 40},
+                    "kind": "text",
+                    "color": "green",
+                    "comment": "Exact placement",
+                    "source": "AI",
+                    "original_source": "AI",
+                }
+            ],
+        }
+        annotations = payload_to_annotations(payload, [(612, 792)])
+        assert len(annotations) == 1
+        assert annotations[0].comment == "Exact placement"
+        assert annotations[0].bbox.x0 == 10

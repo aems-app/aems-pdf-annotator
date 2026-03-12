@@ -16,8 +16,10 @@ from aems_pdf_annotator.validator import (
 from aems_pdf_annotator.contract import (
     CURRENT_CONTRACT_VERSION,
     CURRENT_COORDINATE_SPACE,
+    SUPPORTED_CONTRACT_VERSIONS,
     feedback_item_to_annotation,
     feedback_items_to_annotations,
+    payload_to_annotations,
     validate_contract_version,
     ContractValidationError,
 )
@@ -42,8 +44,10 @@ __all__ = [
     "validate_annotations",
     "CURRENT_CONTRACT_VERSION",
     "CURRENT_COORDINATE_SPACE",
+    "SUPPORTED_CONTRACT_VERSIONS",
     "feedback_item_to_annotation",
     "feedback_items_to_annotations",
+    "payload_to_annotations",
     "validate_contract_version",
     "ContractValidationError",
     "PDFAnnotator",
