@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aems-pdf-annotator"
+version = "0.1.0"
+description = "Shared PDF annotation engine for AEMS"
+authors = [{name = "AEMS Team"}]
+requires-python = ">=3.10"
+license = {text = "AGPL-3.0-or-later"}
+
+dependencies = [
+    "pydantic>=2.0.0",
+    "pymupdf>=1.25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "mypy>=1.5.0",
+    "ruff>=0.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aems_pdf_annotator"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+disallow_untyped_defs = true
