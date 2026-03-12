@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aems.app/schemas/annotation-contract-v1.json",
+  "title": "AEMS Annotation Contract v1",
+  "type": "object",
+  "required": ["annotation_contract_version", "coordinate_space", "feedback_items"],
+  "properties": {
+    "annotation_contract_version": {
+      "const": 1
+    },
+    "coordinate_space": {
+      "const": "visual_top_left_normalized_v1",
+      "description": "All x/y coordinates are normalized to the visual page as seen by the grader UI, origin top-left"
+    },
+    "grader_name": {
+      "type": "string",
+      "description": "Display name for PDF author attribution"
+    },
+    "feedback_items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/FeedbackItem" }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "FeedbackItem": {
+      "type": "object",
+      "required": ["page", "x_normalized", "y_normalized", "comment"],
+      "properties": {
+        "stable_id":      { "type": "string", "description": "Stable annotation identity to preserve across regeneration" },
+        "check_id":       { "type": "string" },
+        "task_id":        { "type": "string" },
+        "page":           { "type": "integer", "minimum": 1, "description": "1-based page number" },
+        "x_normalized":   { "type": "number", "minimum": 0, "maximum": 1 },
+        "y_normalized":   { "type": "number", "minimum": 0, "maximum": 1 },
+        "comment":        { "type": "string", "minLength": 1 },
+        "quote":          { "type": "string", "default": "" },
+        "verdict":        { "type": "string", "enum": ["PASS", "FAIL", "UNCERTAIN", "PARTIAL"] },
+        "priority":       { "type": "string", "enum": ["low", "medium", "high"], "default": "medium" },
+        "is_verdict":     { "type": "boolean", "default": false },
+        "coordinate_lock": { "type": "boolean", "default": true, "description": "Canonicalized payloads should already be locked for placement" },
+        "coordinate_source": { "type": "string", "description": "Placement provenance for debugging and audit" },
+        "icon":           { "type": "string" },
+        "original_source": { "type": "string", "enum": ["AI", "HUMAN"] }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,190 @@
+# tests/test_contract.py
+import pytest
+from aems_pdf_annotator.contract import (
+    CURRENT_CONTRACT_VERSION,
+    validate_contract_version,
+    feedback_item_to_annotation,
+    feedback_items_to_annotations,
+    ContractValidationError,
+)
+from aems_pdf_annotator.models import (
+    AnnotationType, AnnotationColor, AnnotationSource,
+)
+
+
+class TestContractValidation:
+    def test_valid_version(self):
+        payload = {
+            "annotation_contract_version": 1,
+            "coordinate_space": "visual_top_left_normalized_v1",
+            "feedback_items": [],
+        }
+        assert validate_contract_version(payload) is True
+
+    def test_missing_version_raises(self):
+        with pytest.raises(ContractValidationError, match="annotation_contract_version"):
+            validate_contract_version({})
+
+    def test_unsupported_version_raises(self):
+        with pytest.raises(ContractValidationError, match="Unsupported"):
+            validate_contract_version({"annotation_contract_version": 99})
+
+    def test_current_version_is_1(self):
+        assert CURRENT_CONTRACT_VERSION == 1
+
+
+class TestFeedbackItemConversion:
+    def test_low_priority_produces_green_highlight(self):
+        item = {
+            "stable_id": "ann-q1-01",
+            "check_id": "Q1-01",
+            "page": 1,
+            "x_normalized": 0.1,
+            "y_normalized": 0.2,
+            "comment": "Good work",
+            "priority": "low",
+            "verdict": "PASS",
+        }
+        annot = feedback_item_to_annotation(
+            item, page_width=612, page_height=792
+        )
+        assert annot.id == "ann-q1-01"
+        assert annot.kind == AnnotationType.HIGHLIGHT
+        assert annot.color == AnnotationColor.GREEN
+        assert annot.page_index == 0  # 1-based to 0-based
+        assert annot.comment == "Good work"
+        assert annot.check_id == "Q1-01"
+
+    def test_high_priority_produces_red_squiggly(self):
+        item = {
+            "check_id": "Q2-03",
+            "page": 2,
+            "x_normalized": 0.5,
+            "y_normalized": 0.6,
+            "comment": "Error in derivation",
+            "priority": "high",
+            "verdict": "FAIL",
+        }
+        annot = feedback_item_to_annotation(
+            item, page_width=612, page_height=792
+        )
+        assert annot.kind == AnnotationType.SQUIGGLY
+        assert annot.color == AnnotationColor.RED
+        assert annot.page_index == 1
+
+    def test_medium_priority_produces_amber_highlight(self):
+        item = {
+            "page": 1,
+            "x_normalized": 0.3,
+            "y_normalized": 0.4,
+            "comment": "Partially correct",
+            "priority": "medium",
+        }
+        annot = feedback_item_to_annotation(
+            item, page_width=612, page_height=792
+        )
+        assert annot.kind == AnnotationType.HIGHLIGHT
+        assert annot.color == AnnotationColor.AMBER
+
+    def test_verdict_item_produces_text_note(self):
+        item = {
+            "check_id": "Q1_SUMMARY",
+            "page": 1,
+            "x_normalized": 0.1,
+            "y_normalized": 0.9,
+            "comment": "Task 1: 8/10",
+            "priority": "low",
+            "is_verdict": True,
+        }
+        annot = feedback_item_to_annotation(
+            item, page_width=612, page_height=792
+        )
+        assert annot.kind == AnnotationType.TEXT
+        assert annot.is_verdict is True
+
+    def test_grader_name_passed_through(self):
+        item = {
+            "page": 1,
+            "x_normalized": 0.1,
+            "y_normalized": 0.2,
+            "comment": "OK",
+            "priority": "low",
+        }
+        annot = feedback_item_to_annotation(
+            item, page_width=612, page_height=792,
+            grader_name="Prof. Smith",
+        )
+        assert annot.grader_name == "Prof. Smith"
+
+    def test_bbox_calculated_from_normalized_coords(self):
+        item = {
+            "page": 1,
+            "x_normalized": 0.5,
+            "y_normalized": 0.5,
+            "comment": "Middle of page",
+            "priority": "low",
+        }
+        annot = feedback_item_to_annotation(
+            item, page_width=612, page_height=792
+        )
+        # BBox should be centered around (306, 396) in PDF coords
+        assert annot.bbox.x0 == pytest.approx(306, abs=1)
+        # y in PDF space: origin at bottom, so y_norm=0.5 means middle
+        assert annot.bbox.y0 > 0
+        assert annot.bbox.y1 > annot.bbox.y0
+
+    def test_unknown_fields_ignored(self):
+        item = {
+            "page": 1,
+            "x_normalized": 0.1,
+            "y_normalized": 0.2,
+            "comment": "OK",
+            "priority": "low",
+            "future_field": "should be ignored",
+            "another_new_thing": 42,
+        }
+        annot = feedback_item_to_annotation(
+            item, page_width=612, page_height=792
+        )
+        assert annot.comment == "OK"
+
+
+class TestBatchConversion:
+    def test_multiple_items(self):
+        items = [
+            {
+                "page": 1, "x_normalized": 0.1, "y_normalized": 0.2,
+                "comment": "Good", "priority": "low",
+            },
+            {
+                "page": 1, "x_normalized": 0.5, "y_normalized": 0.6,
+                "comment": "Bad", "priority": "high",
+            },
+            {
+                "page": 2, "x_normalized": 0.3, "y_normalized": 0.4,
+                "comment": "OK", "priority": "medium",
+            },
+        ]
+        page_dimensions = [(612, 792), (612, 792)]
+        annotations = feedback_items_to_annotations(items, page_dimensions)
+        assert len(annotations) == 3
+        assert annotations[0].color == AnnotationColor.GREEN
+        assert annotations[1].color == AnnotationColor.RED
+        assert annotations[2].page_index == 1
+
+    def test_skips_items_with_no_comment(self):
+        items = [
+            {"page": 1, "x_normalized": 0.1, "y_normalized": 0.2, "comment": "", "priority": "low"},
+            {"page": 1, "x_normalized": 0.5, "y_normalized": 0.6, "comment": "Real feedback", "priority": "high"},
+        ]
+        annotations = feedback_items_to_annotations(items, [(612, 792)])
+        assert len(annotations) == 1
+
+    def test_page_out_of_range_clamped(self):
+        items = [
+            {"page": 5, "x_normalized": 0.1, "y_normalized": 0.2, "comment": "Test", "priority": "low"},
+        ]
+        # Only 2 pages available
+        annotations = feedback_items_to_annotations(items, [(612, 792), (612, 792)])
+        # Should clamp to last valid page
+        assert annotations[0].page_index == 1
