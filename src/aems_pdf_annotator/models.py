@@ -1,0 +1,435 @@
+"""
+Data models for PDF annotations.
+
+Defines structures for annotation types, colors, bounding boxes, and annotation batches.
+"""
+
+from enum import Enum
+import sys
+from typing import Any, List, Tuple, Optional, Dict
+from pydantic import BaseModel, Field, field_validator
+from datetime import datetime
+import uuid
+
+# StrEnum is available in Python 3.11+, provide fallback for older versions
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    # Fallback for Python < 3.11
+    class StrEnum(str, Enum):  # type: ignore[no-redef]
+        """String enum for Python < 3.11 compatibility."""
+
+        pass
+
+
+class AnnotationColor(str, Enum):
+    """Annotation colors for grading feedback."""
+
+    GREEN = "green"  # Correct/Pass
+    RED = "red"  # Incorrect/Fail (Critical)
+    AMBER = "amber"  # Uncertain/Review needed or Moderate errors
+    YELLOW = "yellow"  # Minor errors
+
+
+class AnnotationType(str, Enum):
+    """PDF annotation types."""
+
+    HIGHLIGHT = "highlight"
+    SQUIGGLY = "squiggly"
+    STRIKEOUT = "strikeout"
+    UNDERLINE = "underline"
+    TEXT = "text"
+    CIRCLE = "circle"
+    STAMP = "stamp"
+    TEXTBOX = "textbox"  # Freeform text box
+    DRAWING = "drawing"  # Pen/highlighter stroke
+
+
+class AnnotationSource(StrEnum):
+    """Annotation source - AI-generated or Human-created."""
+
+    AI = "AI"
+    HUMAN = "HUMAN"
+
+
+class BBox(BaseModel):
+    """
+    Bounding box for PDF annotations.
+
+    Coordinates are in PDF space (origin at bottom-left).
+
+    Attributes:
+        x0: Left coordinate
+        y0: Bottom coordinate
+        x1: Right coordinate
+        y1: Top coordinate
+    """
+
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+    def to_rect(self) -> Tuple[float, float, float, float]:
+        """Convert to rect tuple (x0, y0, x1, y1)."""
+        return (self.x0, self.y0, self.x1, self.y1)
+
+    def to_list(self) -> List[float]:
+        """Convert to list [x0, y0, x1, y1]."""
+        return [self.x0, self.y0, self.x1, self.y1]
+
+    @property
+    def width(self) -> float:
+        """Get width of bounding box."""
+        return abs(self.x1 - self.x0)
+
+    @property
+    def height(self) -> float:
+        """Get height of bounding box."""
+        return abs(self.y1 - self.y0)
+
+    @property
+    def area(self) -> float:
+        """Get area of bounding box."""
+        return self.width * self.height
+
+    def is_valid(self) -> bool:
+        """
+        Check if bounding box is valid.
+
+        Returns:
+            True if bbox has positive area and proper coordinate ordering
+        """
+        return self.x1 > self.x0 and self.y1 > self.y0
+
+    def is_within_bounds(self, page_width: float, page_height: float) -> bool:
+        """
+        Check if bounding box is within page bounds.
+
+        Args:
+            page_width: Width of the page
+            page_height: Height of the page
+
+        Returns:
+            True if bbox is completely within page bounds
+        """
+        return (
+            0 <= self.x0 < page_width
+            and 0 <= self.x1 <= page_width
+            and 0 <= self.y0 < page_height
+            and 0 <= self.y1 <= page_height
+        )
+
+    def clamp_to_bounds(self, page_width: float, page_height: float) -> "BBox":
+        """
+        Clamp bounding box coordinates to page bounds.
+
+        Args:
+            page_width: Width of the page
+            page_height: Height of the page
+
+        Returns:
+            New BBox with coordinates clamped to page bounds
+        """
+        return BBox(
+            x0=max(0, min(self.x0, page_width)),
+            y0=max(0, min(self.y0, page_height)),
+            x1=max(0, min(self.x1, page_width)),
+            y1=max(0, min(self.y1, page_height)),
+        )
+
+    @classmethod
+    def from_rect(cls, rect: Tuple[float, float, float, float]) -> "BBox":
+        """Create BBox from rect tuple."""
+        return cls(x0=rect[0], y0=rect[1], x1=rect[2], y1=rect[3])
+
+    @classmethod
+    def from_list(cls, rect: List[float]) -> "BBox":
+        """Create BBox from list."""
+        return cls(x0=rect[0], y0=rect[1], x1=rect[2], y1=rect[3])
+
+
+class PDFAnnotation(BaseModel):
+    """
+    A single PDF annotation.
+
+    Attributes:
+        id: Unique annotation ID
+        page_index: Page index (0-based)
+        bbox: Bounding box
+        kind: Annotation type
+        color: Annotation color
+        comment: Comment text
+        check_id: Associated check ID (optional)
+        created_by: User ID who created this annotation
+        grader_name: Display name of grader with role (e.g., "Alice Smith (TA)")
+        created_at: Creation timestamp
+        modified_by: User ID who last modified this annotation
+        modified_by_name: Display name of last modifier with role
+        modified_at: Last modification timestamp
+        is_system_generated: Whether this was auto-generated by AEMS
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    page_index: int
+    bbox: BBox
+    kind: AnnotationType
+    color: AnnotationColor
+    comment: Optional[str] = None
+    check_id: Optional[str] = None
+    created_by: str = "system"  # Default to system for backward compatibility
+    grader_name: Optional[str] = None  # Display name with role for PDF viewer
+    created_at: datetime = Field(default_factory=datetime.now)
+    modified_by: Optional[str] = None
+    modified_by_name: Optional[str] = None  # Display name with role of modifier
+    modified_at: Optional[datetime] = None
+    is_system_generated: bool = True  # Auto-generated by default
+    source: AnnotationSource = AnnotationSource.AI
+    original_source: Optional[AnnotationSource] = None
+    first_human_edit_at: Optional[datetime] = None
+    icon: Optional[str] = None  # Icon type for text annotations (e.g., "Check", "Cross", "Comment")
+    opacity: Optional[float] = (
+        0.7  # Opacity: 0.0 (transparent) to 1.0 (opaque), default 0.7 (translucent)
+    )
+    is_verdict: bool = False  # Whether this annotation carries a final grading verdict
+
+    # Drawing-specific fields
+    drawing_style: Optional[str] = None  # "pen" or "highlighter"
+    points: Optional[List[List[float]]] = None  # [[x,y], ...] in PDF coords
+    stroke_width: Optional[float] = None  # px width
+    stroke_opacity: Optional[float] = None  # 0.0-1.0
+    stroke_color_rgb: Optional[List[int]] = None  # [r, g, b] 0-255
+
+    @field_validator("drawing_style")
+    @classmethod
+    def validate_drawing_style(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("pen", "highlighter"):
+            raise ValueError("drawing_style must be 'pen' or 'highlighter'")
+        return v
+
+    @field_validator("points")
+    @classmethod
+    def validate_points(cls, v: Optional[List[List[float]]]) -> Optional[List[List[float]]]:
+        if v is not None:
+            if len(v) < 2:
+                raise ValueError("points must have at least 2 points")
+            for pt in v:
+                if len(pt) != 2:
+                    raise ValueError("Each point must be [x, y]")
+        return v
+
+    @field_validator("stroke_color_rgb")
+    @classmethod
+    def validate_stroke_color_rgb(cls, v: Optional[List[int]]) -> Optional[List[int]]:
+        if v is None:
+            return None
+        if len(v) != 3:
+            raise ValueError("stroke_color_rgb must contain exactly 3 values")
+        if any(not isinstance(component, int) for component in v):
+            raise ValueError("stroke_color_rgb values must be integers")
+        if any(component < 0 or component > 255 for component in v):
+            raise ValueError("stroke_color_rgb values must be between 0 and 255")
+        return v
+
+    def get_rgb_color(self) -> Tuple[float, float, float]:
+        """
+        Get RGB color tuple for this annotation.
+
+        Returns:
+            RGB tuple (values 0.0-1.0)
+        """
+        color_map = {
+            AnnotationColor.GREEN: (0.0, 0.784, 0.0),  # Match frontend detection
+            AnnotationColor.RED: (1.0, 0.0, 0.0),
+            AnnotationColor.AMBER: (1.0, 0.647, 0.0),  # Match frontend detection
+        }
+        return color_map[self.color]
+
+    def format_comment(self, include_check_id: bool = False) -> str:
+        """
+        Format comment with optional check ID.
+
+        Args:
+            include_check_id: If True, include check_id in brackets. Default False for user-facing comments.
+
+        Returns:
+            Formatted comment string
+        """
+        parts = []
+        if include_check_id and self.check_id:
+            parts.append(f"[{self.check_id}]")
+        if self.comment:
+            parts.append(self.comment)
+        return " ".join(parts)
+
+    def update(self, user_id: str, grader_name: Optional[str] = None, **kwargs: Any) -> None:
+        """
+        Update annotation fields and record modification.
+
+        When a teacher modifies another's annotation, it gets retagged with the teacher's name.
+
+        Args:
+            user_id: ID of user making the modification
+            grader_name: Display name with role of modifier (e.g., "Prof. Smith (Teacher)")
+            **kwargs: Fields to update
+        """
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
+        self.modified_by = user_id
+        self.modified_by_name = grader_name
+        self.modified_at = datetime.now()
+
+        # When annotation is modified, retag with current grader's name
+        if grader_name:
+            self.grader_name = grader_name
+
+    def can_be_edited_by(
+        self, user_id: str, is_admin: bool = False, is_teacher: bool = False
+    ) -> bool:
+        """
+        Check if user can edit this annotation.
+
+        Args:
+            user_id: User ID to check
+            is_admin: Whether user is admin
+            is_teacher: Whether user is teacher/instructor
+
+        Returns:
+            True if user can edit
+        """
+        # Admins and teachers can edit anything
+        if is_admin or is_teacher:
+            return True
+
+        # System-generated annotations can be edited by anyone with permission
+        if self.is_system_generated:
+            return True
+
+        # Manual annotations can only be edited by creator
+        return self.created_by == user_id
+
+    def model_post_init(self, __context: object) -> None:
+        """Sync source with is_system_generated and set original_source."""
+        if self.source == AnnotationSource.HUMAN:
+            object.__setattr__(self, "is_system_generated", False)
+        if self.original_source is None:
+            object.__setattr__(self, "original_source", self.source)
+
+    def transfer_ownership_to_human(self, user_id: str, grader_name: Optional[str] = None) -> bool:
+        """Transfer annotation ownership from AI to HUMAN."""
+        if self.source == AnnotationSource.HUMAN:
+            return False
+        if self.original_source is None:
+            self.original_source = self.source
+        self.source = AnnotationSource.HUMAN
+        self.is_system_generated = False
+        # Use single timestamp for consistency
+        now = datetime.now()
+        self.first_human_edit_at = now
+        self.modified_by = user_id
+        self.modified_by_name = grader_name
+        self.modified_at = now
+        if grader_name:
+            self.grader_name = grader_name
+        return True
+
+    def can_revert_to_ai(self) -> bool:
+        """Check if this annotation can be reverted to AI ownership."""
+        return (
+            self.source == AnnotationSource.HUMAN
+            and self.original_source == AnnotationSource.AI
+            and self.first_human_edit_at is not None
+        )
+
+    def revert_to_ai(self) -> bool:
+        """Revert annotation ownership back to AI (for undo)."""
+        if not self.can_revert_to_ai():
+            return False
+        self.source = AnnotationSource.AI
+        self.is_system_generated = True
+        self.first_human_edit_at = None
+        return True
+
+
+class AnnotationBatch(BaseModel):
+    """
+    Batch of annotations for a PDF.
+
+    Attributes:
+        pdf_path: Path to PDF file
+        annotations: List of annotations
+    """
+
+    pdf_path: str
+    annotations: List[PDFAnnotation] = Field(default_factory=list)
+
+    def add_annotation(
+        self,
+        page_index: int,
+        bbox: BBox,
+        kind: AnnotationType,
+        color: AnnotationColor,
+        comment: Optional[str] = None,
+        check_id: Optional[str] = None,
+        source: AnnotationSource = AnnotationSource.AI,
+    ) -> None:
+        """
+        Add an annotation to the batch.
+
+        Args:
+            page_index: Page index (0-based)
+            bbox: Bounding box
+            kind: Annotation type
+            color: Annotation color
+            comment: Comment text
+            check_id: Associated check ID
+            source: Annotation source (AI or HUMAN)
+        """
+        annotation = PDFAnnotation(
+            page_index=page_index,
+            bbox=bbox,
+            kind=kind,
+            color=color,
+            comment=comment,
+            check_id=check_id,
+            source=source,
+        )
+        self.annotations.append(annotation)
+
+    def get_by_color(self, color: AnnotationColor) -> List[PDFAnnotation]:
+        """
+        Get all annotations with a specific color.
+
+        Args:
+            color: Annotation color to filter by
+
+        Returns:
+            List of annotations with the specified color
+        """
+        return [a for a in self.annotations if a.color == color]
+
+    def get_by_page(self, page_index: int) -> List[PDFAnnotation]:
+        """
+        Get all annotations on a specific page.
+
+        Args:
+            page_index: Page index (0-based)
+
+        Returns:
+            List of annotations on the specified page
+        """
+        return [a for a in self.annotations if a.page_index == page_index]
+
+    def count_by_color(self) -> Dict[AnnotationColor, int]:
+        """
+        Count annotations by color.
+
+        Returns:
+            Dictionary mapping colors to counts
+        """
+        counts = {color: 0 for color in AnnotationColor}
+        for annotation in self.annotations:
+            counts[annotation.color] += 1
+        return counts
