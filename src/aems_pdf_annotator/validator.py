@@ -39,9 +39,9 @@ class BBoxIssue:
     def __str__(self) -> str:
         """Format issue as string."""
         prefix = {
-            BBoxIssueSeverity.ERROR: "[ERROR]",
-            BBoxIssueSeverity.WARNING: "[WARNING]",
-            BBoxIssueSeverity.INFO: "[INFO]",
+            BBoxIssueSeverity.ERROR: "\u274c",
+            BBoxIssueSeverity.WARNING: "\u26a0\ufe0f",
+            BBoxIssueSeverity.INFO: "\u2139\ufe0f",
         }[self.severity]
 
         return f"{prefix} [Page {self.page_index}][{self.annotation_id}] {self.message}"
