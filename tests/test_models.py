@@ -27,6 +27,7 @@ def test_annotation_color_values():
     assert AnnotationColor.GREEN.value == "green"
     assert AnnotationColor.RED.value == "red"
     assert AnnotationColor.AMBER.value == "amber"
+    assert AnnotationColor.YELLOW.value == "yellow"
 
 
 def test_pdf_annotation_defaults():
@@ -49,6 +50,16 @@ def test_pdf_annotation_get_rgb_color():
         color=AnnotationColor.RED,
     )
     assert annot.get_rgb_color() == (1.0, 0.0, 0.0)
+
+
+def test_pdf_annotation_get_rgb_color_yellow():
+    annot = PDFAnnotation(
+        page_index=0,
+        bbox=BBox(x0=0, y0=0, x1=1, y1=1),
+        kind=AnnotationType.HIGHLIGHT,
+        color=AnnotationColor.YELLOW,
+    )
+    assert annot.get_rgb_color() == (1.0, 0.9, 0.0)
 
 
 def test_annotation_batch_operations():

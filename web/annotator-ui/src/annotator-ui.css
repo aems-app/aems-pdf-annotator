@@ -1,0 +1,2227 @@
+/**
+ * PDF Preview Modal Styles
+ *
+ * Extracted from _pdf_preview_modal.html as part of Phase 9 refactoring.
+ * Contains all styles for the PDF preview modal, annotation overlays,
+ * fullscreen mode, and comments panel.
+ */
+
+/* ==========================================================================
+   Base Component Styles
+   ========================================================================== */
+
+/* ==========================================================================
+   Button Overrides for Proper Contrast
+   ========================================================================== */
+
+/* Fix outline-secondary hover contrast in light mode */
+#pdfPreviewModal .btn-outline-secondary {
+    color: #475569;
+    border-color: #cbd5e1;
+    background: transparent;
+}
+
+#pdfPreviewModal .btn-outline-secondary:hover,
+#pdfPreviewModal .btn-outline-secondary:focus {
+    color: #1e293b;
+    background: #f1f5f9;
+    border-color: #94a3b8;
+}
+
+#pdfPreviewModal .btn-outline-secondary:active {
+    color: #0f172a;
+    background: #e2e8f0;
+    border-color: #64748b;
+}
+
+/* Split panel toggle active state */
+#pdfPreviewModal .split-panel-toggle.active {
+    background-color: #3b82f6;
+    border-color: #3b82f6;
+    color: #ffffff;
+}
+
+#pdfPreviewModal .split-panel-toggle.active:hover {
+    background-color: #2563eb;
+    border-color: #2563eb;
+    color: #ffffff;
+}
+
+/* Page input styling for direct navigation */
+.pdf-page-input {
+    width: 54px;
+    padding: 0.25rem 0.4rem;
+    text-align: center;
+    font-weight: 500;
+    font-size: 0.875rem;
+    border-radius: 6px;
+    transition: all 0.15s ease;
+}
+
+.pdf-page-input:focus {
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+/* Page wrapper styles for continuous scroll */
+.pdf-page-wrapper {
+    position: relative;
+    margin: 0 auto 24px auto;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08),
+        0 1px 4px rgba(0, 0, 0, 0.06);
+    background: #ffffff;
+    max-width: none;
+    width: fit-content;
+    border-radius: 4px;
+    overflow: hidden;
+    transition: box-shadow 0.2s ease;
+}
+
+.pdf-page-wrapper:hover {
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.1),
+        0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.pdf-page-wrapper:last-child {
+    margin-bottom: 0;
+}
+
+.pdf-page-canvas {
+    display: block;
+    margin: 0 auto;
+    /* Dimensions controlled by JavaScript for proper zoom behavior */
+}
+
+.pdf-annotation-overlay,
+.pdf-search-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+/* Smooth fade on page change */
+#pdfGradedCanvas,
+#pdfGradedAnnotationsOverlay {
+    transition: opacity 180ms ease;
+}
+
+/* ==========================================================================
+   PDF Container Scrollbar Styles
+   ========================================================================== */
+
+#pdfGradedContainer {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 #f3f4f6;
+    will-change: scroll-position;
+}
+
+#pdfGradedContainer::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+#pdfGradedContainer::-webkit-scrollbar-track {
+    background: #f3f4f6;
+    border-radius: 4px;
+}
+
+#pdfGradedContainer::-webkit-scrollbar-thumb {
+    background-color: #cbd5e1;
+    border-radius: 6px;
+}
+
+#pdfGradedContainer::-webkit-scrollbar-thumb:hover {
+    background-color: #94a3b8;
+}
+
+/* ==========================================================================
+   Annotation Markers and Labels
+   ========================================================================== */
+
+.annotation-marker {
+    will-change: transform;
+    contain: layout style;
+}
+
+.annotation-label-number {
+    display: inline-block;
+    margin-right: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--annotation-number-color, rgba(255, 255, 255, 0.62));
+    line-height: 1;
+}
+
+.annotation-label-text {
+    color: rgba(255, 255, 255, 0.95);
+    vertical-align: baseline;
+}
+
+.list-group-item {
+    contain: content;
+}
+
+/* Full comment tooltip for annotation labels */
+.annotation-label-tooltip {
+    position: fixed;
+    background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+    color: #f1f5f9;
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.6;
+    max-width: 300px;
+    min-width: 140px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4),
+        0 2px 8px rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    z-index: 100000;
+    pointer-events: auto;
+    cursor: default;
+    opacity: 0;
+    transform: translateY(-8px) scale(0.96);
+    transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+        transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.annotation-label-tooltip.visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+
+/* Arrow pointing to the label - position set dynamically via CSS variable */
+.annotation-label-tooltip::before {
+    content: '';
+    position: absolute;
+    bottom: -7px;
+    left: var(--arrow-left, 20px);
+    width: 14px;
+    height: 14px;
+    background: linear-gradient(135deg, transparent 50%, #0f172a 50%);
+    border-right: 1px solid rgba(255, 255, 255, 0.1);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    transform: rotate(45deg);
+    z-index: -1;
+}
+
+/* Tooltip appears below label - arrow at top pointing up */
+.annotation-label-tooltip.tooltip-above::before {
+    bottom: auto;
+    top: -7px;
+    background: linear-gradient(-45deg, transparent 50%, #1e293b 50%);
+    border-right: none;
+    border-bottom: none;
+    border-left: 1px solid rgba(255, 255, 255, 0.1);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    transform: rotate(45deg);
+}
+
+/* Arrow on right side of tooltip (for labels on left side of marker) */
+.annotation-label-tooltip.arrow-right::before {
+    left: auto;
+    right: var(--arrow-right, 20px);
+}
+
+/* ==========================================================================
+   Priority Dots
+   Refined: Better visual feedback and smooth transitions
+   ========================================================================== */
+
+.priority-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: inline-block;
+    border: 2px solid #d1d5db;
+    background: #f3f4f6;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+}
+
+.priority-dot:hover {
+    transform: scale(1.15);
+    border-color: #9ca3af;
+}
+
+.priority-dot.priority-red {
+    border-color: #fecaca;
+    background: #fee2e2;
+}
+
+.priority-dot.priority-red:hover {
+    border-color: #f87171;
+    background: #fecaca;
+}
+
+.priority-dot.priority-red.active {
+    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+    border-color: #dc2626;
+    box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.2),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.priority-dot.priority-amber {
+    border-color: #fde68a;
+    background: #fef3c7;
+}
+
+.priority-dot.priority-amber:hover {
+    border-color: #fbbf24;
+    background: #fde68a;
+}
+
+.priority-dot.priority-amber.active {
+    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+    border-color: #d97706;
+    box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.2),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.priority-dot.priority-green {
+    border-color: #bbf7d0;
+    background: #dcfce7;
+}
+
+.priority-dot.priority-green:hover {
+    border-color: #4ade80;
+    background: #bbf7d0;
+}
+
+.priority-dot.priority-green.active {
+    background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+    border-color: #16a34a;
+    box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.2),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+/* ==========================================================================
+   Inline Priority Strip (replaces left border in edit mode)
+   Redesigned: Elegant pill-shaped indicators with clear visual hierarchy
+   ========================================================================== */
+
+/* Container for the priority strip */
+.inline-priority-strip {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 2px;
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0.03) 0%, rgba(0, 0, 0, 0.06) 100%);
+    border-radius: 6px 0 0 6px;
+    z-index: 20;
+}
+
+/* Each section of the strip - pill-shaped indicators */
+.inline-priority-strip .strip-section {
+    flex: 1;
+    cursor: pointer;
+    border-radius: 4px;
+    min-height: 16px;
+    position: relative;
+    transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1),
+        box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 0.15s ease;
+    opacity: 0.3;
+}
+
+/* Inner glow effect via pseudo-element */
+.inline-priority-strip .strip-section::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.2);
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.inline-priority-strip .strip-section:hover {
+    opacity: 0.7;
+    transform: scale(1.08);
+}
+
+.inline-priority-strip .strip-section:hover::after {
+    opacity: 1;
+}
+
+.inline-priority-strip .strip-section.active {
+    opacity: 1;
+    transform: scale(1.1);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.inline-priority-strip .strip-section.active::after {
+    opacity: 1;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0.1) 100%);
+}
+
+/* Priority colors with refined gradients */
+.inline-priority-strip .strip-section.priority-red {
+    background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%);
+}
+
+.inline-priority-strip .strip-section.priority-amber {
+    background: linear-gradient(180deg, #f59e0b 0%, #d97706 100%);
+}
+
+.inline-priority-strip .strip-section.priority-green {
+    background: linear-gradient(180deg, #22c55e 0%, #16a34a 100%);
+}
+
+/* Check icon for active state */
+.inline-priority-strip .strip-section.active::before {
+    content: '✓';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 9px;
+    font-weight: 700;
+    color: white;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    line-height: 1;
+}
+
+/* Hide the native left border when editing (strip replaces it) */
+.annotation-label.label-editing {
+    border-left: none !important;
+    padding-left: 24px !important;
+}
+
+/* Ensure label has relative positioning for absolute strip */
+.annotation-label.label-editing {
+    position: relative;
+}
+
+/* ==========================================================================
+   Comments Panel
+   Refined: Clean, professional styling with better visual hierarchy
+   ========================================================================== */
+
+.comments-panel {
+    background: #f8fafc;
+    border-color: #e2e8f0;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.comments-panel .card {
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.comments-panel .card-header {
+    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+    border-bottom: 1px solid #e2e8f0;
+    padding: 0.75rem 1rem;
+}
+
+.comments-panel .card-header h6 {
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: #334155;
+    letter-spacing: -0.01em;
+}
+
+.comments-panel .list-group-item {
+    background: #ffffff;
+    border-color: #f1f5f9;
+    border-left: 3px solid transparent;
+    font-size: 0.9rem;
+    padding: 0.875rem 1rem;
+    transition: all 0.15s ease;
+}
+
+.comments-panel .list-group-item:hover {
+    background: #f8fafc;
+    border-left-color: #94a3b8;
+}
+
+.comments-panel .list-group-item .small {
+    font-size: 0.85rem;
+    color: #64748b;
+}
+
+/* Scrollbar styling for comments panel */
+.comments-panel .card-body {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 #f8fafc;
+}
+
+.comments-panel .card-body::-webkit-scrollbar {
+    width: 6px;
+}
+
+.comments-panel .card-body::-webkit-scrollbar-track {
+    background: #f8fafc;
+    border-radius: 3px;
+}
+
+.comments-panel .card-body::-webkit-scrollbar-thumb {
+    background-color: #cbd5e1;
+    border-radius: 3px;
+}
+
+.comments-panel .card-body::-webkit-scrollbar-thumb:hover {
+    background-color: #94a3b8;
+}
+
+/* Grader name styling with overflow handling */
+.grader-name-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 150px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    font-weight: 500;
+    font-size: 0.8rem;
+    padding: 2px 8px;
+    background: #f1f5f9;
+    border-radius: 12px;
+    color: #475569;
+}
+
+/* ==========================================================================
+   Annotation Content Display
+   Refined: Better typography and smoother expand transition
+   ========================================================================== */
+
+/* Truncate long comments in display mode (non-editing) */
+.annotation-content:not(.editing) {
+    display: block;
+    overflow: visible;
+    max-height: none;
+    line-height: 1.6;
+    word-wrap: break-word;
+    cursor: text;
+    font-size: 0.9rem;
+    color: #374151;
+    transition: max-height 0.2s ease;
+}
+
+/* Show full content on hover for preview */
+.annotation-content:not(.editing):hover {
+    max-height: none;
+    overflow: visible;
+    background: none;
+}
+
+/* In regular modal mode keep full comments visible without hover expansion. */
+#pdfPreviewModal:not(.preview-fullscreen) .annotation-content:not(.editing) {
+    max-height: none;
+    overflow: visible;
+    cursor: text;
+}
+
+#pdfPreviewModal:not(.preview-fullscreen) .annotation-content:not(.editing):hover {
+    max-height: none;
+    overflow: visible;
+    background: none;
+}
+
+/* In fullscreen mode keep compact cards with hover expansion. */
+#pdfPreviewModal.preview-fullscreen .annotation-content:not(.editing) {
+    display: -webkit-box;
+    -webkit-line-clamp: 7;
+    line-clamp: 7;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    max-height: 10.5em;
+    cursor: pointer;
+}
+
+#pdfPreviewModal.preview-fullscreen .annotation-content:not(.editing):hover {
+    -webkit-line-clamp: unset;
+    line-clamp: unset;
+    max-height: 20em;
+    overflow-y: auto;
+    background: linear-gradient(180deg, transparent 85%, rgba(0, 0, 0, 0.02) 100%);
+}
+
+/* Ensure textarea (edit mode) shows full content */
+.annotation-content.editing {
+    -webkit-line-clamp: unset;
+    line-clamp: unset;
+    max-height: none;
+    overflow: visible;
+}
+
+/* ==========================================================================
+   Comments List Active State
+   Refined: Clear visual hierarchy with smooth transitions
+   ========================================================================== */
+
+#pdfPreviewModal #pdfGradedCommentsList .list-group-item.active {
+    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+    border-color: #93c5fd;
+    border-left-color: #3b82f6;
+    color: #1e293b;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.12);
+}
+
+#pdfGradedCommentsList .list-group-item.active .btn-outline-primary {
+    background-color: #ffffff;
+    border-color: #3b82f6;
+    color: #3b82f6;
+    opacity: 1;
+}
+
+#pdfGradedCommentsList .list-group-item.active .btn-outline-danger {
+    background-color: #ffffff;
+    border-color: #ef4444;
+    color: #ef4444;
+    opacity: 1;
+}
+
+#pdfGradedCommentsList .list-group-item.active .btn-outline-primary:hover {
+    background-color: #3b82f6;
+    color: #ffffff;
+    box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+}
+
+#pdfGradedCommentsList .list-group-item.active .btn-outline-danger:hover {
+    background-color: #ef4444;
+    color: #ffffff;
+    box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
+}
+
+/* Focus state for list items (keyboard navigation) */
+.list-group-item.item-focused {
+    outline: 2px solid #3b82f6;
+    outline-offset: -2px;
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
+}
+
+/* AI panel focus state (no outlineOffset needed) */
+#pdfGradedAICommentsList .list-group-item.item-focused {
+    outline-offset: 0;
+}
+
+/* ==========================================================================
+   Search Input Styling
+   ========================================================================== */
+
+#pdfSearchWrapper .input-group:focus-within {
+    box-shadow: none;
+    border-color: #0d6efd;
+}
+
+#pdfSearchWrapper .form-control:focus {
+    box-shadow: none;
+    border-color: #0d6efd;
+}
+
+/* ==========================================================================
+   Search Highlight Animation
+   Refined: More visible, professional highlight effect
+   ========================================================================== */
+
+@keyframes highlight-pulse {
+    0% {
+        opacity: 0.5;
+        box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.4);
+    }
+
+    50% {
+        opacity: 0.3;
+        box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.2);
+    }
+
+    100% {
+        opacity: 0.5;
+        box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.4);
+    }
+}
+
+.search-highlight {
+    position: absolute;
+    background-color: #fbbf24;
+    mix-blend-mode: multiply;
+    z-index: 20;
+    pointer-events: none;
+    border-radius: 4px;
+    animation: highlight-pulse 1.5s infinite ease-in-out;
+}
+
+/* ==========================================================================
+   Modal Non-Fullscreen Adjustments
+   ========================================================================== */
+
+#pdfPreviewModal:not(.preview-fullscreen) .modal-body {
+    padding-bottom: 1.5rem;
+}
+
+/* ==========================================================================
+   Fullscreen Mode Styles
+   MERGED: All fullscreen-related rules consolidated here
+   Note: !important used sparingly where needed to override Bootstrap/inline styles
+   ========================================================================== */
+
+#pdfPreviewModal.preview-fullscreen {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff;
+    z-index: 9999 !important;
+    display: block !important;
+    isolation: auto;
+}
+
+#pdfPreviewModal.preview-fullscreen .modal-dialog {
+    width: 100vw;
+    height: 100vh;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    align-items: stretch;
+    justify-content: flex-start;
+    min-height: 100vh;
+}
+
+#pdfPreviewModal.preview-fullscreen .modal-content {
+    border-radius: 0;
+    height: 100%;
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+#pdfPreviewModal.preview-fullscreen .modal-header {
+    padding: 0.25rem 0.75rem;
+    flex-shrink: 0;
+}
+
+#pdfPreviewModal.preview-fullscreen .modal-body {
+    flex: 1;
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+#pdfPreviewModal.preview-fullscreen .modal-footer {
+    flex-shrink: 0;
+}
+
+/* Hide the "Show Original PDF" button container in fullscreen */
+#pdfPreviewModal.preview-fullscreen .modal-body>.d-flex.justify-content-end {
+    display: none !important;
+}
+
+#pdfPreviewModal.preview-fullscreen .nav-tabs {
+    margin-bottom: 0;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+}
+
+#pdfPreviewModal.preview-fullscreen .tab-content {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    margin: 0;
+    gap: 0;
+}
+
+/* CRITICAL: Only apply flex to ACTIVE tab-pane */
+#pdfPreviewModal.preview-fullscreen .tab-pane.show.active {
+    flex: 1;
+    display: flex !important;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    padding: 0;
+    margin: 0;
+    gap: 0;
+}
+
+#pdfPreviewModal.preview-fullscreen .tab-pane .row {
+    flex: 1;
+    height: 100%;
+    min-height: 0;
+    margin: 0;
+    display: flex;
+    padding: 0;
+    gap: 0;
+}
+
+/* ==========================================================================
+   Fullscreen: Original PDF Pane
+   ========================================================================== */
+
+#pdfPreviewModal.preview-fullscreen #pdfOriginalPane.active {
+    display: flex !important;
+    flex-direction: column;
+    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    gap: 0;
+}
+
+#pdfPreviewModal.preview-fullscreen #pdfOriginalControls {
+    flex-shrink: 0;
+    margin-bottom: 0;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+}
+
+#pdfPreviewModal.preview-fullscreen #pdfOriginalContainer {
+    flex: 1 1 auto;
+    overflow: auto;
+    max-height: none;
+    min-height: 0;
+    height: auto;
+}
+
+/* ==========================================================================
+   Fullscreen: Graded PDF Pane
+   ========================================================================== */
+
+#pdfPreviewModal.preview-fullscreen #pdfGradedPane.active {
+    display: flex !important;
+    flex-direction: column;
+    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    gap: 0;
+}
+
+#pdfPreviewModal.preview-fullscreen #pdfGradedControls {
+    flex-shrink: 0;
+    margin-bottom: 0;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+}
+
+#pdfPreviewModal.preview-fullscreen #pdfGradedPane .col-md-8 {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1 1 0;
+    padding: 0;
+    margin: 0;
+    gap: 0;
+}
+
+#pdfPreviewModal.preview-fullscreen #pdfGradedPane .col-md-4 {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    gap: 0;
+}
+
+/* Set comment panel width to 380px in non-split view (same as split view) */
+#pdfPreviewModal.preview-fullscreen:not(.split-panel-mode) .comments-panel-human {
+    flex: 0 0 380px;
+    max-width: 380px;
+    min-width: 300px;
+}
+
+#pdfPreviewModal.preview-fullscreen #pdfGradedContainer {
+    flex: 1 1 auto;
+    overflow: auto;
+    max-height: none;
+    min-height: 0;
+    height: 0;
+    padding: 0;
+}
+
+/* ==========================================================================
+   Fullscreen: Comments Panel
+   ========================================================================== */
+
+#pdfPreviewModal.preview-fullscreen .card-body {
+    min-height: 0;
+}
+
+#pdfPreviewModal.preview-fullscreen .comments-panel .card {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+#pdfPreviewModal.preview-fullscreen .comments-panel .card-body {
+    max-height: none;
+    flex: 1 1 auto;
+    overflow-y: auto;
+}
+
+#pdfPreviewModal.preview-fullscreen .list-group-item {
+    overflow: visible;
+}
+
+/* Annotation content hover expansion in fullscreen */
+#pdfPreviewModal.preview-fullscreen .annotation-content:not(.editing):hover {
+    -webkit-line-clamp: unset;
+    line-clamp: unset;
+    max-height: 20em;
+    overflow-y: auto;
+    position: relative;
+    z-index: 1;
+}
+
+/* ==========================================================================
+   PDF Container Base Styles (extracted from inline styles)
+   Refined: Cleaner look with subtle depth
+   ========================================================================== */
+
+.pdf-container-base {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 1.25rem;
+    background: linear-gradient(180deg, #f9fafb 0%, #f3f4f6 100%);
+    min-height: 500px;
+    max-height: 70vh;
+    overflow: auto;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+#pdfGradedContainer.pdf-container-base {
+    position: relative;
+}
+
+/* PDF loading indicators */
+.pdf-loading {
+    display: none;
+    text-align: center;
+    color: #6c757d;
+}
+
+/* Original PDF canvas */
+#pdfOriginalCanvas {
+    display: block;
+    margin: 0 auto;
+}
+
+/* Keep the page slider available in reduced view too.
+   Search visibility is controlled by checkPdfSearchable() in JS. */
+
+/* PDF slider controls */
+.pdf-slider-container {
+    min-width: 160px;
+}
+
+.pdf-page-slider {
+    width: 140px;
+}
+
+/* Search input width constraint */
+.pdf-search-input-group {
+    max-width: 320px;
+}
+
+/* Comments panel scrollable area */
+.comments-panel .card-body,
+.comments-panel-ai .card-body,
+.comments-panel-model-a .card-body,
+.comments-panel-model-b .card-body {
+    /* max-height: 600px;  REMOVED to fix scrolling issue */
+    /* overflow-y: auto;   REMOVED to fix scrolling issue - handled by parent flex container */
+    flex: 1 1 auto;
+    min-height: 0;
+    /* Critical for flex scrolling */
+
+}
+
+/* ==========================================================================
+   Source Tracking Styles (AI/Human badges and markers)
+   Refined: Premium badge design with subtle depth
+   ========================================================================== */
+
+.source-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    transition: all 0.15s ease;
+}
+
+.source-badge.source-ai {
+    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+    color: #1d4ed8;
+    border: 1px solid #93c5fd;
+    box-shadow: 0 1px 2px rgba(29, 78, 216, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.source-badge.source-ai:hover {
+    background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+    box-shadow: 0 2px 4px rgba(29, 78, 216, 0.15),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.source-badge.source-human {
+    background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+    color: #c2410c;
+    border: 1px solid #fdba74;
+    box-shadow: 0 1px 2px rgba(194, 65, 12, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.source-badge.source-human:hover {
+    background: linear-gradient(135deg, #ffedd5 0%, #fed7aa 100%);
+    box-shadow: 0 2px 4px rgba(194, 65, 12, 0.15),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.source-badge i {
+    font-size: 0.7rem;
+    opacity: 0.85;
+}
+
+/* Verdict indicator */
+.verdict-indicator {
+    color: var(--bs-purple, #6f42c1);
+    font-size: 0.7rem;
+    cursor: pointer;
+    opacity: 0.8;
+    transition: opacity 0.15s;
+}
+
+.verdict-indicator:hover {
+    opacity: 1;
+}
+
+.verdict-indicator.verdict-inactive {
+    opacity: 0.25;
+}
+
+.verdict-indicator.verdict-inactive:hover {
+    opacity: 0.6;
+}
+
+.list-group-item.is-verdict {
+    border-left: 2px solid var(--bs-purple, #6f42c1);
+}
+
+.annotation-marker.source-ai {
+    box-shadow: 0 0 0 2px rgba(21, 101, 192, 0.3);
+}
+
+.annotation-marker.source-ai .annotation-label {
+    border-left: 3px solid #1565c0;
+}
+
+.annotation-marker.source-human {
+    box-shadow: 0 0 0 2px rgba(230, 81, 0, 0.3);
+}
+
+.annotation-marker.source-human .annotation-label {
+    border-left: 3px solid #e65100;
+}
+
+.list-group-item.source-ai {
+    border-left: 3px solid #1565c0;
+}
+
+.list-group-item.source-human {
+    border-left: 3px solid #e65100;
+}
+
+.annotation-marker.ownership-transferred {
+    animation: ownership-flash 0.5s ease-out;
+}
+
+@keyframes ownership-flash {
+    0% {
+        box-shadow: 0 0 0 4px rgba(230, 81, 0, 0.8);
+    }
+
+    100% {
+        box-shadow: 0 0 0 2px rgba(230, 81, 0, 0.3);
+    }
+}
+
+.panel-title-icon {
+    font-size: 1rem;
+    margin-right: 8px;
+    opacity: 0.9;
+    transition: transform 0.2s ease;
+}
+
+.card-header:hover .panel-title-icon {
+    transform: scale(1.1);
+}
+
+.comments-panel-ai .panel-title-icon {
+    color: #2563eb;
+}
+
+.comments-panel-human .panel-title-icon {
+    color: #ea580c;
+}
+
+/* Split Panel Mode */
+/* Ensure row does not wrap in split view (since cols sum > 12) */
+#pdfPreviewModal.preview-fullscreen.split-panel-mode #pdfGradedPane>.row {
+    flex-wrap: nowrap !important;
+    height: 100%;
+}
+
+#pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-ai,
+#pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-human {
+    flex: 0 0 380px !important;
+    width: 380px !important;
+    max-width: 380px !important;
+    min-width: 300px;
+    display: block !important;
+}
+
+/* Panel borders, backgrounds, and ordering only in split view */
+#pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-ai {
+    order: 1;
+    border-right: 2px solid #1565c0;
+    background: #f8fbff;
+}
+
+#pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-human {
+    order: 3;
+    border-left: 2px solid #e65100;
+    background: #fffbf5;
+}
+
+#pdfPreviewModal.preview-fullscreen.split-panel-mode .pdf-center-panel {
+    order: 2;
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    width: auto !important;
+}
+
+/* Ensure good contrast on hover for the split view toggle */
+/* Note: Base hover styles defined at top of file, active state overrides here */
+
+#pdfPreviewModal:not(.split-panel-mode) .comments-panel-ai {
+    display: none !important;
+}
+
+/* Reduce horizontal padding on controls in split view to give more space to PDF */
+#pdfPreviewModal.preview-fullscreen.split-panel-mode #pdfGradedControls {
+    padding-left: 0.25rem;
+    padding-right: 0.25rem;
+}
+
+/* Reduce gaps in PDF viewer for split view only */
+#pdfPreviewModal.preview-fullscreen.split-panel-mode #pdfGradedContainer {
+    padding: 0.5rem;
+}
+
+#pdfPreviewModal.preview-fullscreen.split-panel-mode .pdf-page-wrapper {
+    margin: 0 auto 15px auto;
+    max-width: calc(100% - 1rem);
+}
+
+#pdfPreviewModal.preview-fullscreen.split-panel-mode .pdf-page-canvas {
+    max-width: 100%;
+    height: auto !important;
+}
+
+/* ==========================================================================
+   A/B Comparison Mode Styles
+   ========================================================================== */
+
+/* CSS Custom Properties for Comparison Colors
+   Centralized for easy maintenance and consistency */
+#pdfPreviewModal {
+    --comparison-color-a: #dc3545;
+    --comparison-color-a-rgb: 220, 53, 69;
+    --comparison-color-a-light: #fff5f5;
+    --comparison-color-a-badge-bg: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+    --comparison-color-a-badge-text: #dc2626;
+    --comparison-color-a-badge-border: #fca5a5;
+
+    --comparison-color-b: #0d6efd;
+    --comparison-color-b-rgb: 13, 110, 253;
+    --comparison-color-b-light: #f0f7ff;
+    --comparison-color-b-badge-bg: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+    --comparison-color-b-badge-text: #2563eb;
+    --comparison-color-b-badge-border: #93c5fd;
+
+    --comparison-color-overlap: #8b5cf6;
+    --comparison-color-overlap-rgb: 139, 92, 246;
+
+    --comparison-color-highlight: #ffc107;
+    --comparison-color-highlight-rgb: 255, 193, 7;
+}
+
+/* Model A (Red) */
+#pdfPreviewModal .annotation-marker.source-model-a {
+    box-shadow: 0 0 0 2px rgba(var(--comparison-color-a-rgb), 0.4);
+}
+
+#pdfPreviewModal .annotation-marker.source-model-a .annotation-label {
+    border-left: 3px solid var(--comparison-color-a);
+    background: rgba(var(--comparison-color-a-rgb), 0.1);
+}
+
+#pdfPreviewModal .list-group-item.source-model-a {
+    border-left: 3px solid var(--comparison-color-a);
+}
+
+.source-badge.source-model-a {
+    background: var(--comparison-color-a-badge-bg);
+    color: var(--comparison-color-a-badge-text);
+    border: 1px solid var(--comparison-color-a-badge-border);
+}
+
+/* Model B (Blue) */
+#pdfPreviewModal .annotation-marker.source-model-b {
+    box-shadow: 0 0 0 2px rgba(var(--comparison-color-b-rgb), 0.4);
+}
+
+#pdfPreviewModal .annotation-marker.source-model-b .annotation-label {
+    border-left: 3px solid var(--comparison-color-b);
+    background: rgba(var(--comparison-color-b-rgb), 0.1);
+}
+
+#pdfPreviewModal .list-group-item.source-model-b {
+    border-left: 3px solid var(--comparison-color-b);
+}
+
+.source-badge.source-model-b {
+    background: var(--comparison-color-b-badge-bg);
+    color: var(--comparison-color-b-badge-text);
+    border: 1px solid var(--comparison-color-b-badge-border);
+}
+
+/* Overlap (Purple) - when both models agree */
+#pdfPreviewModal .annotation-marker.source-overlap {
+    box-shadow: 0 0 0 3px rgba(var(--comparison-color-overlap-rgb), 0.5);
+}
+
+#pdfPreviewModal .annotation-marker.source-overlap .annotation-label {
+    border-left: 3px solid var(--comparison-color-overlap);
+    background: rgba(var(--comparison-color-overlap-rgb), 0.15);
+}
+
+#pdfPreviewModal .list-group-item.source-overlap {
+    border-left: 3px solid var(--comparison-color-overlap);
+    background: rgba(var(--comparison-color-overlap-rgb), 0.05);
+}
+
+/* Panel styling for comparison mode */
+#pdfPreviewModal.comparison-mode .comments-panel-model-a .card-header {
+    background: rgba(var(--comparison-color-a-rgb), 0.1);
+    border-bottom: 2px solid var(--comparison-color-a);
+}
+
+#pdfPreviewModal.comparison-mode .comments-panel-model-a .panel-title-icon {
+    color: var(--comparison-color-a);
+}
+
+#pdfPreviewModal.comparison-mode .comments-panel-model-b .card-header {
+    background: rgba(var(--comparison-color-b-rgb), 0.1);
+    border-bottom: 2px solid var(--comparison-color-b);
+}
+
+#pdfPreviewModal.comparison-mode .comments-panel-model-b .panel-title-icon {
+    color: var(--comparison-color-b);
+}
+
+/* Toggle visibility of models */
+#pdfPreviewModal.comparison-mode.hide-model-a .source-model-a {
+    display: none !important;
+}
+
+#pdfPreviewModal.comparison-mode.hide-model-b .source-model-b {
+    display: none !important;
+}
+
+/* Comparison mode panel layout - always show both panels */
+#pdfPreviewModal.comparison-mode .comments-panel-model-a,
+#pdfPreviewModal.comparison-mode .comments-panel-model-b {
+    display: block !important;
+}
+
+/* In comparison mode, switch to comparison headers/lists */
+#pdfPreviewModal.comparison-mode .panel-header-normal {
+    display: none !important;
+}
+
+#pdfPreviewModal.comparison-mode .panel-header-comparison {
+    display: block !important;
+}
+
+#pdfPreviewModal.comparison-mode .panel-list-normal {
+    display: none !important;
+}
+
+#pdfPreviewModal.comparison-mode .panel-list-comparison {
+    display: block !important;
+}
+
+/* Hide normal mode headers/lists in comparison mode (fallback) */
+#pdfPreviewModal:not(.comparison-mode) .panel-header-comparison {
+    display: none !important;
+}
+
+#pdfPreviewModal:not(.comparison-mode) .panel-list-comparison {
+    display: none !important;
+}
+
+/* Comparison mode: hide tabs and show graded pane directly */
+#pdfPreviewModal.comparison-mode #pdfPreviewTabs {
+    display: none !important;
+}
+
+#pdfPreviewModal.comparison-mode #pdfOriginalPane {
+    display: none !important;
+}
+
+#pdfPreviewModal.comparison-mode #pdfGradedPane {
+    display: flex !important;
+}
+
+#pdfPreviewModal.comparison-mode #pdfGradedPane.fade:not(.show) {
+    opacity: 1;
+}
+
+/* Comparison mode: hide editing controls (read-only) */
+#pdfPreviewModal.comparison-mode .annotation-edit-btn,
+#pdfPreviewModal.comparison-mode .annotation-delete-btn,
+#pdfPreviewModal.comparison-mode #addCommentBtn,
+#pdfPreviewModal.comparison-mode #undoBtn,
+#pdfPreviewModal.comparison-mode #pdfSearchWrapper,
+#pdfPreviewModal.comparison-mode .inline-priority-strip {
+    display: none !important;
+}
+
+/* Comparison mode: panel width adjustments for better balance */
+#pdfPreviewModal.comparison-mode .comments-panel-model-a {
+    flex: 0 0 auto;
+    width: 16.666667%;
+    max-width: 16.666667%;
+}
+
+#pdfPreviewModal.comparison-mode .pdf-center-panel {
+    flex: 1;
+    width: auto;
+    max-width: none;
+}
+
+#pdfPreviewModal.comparison-mode .comments-panel-model-b {
+    flex: 0 0 auto;
+    width: 25%;
+    max-width: 25%;
+}
+
+/* Comparison mode fullscreen: both panels visible and balanced */
+#pdfPreviewModal.preview-fullscreen.comparison-mode .comments-panel-model-a,
+#pdfPreviewModal.preview-fullscreen.comparison-mode .comments-panel-model-b {
+    flex: 0 0 280px;
+    max-width: 280px;
+    min-width: 220px;
+}
+
+/* Comparison mode: panel backgrounds */
+#pdfPreviewModal.comparison-mode .comments-panel-model-a {
+    background: var(--comparison-color-a-light);
+}
+
+#pdfPreviewModal.comparison-mode .comments-panel-model-b {
+    background: var(--comparison-color-b-light);
+}
+
+/* Comparison header controls styling */
+#comparisonHeaderControls .form-check-input:checked {
+    background-color: var(--bs-primary);
+    border-color: var(--bs-primary);
+}
+
+/* Comparison agreement badge styling */
+#comparisonAgreementBadge.high-agreement {
+    background-color: #198754 !important;
+}
+
+#comparisonAgreementBadge.medium-agreement {
+    background-color: #ffc107 !important;
+    color: #212529 !important;
+}
+
+#comparisonAgreementBadge.low-agreement {
+    background-color: #dc3545 !important;
+}
+
+/* Annotation marker hover effects in comparison mode */
+#pdfPreviewModal.comparison-mode .annotation-marker {
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+#pdfPreviewModal.comparison-mode .annotation-marker:hover {
+    transform: scale(1.02);
+    z-index: 100;
+}
+
+/* Panel item hover effect in comparison mode */
+#pdfPreviewModal.comparison-mode .list-group-item {
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+#pdfPreviewModal.comparison-mode .list-group-item:hover {
+    filter: brightness(0.97);
+}
+
+#pdfPreviewModal.comparison-mode .list-group-item.active {
+    background-color: rgba(0, 0, 0, 0.05) !important;
+    font-weight: 500;
+}
+
+/* Highlighted marker state (when clicked from panel) */
+#pdfPreviewModal .annotation-marker.highlighted {
+    box-shadow: 0 0 0 4px rgba(var(--comparison-color-highlight-rgb), 0.6);
+    z-index: 101;
+    animation: marker-highlight-pulse 1s ease-out;
+}
+
+@keyframes marker-highlight-pulse {
+    0% {
+        box-shadow: 0 0 0 6px rgba(var(--comparison-color-highlight-rgb), 0.8);
+    }
+
+    100% {
+        box-shadow: 0 0 0 4px rgba(var(--comparison-color-highlight-rgb), 0.6);
+    }
+}
+
+/* Overlap badge styling (replaces inline style) */
+.badge-overlap {
+    background: var(--comparison-color-overlap);
+}
+
+/* Comparison toggle accessibility */
+#comparisonHeaderControls .form-check-input {
+    cursor: pointer;
+}
+
+#comparisonHeaderControls .form-check-input:focus {
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+    outline: 2px solid var(--bs-primary);
+    outline-offset: 2px;
+}
+
+#comparisonHeaderControls .form-check-label {
+    cursor: pointer;
+    transition: color 0.15s ease;
+}
+
+#comparisonHeaderControls .form-check-label:hover {
+    color: var(--bs-primary);
+}
+
+/* Transition for model visibility toggles */
+#pdfPreviewModal.comparison-mode .source-model-a,
+#pdfPreviewModal.comparison-mode .source-model-b {
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+/* ==========================================================================
+   Dark Mode Support
+   Comprehensive dark theme for all modal components
+   ========================================================================== */
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .modal-content {
+    background: #1e293b;
+    border-color: #334155;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .modal-header {
+    background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+    border-bottom-color: #334155;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .modal-title {
+    color: #f1f5f9;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .modal-body {
+    background: #0f172a;
+}
+
+/* Dark mode: Navigation tabs */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .nav-tabs {
+    border-bottom-color: #334155;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .nav-tabs .nav-link {
+    color: #94a3b8;
+    border-color: transparent;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .nav-tabs .nav-link:hover {
+    color: #e2e8f0;
+    border-color: #475569 #475569 #334155;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .nav-tabs .nav-link.active {
+    color: #f1f5f9;
+    background: #1e293b;
+    border-color: #334155 #334155 #1e293b;
+}
+
+/* Dark mode: PDF container */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .pdf-container-base {
+    background: #0f172a;
+    border-color: #334155;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .pdf-page-wrapper {
+    background: #1e293b;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* Dark mode: Controls */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .btn-outline-secondary {
+    color: #94a3b8;
+    border-color: #475569;
+    background: transparent;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .btn-outline-secondary:hover,
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .btn-outline-secondary:focus {
+    background: #334155;
+    color: #f1f5f9;
+    border-color: #64748b;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .btn-outline-secondary:active {
+    background: #475569;
+    color: #ffffff;
+    border-color: #64748b;
+}
+
+/* Dark mode: Split panel toggle */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .split-panel-toggle.active {
+    background-color: #3b82f6;
+    border-color: #3b82f6;
+    color: #ffffff;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .split-panel-toggle.active:hover {
+    background-color: #2563eb;
+    border-color: #2563eb;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .text-muted {
+    color: #64748b !important;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .form-control {
+    background: #1e293b;
+    border-color: #475569;
+    color: #f1f5f9;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .form-control:focus {
+    background: #1e293b;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .form-control::placeholder {
+    color: #64748b;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .input-group-text {
+    background: #334155;
+    border-color: #475569;
+    color: #94a3b8;
+}
+
+/* Dark mode: Comments panel */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel {
+    background: #1e293b;
+    border-color: #334155;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .card {
+    background: #1e293b;
+    border-color: #334155;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .card-header {
+    background: linear-gradient(180deg, #334155 0%, #1e293b 100%);
+    border-bottom-color: #475569;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .card-header h6 {
+    color: #e2e8f0;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .list-group-item {
+    background: #1e293b;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .list-group-item:hover {
+    background: #334155;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .list-group-item .small {
+    color: #94a3b8;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .card-body {
+    scrollbar-color: #475569 #1e293b;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .card-body::-webkit-scrollbar-track {
+    background: #1e293b;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .card-body::-webkit-scrollbar-thumb {
+    background-color: #475569;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .card-body::-webkit-scrollbar-thumb:hover {
+    background-color: #64748b;
+}
+
+/* Dark mode: Grader badge */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .grader-name-badge {
+    background: #334155;
+    color: #e2e8f0;
+}
+
+/* Dark mode: Verdict indicator */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .verdict-indicator {
+    color: #a78bfa;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .list-group-item.is-verdict {
+    border-left-color: #a78bfa;
+}
+
+/* Dark mode: Source badges */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .source-badge.source-ai {
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(59, 130, 246, 0.15) 100%);
+    color: #60a5fa;
+    border-color: rgba(59, 130, 246, 0.3);
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .source-badge.source-human {
+    background: linear-gradient(135deg, rgba(251, 146, 60, 0.2) 0%, rgba(251, 146, 60, 0.15) 100%);
+    color: #fb923c;
+    border-color: rgba(251, 146, 60, 0.3);
+}
+
+/* Dark mode: Priority dots */
+:is([data-theme="dark"], .dark-mode) .priority-dot {
+    border-color: #475569;
+    background: #334155;
+}
+
+:is([data-theme="dark"], .dark-mode) .priority-dot:hover {
+    border-color: #64748b;
+}
+
+:is([data-theme="dark"], .dark-mode) .priority-dot.priority-red {
+    border-color: rgba(239, 68, 68, 0.4);
+    background: rgba(239, 68, 68, 0.2);
+}
+
+:is([data-theme="dark"], .dark-mode) .priority-dot.priority-amber {
+    border-color: rgba(245, 158, 11, 0.4);
+    background: rgba(245, 158, 11, 0.2);
+}
+
+:is([data-theme="dark"], .dark-mode) .priority-dot.priority-green {
+    border-color: rgba(34, 197, 94, 0.4);
+    background: rgba(34, 197, 94, 0.2);
+}
+
+/* Dark mode: Inline priority strip */
+:is([data-theme="dark"], .dark-mode) .inline-priority-strip {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.06) 100%);
+}
+
+:is([data-theme="dark"], .dark-mode) .inline-priority-strip .strip-section::after {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+:is([data-theme="dark"], .dark-mode) .inline-priority-strip .strip-section.active::after {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.1) 100%);
+}
+
+/* Dark mode: Annotation tooltip */
+:is([data-theme="dark"], .dark-mode) .annotation-label-tooltip {
+    background: rgba(15, 23, 42, 0.95);
+    border-color: rgba(71, 85, 105, 0.5);
+    color: #f1f5f9;
+}
+
+:is([data-theme="dark"], .dark-mode) .annotation-label-tooltip::before {
+    background: rgba(15, 23, 42, 0.95);
+    border-right-color: rgba(71, 85, 105, 0.5);
+    border-bottom-color: rgba(71, 85, 105, 0.5);
+}
+
+/* Dark mode: Active list item */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal #pdfGradedCommentsList .list-group-item.active {
+    background-color: rgba(59, 130, 246, 0.15) !important;
+    border-color: rgba(59, 130, 246, 0.4);
+    color: #f1f5f9;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfGradedCommentsList .list-group-item.active .btn-outline-primary {
+    background-color: transparent;
+    border-color: #3b82f6;
+    color: #60a5fa;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfGradedCommentsList .list-group-item.active .btn-outline-danger {
+    background-color: transparent;
+    border-color: #ef4444;
+    color: #f87171;
+}
+
+/* Dark mode: Split panel backgrounds */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-ai {
+    background: rgba(59, 130, 246, 0.05);
+    border-right-color: rgba(59, 130, 246, 0.4);
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-human {
+    background: rgba(251, 146, 60, 0.05);
+    border-left-color: rgba(251, 146, 60, 0.4);
+}
+
+/* Dark mode: Panel title icons */
+:is([data-theme="dark"], .dark-mode) .comments-panel-ai .panel-title-icon {
+    color: #60a5fa;
+}
+
+:is([data-theme="dark"], .dark-mode) .comments-panel-human .panel-title-icon {
+    color: #fb923c;
+}
+
+/* Dark mode: Alert banner */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .alert-warning {
+    background: rgba(251, 191, 36, 0.1);
+    border-color: rgba(251, 191, 36, 0.3);
+    color: #fbbf24;
+}
+
+/* Dark mode: Fullscreen background */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal.preview-fullscreen {
+    background: #0f172a;
+}
+
+/* Dark mode: Form select */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .form-select {
+    background-color: #1e293b;
+    border-color: #475569;
+    color: #f1f5f9;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .form-select:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+/* Dark mode: Form label */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .form-label {
+    color: #e2e8f0;
+}
+
+/* Dark mode: PDF container scrollbar */
+:is([data-theme="dark"], .dark-mode) #pdfGradedContainer {
+    scrollbar-color: #475569 #0f172a;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfGradedContainer::-webkit-scrollbar-track {
+    background: #0f172a;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfGradedContainer::-webkit-scrollbar-thumb {
+    background-color: #475569;
+}
+
+/* Dark mode: Comparison mode colors */
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal {
+    --comparison-color-a-light: rgba(239, 68, 68, 0.05);
+    --comparison-color-b-light: rgba(59, 130, 246, 0.05);
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal.comparison-mode .comments-panel-model-a .card-header {
+    background: rgba(239, 68, 68, 0.1);
+    border-bottom-color: rgba(239, 68, 68, 0.4);
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal.comparison-mode .comments-panel-model-b .card-header {
+    background: rgba(59, 130, 246, 0.1);
+    border-bottom-color: rgba(59, 130, 246, 0.4);
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal.comparison-mode .list-group-item.active {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Dark mode: Annotation content */
+:is([data-theme="dark"], .dark-mode) .annotation-content:not(.editing) {
+    color: #cbd5e1;
+}
+
+:is([data-theme="dark"], .dark-mode) .annotation-content:not(.editing):hover {
+    background: linear-gradient(180deg, transparent 85%, rgba(255, 255, 255, 0.02) 100%);
+}
+
+/* Dark mode: Add Comment Modal */
+:is([data-theme="dark"], .dark-mode) #addCommentModal .modal-content {
+    background: #1e293b;
+    border-color: #334155;
+}
+
+:is([data-theme="dark"], .dark-mode) #addCommentModal .modal-header {
+    background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+    border-bottom-color: #334155;
+}
+
+:is([data-theme="dark"], .dark-mode) #addCommentModal .modal-title {
+    color: #f1f5f9;
+}
+
+:is([data-theme="dark"], .dark-mode) #addCommentModal .modal-body {
+    background: #1e293b;
+}
+
+:is([data-theme="dark"], .dark-mode) #addCommentModal .modal-footer {
+    background: #1e293b;
+    border-top-color: #334155;
+}
+
+:is([data-theme="dark"], .dark-mode) #addCommentModal .form-label {
+    color: #e2e8f0;
+}
+
+:is([data-theme="dark"], .dark-mode) #addCommentModal .form-control,
+:is([data-theme="dark"], .dark-mode) #addCommentModal .form-select {
+    background-color: #0f172a;
+    border-color: #475569;
+    color: #f1f5f9;
+}
+
+:is([data-theme="dark"], .dark-mode) #addCommentModal .form-control:focus,
+:is([data-theme="dark"], .dark-mode) #addCommentModal .form-select:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+:is([data-theme="dark"], .dark-mode) #addCommentModal .form-control::placeholder {
+    color: #64748b;
+}
+
+/* ==========================================================================
+   A/B Comparison Mode - Responsive Design
+   ========================================================================== */
+
+/* Tablet: <= 992px */
+@media (max-width: 992px) {
+
+    /* Adjust panel widths */
+    #pdfPreviewModal.comparison-mode .comments-panel-model-a,
+    #pdfPreviewModal.comparison-mode .comments-panel-model-b {
+        width: 20% !important;
+        max-width: 20% !important;
+    }
+
+    #pdfPreviewModal.comparison-mode .pdf-center-panel {
+        width: 60% !important;
+    }
+
+    /* Smaller header controls */
+    #comparisonHeaderControls {
+        flex-direction: column;
+        gap: 0.5rem !important;
+    }
+
+    #comparisonStats {
+        width: 100%;
+        justify-content: center;
+    }
+}
+
+/* Mobile: <= 768px - Stack panels vertically */
+@media (max-width: 768px) {
+
+    /* Force single column layout */
+    #pdfPreviewModal.comparison-mode .row {
+        flex-direction: column !important;
+    }
+
+    #pdfPreviewModal.comparison-mode .comments-panel-model-a,
+    #pdfPreviewModal.comparison-mode .comments-panel-model-b,
+    #pdfPreviewModal.comparison-mode .pdf-center-panel {
+        width: 100% !important;
+        max-width: 100% !important;
+        flex: 0 0 auto !important;
+    }
+
+    /* Limit panel heights when stacked */
+    #pdfPreviewModal.comparison-mode .comments-panel-model-a .card-body,
+    #pdfPreviewModal.comparison-mode .comments-panel-model-b .card-body {
+        max-height: 200px !important;
+    }
+
+    /* Larger touch targets */
+    #comparisonHeaderControls .form-check-input {
+        width: 1.25em;
+        height: 1.25em;
+    }
+
+    /* Hide panel in fullscreen on mobile if model is hidden */
+    #pdfPreviewModal.comparison-mode.hide-model-a .comments-panel-model-a {
+        display: none !important;
+    }
+
+    #pdfPreviewModal.comparison-mode.hide-model-b .comments-panel-model-b {
+        display: none !important;
+    }
+}
+
+/* Small mobile: <= 576px */
+@media (max-width: 576px) {
+
+    /* Compact agreement badge */
+    #comparisonAgreementBadge {
+        font-size: 0.75rem;
+        padding: 0.25rem 0.5rem;
+    }
+
+    /* Stack toggle controls */
+    #comparisonToggles {
+        flex-direction: column;
+        align-items: flex-start !important;
+    }
+
+    /* Smaller model badges */
+    .source-badge.source-model-a,
+    .source-badge.source-model-b {
+        font-size: 0.6rem;
+        padding: 1px 4px;
+    }
+}
+
+/* ==========================================================================
+   Markup Tools — Drawing, Text Boxes, Toolbar
+   ========================================================================== */
+
+/* --- Drawing Canvas Overlay --- */
+
+.drawing-canvas-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    z-index: 2;
+    cursor: default;
+}
+
+/* --- Text Box Layer --- */
+
+.textbox-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 4;
+}
+
+.markup-textbox {
+    position: absolute;
+    box-sizing: border-box;
+    display: inline-block;
+    background: rgba(255, 255, 255, 0.85);
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    border-radius: 2px;
+    padding: 4px 6px;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.3;
+    pointer-events: auto;
+    cursor: default;
+    min-width: 40px;
+    outline: none;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    white-space: pre-wrap;
+}
+
+.markup-textbox-measure {
+    position: fixed;
+    left: -10000px;
+    top: -10000px;
+    visibility: hidden;
+    pointer-events: none;
+    z-index: -1;
+}
+
+.markup-textbox-content {
+    display: block;
+    position: relative;
+    z-index: 1;
+    min-height: 1.3em;
+    outline: none;
+    cursor: inherit;
+    white-space: inherit;
+    word-wrap: inherit;
+    overflow-wrap: inherit;
+}
+
+.markup-textbox.editing {
+    border-color: #4a90d9;
+    box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.25);
+    cursor: text;
+    background: rgba(255, 255, 255, 0.95);
+}
+
+.markup-textbox.selected {
+    border-color: #4a90d9;
+    border-style: dashed;
+}
+
+.markup-textbox:not(.editing):not(.selected) {
+    border-color: transparent;
+}
+
+.markup-textbox-resize {
+    position: absolute;
+    bottom: -3px;
+    right: -3px;
+    width: 8px;
+    height: 8px;
+    background: #4a90d9;
+    border-radius: 1px;
+    cursor: se-resize;
+    display: none;
+    pointer-events: auto;
+}
+
+.markup-textbox.selected .markup-textbox-resize,
+.markup-textbox.editing .markup-textbox-resize {
+    display: block;
+}
+
+/* --- Markup Selection Overlay --- */
+
+.markup-selection-overlay {
+    position: absolute;
+    border: 2px dashed #4a90d9;
+    border-radius: 2px;
+    pointer-events: auto;
+    cursor: move;
+    z-index: 5;
+}
+
+.markup-selection-overlay.moving {
+    opacity: 0.7;
+    cursor: grabbing;
+}
+
+.markup-selection-delete {
+    position: absolute;
+    top: -12px;
+    right: -12px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1px solid #dc3545;
+    background: #fff;
+    color: #dc3545;
+    font-size: 16px;
+    font-weight: bold;
+    line-height: 1;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    text-align: center;
+    cursor: pointer;
+    padding: 0;
+    pointer-events: auto;
+    z-index: 6;
+}
+
+.markup-selection-delete:hover {
+    background: #dc3545;
+    color: #fff;
+}
+
+/* --- Floating Markup Toolbar --- */
+
+.markup-toolbar {
+    position: fixed;
+    z-index: 1060;
+    background: #1e1e2e;
+    border-radius: 8px;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    user-select: none;
+    touch-action: none;
+    cursor: grab;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+.markup-toolbar.dragging {
+    cursor: grabbing;
+    opacity: 0.85;
+    transform: none;
+}
+
+.markup-toolbar-tools {
+    display: flex;
+    gap: 2px;
+}
+
+.markup-toolbar-separator {
+    width: 1px;
+    height: 24px;
+    background: rgba(255, 255, 255, 0.15);
+    margin: 0 4px;
+}
+
+.markup-toolbar-colors {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+}
+
+.markup-toolbar-btn {
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: #cdd6f4;
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+}
+
+.markup-toolbar-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+}
+
+.markup-toolbar-btn.active {
+    background: #4a90d9;
+    color: #fff;
+}
+
+.markup-toolbar-icon-svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+}
+
+.markup-toolbar-icon-svg .toolbar-icon-solid {
+    fill: currentColor;
+}
+
+.markup-toolbar-icon-svg .toolbar-icon-muted {
+    opacity: 0.52;
+}
+
+.markup-toolbar-color {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s;
+    padding: 0;
+}
+
+.markup-toolbar-color[data-color-name="black"] {
+    box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.5);
+}
+
+.markup-toolbar-color[data-color-name="white"] {
+    box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.35);
+}
+
+.markup-toolbar-color:hover {
+    transform: scale(1.15);
+}
+
+.markup-toolbar-color.active {
+    border-color: #fff;
+    transform: scale(1.2);
+}
+
+.markup-toolbar-color.active[data-color-name="white"],
+.markup-toolbar-color.active[data-color-name="black"] {
+    border-color: transparent;
+    box-shadow: 0 0 0 2px #93c5fd;
+}
+
+/* --- Markup Toggle Button (in header) --- */
+
+.js-toggle-markup {
+    transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+    font-weight: 500;
+}
+
+.js-toggle-markup.active {
+    background: var(--bs-primary, #2563eb) !important;
+    color: #fff !important;
+    border-color: var(--bs-primary, #2563eb) !important;
+    box-shadow: 0 1px 3px rgba(37, 99, 235, 0.3);
+}
+
+/* --- Page wrapper z-index context --- */
+
+.pdf-page-wrapper {
+    position: relative;
+}

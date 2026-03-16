@@ -1,6 +1,7 @@
 # tests/test_core.py
 import pytest
 from pathlib import Path
+from unittest.mock import MagicMock
 from aems_pdf_annotator._fitz import fitz
 from aems_pdf_annotator.core import (
     PDFAnnotator,
@@ -269,3 +270,20 @@ class TestPDFAnnotator:
             annots = annotator.get_annotations_on_page(0)
             assert len(annots) >= 1
             assert annots[0]["color"] == "green"
+
+    def test_delete_annotation_refreshes_by_xref_with_load_annot(self, sample_pdf):
+        """Deletion should reload by xref directly instead of scanning all annotations."""
+        with PDFAnnotator(sample_pdf) as annotator:
+            page = MagicMock()
+            loaded_annot = MagicMock()
+            loaded_annot.xref = 321
+            stale_annot = MagicMock()
+            stale_annot.xref = 321
+            annotator.doc = MagicMock()
+            annotator.doc.__getitem__.return_value = page
+            page.load_annot.return_value = loaded_annot
+            annotator._find_annotation = MagicMock(return_value=(0, stale_annot))
+
+            assert annotator.delete_annotation("321") is True
+            page.load_annot.assert_called_once_with(321)
+            page.delete_annot.assert_called_once_with(loaded_annot)

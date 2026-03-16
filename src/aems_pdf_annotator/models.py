@@ -242,6 +242,7 @@ class PDFAnnotation(BaseModel):
             AnnotationColor.GREEN: (0.0, 0.784, 0.0),  # Match frontend detection
             AnnotationColor.RED: (1.0, 0.0, 0.0),
             AnnotationColor.AMBER: (1.0, 0.647, 0.0),  # Match frontend detection
+            AnnotationColor.YELLOW: (1.0, 0.9, 0.0),
         }
         return color_map[self.color]
 

@@ -1537,15 +1537,17 @@ class PDFAnnotator:
             annot_xref = annot.xref if hasattr(annot, "xref") else None
 
             if annot_xref:
-                fresh_annot = None
-                for a in page.annots():
-                    if hasattr(a, "xref") and a.xref == annot_xref:
-                        fresh_annot = a
-                        break
+                try:
+                    annot = page.load_annot(annot_xref)
+                except Exception as refresh_error:
+                    logger.error(
+                        "Failed to refresh annotation xref=%s for deletion: %s",
+                        annot_xref,
+                        refresh_error,
+                    )
+                    return False
 
-                if fresh_annot:
-                    annot = fresh_annot
-                else:
+                if annot is None:
                     logger.error("Failed to refresh annotation xref=%s for deletion", annot_xref)
                     return False
 
