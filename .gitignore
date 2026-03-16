@@ -6,3 +6,4 @@ dist/
 build/
 .pytest_cache/
 .eggs/
+web/annotator-ui/node_modules/
