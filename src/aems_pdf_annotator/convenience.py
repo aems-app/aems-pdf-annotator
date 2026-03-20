@@ -71,7 +71,9 @@ def apply_annotation_batch(batch: AnnotationBatch) -> Tuple[Path, int]:
     return apply_annotations(pdf_path, batch.annotations, output_path)
 
 
-def create_demo_annotations(pdf_path: Path | str, output_path: Optional[Path | str] = None) -> Path:
+def create_demo_annotations(
+    pdf_path: Path | str, output_path: Optional[Path | str] = None
+) -> Path:
     """
     Create a demo PDF with sample annotations (for testing M0).
 

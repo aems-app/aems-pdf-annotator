@@ -872,7 +872,7 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
      */
     exports.destroy = function destroy() {
         // Remove all canvases
-        pageCanvases.forEach(function (entry, pageIdx) {
+        pageCanvases.forEach(function (entry, _pageIdx) {
             entry.canvas.removeEventListener('pointerdown', handlePointerDown);
             entry.canvas.removeEventListener('pointermove', handlePointerMove);
             entry.canvas.removeEventListener('pointerup', handlePointerUp);

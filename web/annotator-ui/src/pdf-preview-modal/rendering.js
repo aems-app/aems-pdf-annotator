@@ -315,6 +315,31 @@ window.PdfPreviewModalRendering = window.PdfPreviewModalRendering || {};
     };
 
     /**
+     * Convert a top-left-origin annotation rectangle to viewport coordinates.
+     *
+     * The browser annotator stores annotation rects in page-space coordinates
+     * with y increasing downward (matching PyMuPDF page.rect conventions), not
+     * PDF.js bottom-left coordinates.
+     *
+     * @param {number[]} rect - Annotation rectangle [x0, y0, x1, y1]
+     * @param {{width:number,height:number,scale?:number}} viewport - PDF.js viewport-like object
+     * @returns {number[]} Viewport rectangle [x0, y0, x1, y1]
+     */
+    exports.convertTopLeftRectToViewport = function convertTopLeftRectToViewport(rect, viewport) {
+        var scale = Number(viewport && viewport.scale);
+        if (!Number.isFinite(scale) || scale <= 0) {
+            scale = 1;
+        }
+
+        return [
+            Number(rect[0]) * scale,
+            Number(rect[1]) * scale,
+            Number(rect[2]) * scale,
+            Number(rect[3]) * scale
+        ];
+    };
+
+    /**
      * Calculate marker dimensions from normalized rect
      *
      * @param {{minX: number, maxX: number, minY: number, maxY: number}} normalizedRect

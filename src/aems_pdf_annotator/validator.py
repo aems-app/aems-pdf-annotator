@@ -86,7 +86,9 @@ class AnnotationValidator:
         """
         self.page_dimensions = page_dimensions or []
 
-    def validate_bbox(self, bbox: BBox, page_index: int, annotation_id: str) -> List[BBoxIssue]:
+    def validate_bbox(
+        self, bbox: BBox, page_index: int, annotation_id: str
+    ) -> List[BBoxIssue]:
         """
         Validate a bounding box.
 
@@ -200,7 +202,9 @@ class AnnotationValidator:
             )
 
         # Validate bounding box
-        bbox_issues = self.validate_bbox(annotation.bbox, annotation.page_index, annotation.id)
+        bbox_issues = self.validate_bbox(
+            annotation.bbox, annotation.page_index, annotation.id
+        )
         issues.extend(bbox_issues)
 
         return issues
@@ -270,7 +274,9 @@ class AnnotationValidator:
 
         return annotation
 
-    def print_result(self, result: AnnotationValidationResult, verbose: bool = False) -> None:
+    def print_result(
+        self, result: AnnotationValidationResult, verbose: bool = False
+    ) -> None:
         """
         Log validation result.
 
@@ -301,7 +307,9 @@ class AnnotationValidator:
                 logger.warning("  ... and %d more warnings", len(result.warnings) - 10)
 
         if verbose:
-            info_issues = [i for i in result.issues if i.severity == BBoxIssueSeverity.INFO]
+            info_issues = [
+                i for i in result.issues if i.severity == BBoxIssueSeverity.INFO
+            ]
             if info_issues:
                 logger.info("Info (%d):", len(info_issues))
                 for issue in info_issues:

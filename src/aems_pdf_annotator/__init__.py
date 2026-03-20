@@ -1,4 +1,5 @@
 """AEMS PDF Annotator — shared annotation engine."""
+
 __version__ = "0.1.0"
 
 from aems_pdf_annotator.models import (
@@ -29,6 +30,7 @@ from aems_pdf_annotator.contract import (
 try:
     from aems_pdf_annotator.core import PDFAnnotator
     from aems_pdf_annotator.convenience import apply_annotations, apply_annotation_batch
+
     _has_fitz = True
 except ImportError:
     _has_fitz = False

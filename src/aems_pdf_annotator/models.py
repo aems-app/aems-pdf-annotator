@@ -56,13 +56,15 @@ class BBox(BaseModel):
     """
     Bounding box for PDF annotations.
 
-    Coordinates are in PDF space (origin at bottom-left).
+    Coordinates are in top-left origin space (y increases downward),
+    matching PyMuPDF ``fitz.Rect`` conventions.  The ``add_annotation``
+    creation path passes these values directly to ``fitz.Rect``.
 
     Attributes:
         x0: Left coordinate
-        y0: Bottom coordinate
+        y0: Top coordinate
         x1: Right coordinate
-        y1: Top coordinate
+        y1: Bottom coordinate
     """
 
     x0: float
@@ -187,7 +189,9 @@ class PDFAnnotation(BaseModel):
     source: AnnotationSource = AnnotationSource.AI
     original_source: Optional[AnnotationSource] = None
     first_human_edit_at: Optional[datetime] = None
-    icon: Optional[str] = None  # Icon type for text annotations (e.g., "Check", "Cross", "Comment")
+    icon: Optional[str] = (
+        None  # Icon type for text annotations (e.g., "Check", "Cross", "Comment")
+    )
     opacity: Optional[float] = (
         0.7  # Opacity: 0.0 (transparent) to 1.0 (opaque), default 0.7 (translucent)
     )
@@ -209,7 +213,9 @@ class PDFAnnotation(BaseModel):
 
     @field_validator("points")
     @classmethod
-    def validate_points(cls, v: Optional[List[List[float]]]) -> Optional[List[List[float]]]:
+    def validate_points(
+        cls, v: Optional[List[List[float]]]
+    ) -> Optional[List[List[float]]]:
         if v is not None:
             if len(v) < 2:
                 raise ValueError("points must have at least 2 points")
@@ -263,7 +269,9 @@ class PDFAnnotation(BaseModel):
             parts.append(self.comment)
         return " ".join(parts)
 
-    def update(self, user_id: str, grader_name: Optional[str] = None, **kwargs: Any) -> None:
+    def update(
+        self, user_id: str, grader_name: Optional[str] = None, **kwargs: Any
+    ) -> None:
         """
         Update annotation fields and record modification.
 
@@ -318,7 +326,9 @@ class PDFAnnotation(BaseModel):
         if self.original_source is None:
             object.__setattr__(self, "original_source", self.source)
 
-    def transfer_ownership_to_human(self, user_id: str, grader_name: Optional[str] = None) -> bool:
+    def transfer_ownership_to_human(
+        self, user_id: str, grader_name: Optional[str] = None
+    ) -> bool:
         """Transfer annotation ownership from AI to HUMAN."""
         if self.source == AnnotationSource.HUMAN:
             return False

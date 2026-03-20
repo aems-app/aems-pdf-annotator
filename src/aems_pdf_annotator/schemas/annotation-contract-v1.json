@@ -3,7 +3,7 @@
   "$id": "https://aems.app/schemas/annotation-contract-v1.json",
   "title": "AEMS Annotation Contract v1",
   "type": "object",
-  "required": ["annotation_contract_version", "coordinate_space", "feedback_items"],
+  "required": ["annotation_contract_version", "coordinate_space"],
   "properties": {
     "annotation_contract_version": {
       "const": 1
@@ -19,9 +19,21 @@
     "feedback_items": {
       "type": "array",
       "items": { "$ref": "#/$defs/FeedbackItem" }
+    },
+    "rendered_annotations": {
+      "type": "array",
+      "description": "Pre-materialized PDFAnnotation objects; when present, feedback_items is not required"
     }
   },
   "additionalProperties": true,
+  "oneOf": [
+    {
+      "required": ["feedback_items"]
+    },
+    {
+      "required": ["rendered_annotations"]
+    }
+  ],
   "$defs": {
     "FeedbackItem": {
       "type": "object",

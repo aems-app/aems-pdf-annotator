@@ -20,6 +20,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
     var RenderingModule = window.PdfPreviewModalRendering || {};
     var TEXT_ICON_SIZE = RenderingModule.TEXT_ICON_SIZE || 22;
     var MIN_MARKER_SIZE = RenderingModule.MIN_MARKER_SIZE || 16;
+    var convertTopLeftRectToViewport = RenderingModule.convertTopLeftRectToViewport || function (rect) { return rect; };
 
     /**
      * Create an overlay renderer.
@@ -42,7 +43,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
         // Destructure helpers for convenience
         var normalizeAnnotationIdentifierValue = _helpers.normalizeAnnotationIdentifierValue || function (v) { return v; };
         var resolveAnnotationIdParts = _helpers.resolveAnnotationIdParts || function (p) { return p; };
-        var resolveAnnotationIdentifierValue = _helpers.resolveAnnotationIdentifierValue || function (e) { return ''; };
+        var resolveAnnotationIdentifierValue = _helpers.resolveAnnotationIdentifierValue || function (_e) { return ''; };
         var deriveAnnotationPriority = _helpers.deriveAnnotationPriority || function () { return 'green'; };
         var resolveAnnotationSource = _helpers.resolveAnnotationSource || function () { return 'AI'; };
         var isPlaceholderAnnotation = _helpers.isPlaceholderAnnotation || function () { return false; };
@@ -167,26 +168,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                 var rect = ann.rect;
                 if (!Array.isArray(rect) || rect.length !== 4) return;
 
-                var viewportRect = null;
-                if (typeof viewport.convertToViewportRectangle === 'function') {
-                    viewportRect = viewport.convertToViewportRectangle(rect);
-                } else if (typeof viewport.convertToViewportPoint === 'function') {
-                    var pointA = viewport.convertToViewportPoint(rect[0], rect[1]);
-                    var pointB = viewport.convertToViewportPoint(rect[2], rect[3]);
-                    viewportRect = [pointA[0], pointA[1], pointB[0], pointB[1]];
-                }
-
-                if (!viewportRect) {
-                    // Fallback if viewport conversion is not available
-                    var pdfWidth = 612;
-                    var pdfHeight = 792;
-                    viewportRect = [
-                        (rect[0] / pdfWidth) * viewport.width,
-                        viewport.height - (rect[1] / pdfHeight) * viewport.height,
-                        (rect[2] / pdfWidth) * viewport.width,
-                        viewport.height - (rect[3] / pdfHeight) * viewport.height,
-                    ];
-                }
+                var viewportRect = convertTopLeftRectToViewport(rect, viewport);
 
                 var minX = Math.min(viewportRect[0], viewportRect[2]);
                 var maxX = Math.max(viewportRect[0], viewportRect[2]);

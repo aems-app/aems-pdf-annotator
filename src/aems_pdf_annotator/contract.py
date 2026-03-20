@@ -1,16 +1,17 @@
 """Wire contract validation and feedback-item-to-annotation conversion."""
 
-import importlib.resources
-import json
 import logging
 import uuid
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import ValidationError
 
 from aems_pdf_annotator.models import (
-    PDFAnnotation, BBox, AnnotationColor, AnnotationType, AnnotationSource,
+    PDFAnnotation,
+    BBox,
+    AnnotationColor,
+    AnnotationType,
+    AnnotationSource,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ _TEXT_NOTE_SIZE = 24.0
 
 class ContractValidationError(ValueError):
     """Raised when a payload fails contract validation."""
+
     pass
 
 
@@ -56,7 +58,9 @@ def _validate_feedback_item(item: Any, index: int) -> None:
 
     page = item.get("page")
     if isinstance(page, bool) or not isinstance(page, int):
-        raise ContractValidationError(f"feedback_items[{index}].page must be an integer")
+        raise ContractValidationError(
+            f"feedback_items[{index}].page must be an integer"
+        )
     if page < 1:
         raise ContractValidationError(f"feedback_items[{index}].page must be >= 1")
 
@@ -75,7 +79,9 @@ def _validate_feedback_item(item: Any, index: int) -> None:
 
     comment = item.get("comment")
     if not isinstance(comment, str) or not comment.strip():
-        raise ContractValidationError(f"feedback_items[{index}].comment must be a non-empty string")
+        raise ContractValidationError(
+            f"feedback_items[{index}].comment must be a non-empty string"
+        )
 
 
 def validate_contract_version(payload: Dict[str, Any]) -> bool:
@@ -110,6 +116,19 @@ def validate_contract_version(payload: Dict[str, Any]) -> bool:
             f"Unsupported coordinate_space: {coordinate_space!r}. "
             f"Expected: {CURRENT_COORDINATE_SPACE!r}"
         )
+
+    rendered_annotations = payload.get("rendered_annotations")
+    if rendered_annotations is not None:
+        if not isinstance(rendered_annotations, list):
+            raise ContractValidationError("rendered_annotations must be an array")
+        try:
+            for item in rendered_annotations:
+                PDFAnnotation.model_validate(item)
+        except ValidationError as exc:
+            raise ContractValidationError(
+                "rendered_annotations failed validation"
+            ) from exc
+        return True
 
     feedback_items = payload.get("feedback_items")
     if feedback_items is None:
@@ -175,10 +194,16 @@ def _normalized_to_bbox(
         )
     else:
         # Highlights/squiggly: horizontal strip
+        _MIN_DIM = 1.0  # minimum 1pt to avoid zero-width/height at edges
         x0 = max(0, x)
         x1 = min(page_width, x + _HIGHLIGHT_WIDTH)
         y0 = max(0, y - _HIGHLIGHT_HEIGHT / 2)
         y1 = min(page_height, y + _HIGHLIGHT_HEIGHT / 2)
+        # Clamp inward so highlights at the page edge still have visible area
+        if x1 - x0 < _MIN_DIM:
+            x0 = max(0, x1 - _MIN_DIM)
+        if y1 - y0 < _MIN_DIM:
+            y0 = max(0, y1 - _MIN_DIM)
         return BBox(x0=x0, y0=y0, x1=x1, y1=y1)
 
 
@@ -266,7 +291,9 @@ def feedback_items_to_annotations(
 
         width, height = page_dimensions[page_index]
         annot = feedback_item_to_annotation(
-            item, page_width=width, page_height=height,
+            item,
+            page_width=width,
+            page_height=height,
             grader_name=grader_name,
         )
         # Override page_index with clamped value
@@ -282,16 +309,36 @@ def payload_to_annotations(
     grader_name: Optional[str] = None,
 ) -> List[PDFAnnotation]:
     """Materialize PDF annotations from a validated contract payload."""
-    validate_contract_version(payload)
-
     rendered_annotations = payload.get("rendered_annotations")
+
     if rendered_annotations is not None:
+        # rendered_annotations path: only validate version/coordinate_space,
+        # feedback_items is not required.
+        if not isinstance(payload, dict):
+            raise ContractValidationError("Contract payload must be an object")
+        version = payload.get("annotation_contract_version")
+        if version not in SUPPORTED_CONTRACT_VERSIONS:
+            raise ContractValidationError(
+                f"Unsupported annotation_contract_version: {version}. "
+                f"Supported: {sorted(SUPPORTED_CONTRACT_VERSIONS)}"
+            )
+        coordinate_space = payload.get("coordinate_space")
+        if coordinate_space != CURRENT_COORDINATE_SPACE:
+            raise ContractValidationError(
+                f"Unsupported coordinate_space: {coordinate_space!r}. "
+                f"Expected: {CURRENT_COORDINATE_SPACE!r}"
+            )
         if not isinstance(rendered_annotations, list):
             raise ContractValidationError("rendered_annotations must be an array")
         try:
             return [PDFAnnotation.model_validate(item) for item in rendered_annotations]
         except ValidationError as exc:
-            raise ContractValidationError("rendered_annotations failed validation") from exc
+            raise ContractValidationError(
+                "rendered_annotations failed validation"
+            ) from exc
+
+    # Normal path: validate everything including feedback_items
+    validate_contract_version(payload)
 
     effective_grader_name = grader_name or payload.get("grader_name")
     return feedback_items_to_annotations(

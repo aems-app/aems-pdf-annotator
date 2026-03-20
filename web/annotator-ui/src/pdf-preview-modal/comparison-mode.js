@@ -646,7 +646,6 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
         const panelB = document.getElementById('pdfModelBCommentsList');
 
         if (panelA) {
-            // eslint-disable-next-line no-unsanitized/property -- uses escapeHtml() for all dynamic content
             panelA.innerHTML = renderComparisonFeedbackList(
                 exports.comparisonData.annotationsA,
                 'A'
@@ -655,7 +654,6 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
         }
 
         if (panelB) {
-            // eslint-disable-next-line no-unsanitized/property -- uses escapeHtml() for all dynamic content
             panelB.innerHTML = renderComparisonFeedbackList(
                 exports.comparisonData.annotationsB,
                 'B'

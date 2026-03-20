@@ -11,8 +11,6 @@
  * 
  * @module pdf-preview-modal
  */
-/* global fetchWithTimeout */
-
 // Wrap entire module in IIFE to prevent global scope pollution
 (function () {
     'use strict';
@@ -448,8 +446,8 @@
         return {
             left: Math.min(x0, x1),
             right: Math.max(x0, x1),
-            bottom: Math.min(y0, y1),
-            top: Math.max(y0, y1),
+            top: Math.min(y0, y1),
+            bottom: Math.max(y0, y1),
         };
     }
 
@@ -457,7 +455,7 @@
         const rectA = getAnnotationOrderRect(a);
         const rectB = getAnnotationOrderRect(b);
         if (rectA && rectB) {
-            const yDiff = rectB.top - rectA.top;
+            const yDiff = rectA.top - rectB.top;
             if (Math.abs(yDiff) > 0.1) {
                 return yDiff;
             }
@@ -643,7 +641,7 @@
 
         if (aiAnnotations.length === 0) {
             const message = hasAnyAiAnnotations ? 'No AI feedback visible' : 'No AI annotations';
-            listEl.innerHTML = `<div class="text-muted small text-center p-3">${message}</div>`; // eslint-disable-line no-unsanitized/property
+            listEl.innerHTML = `<div class="text-muted small text-center p-3">${message}</div>`;
             return;
         }
 
@@ -767,7 +765,7 @@
             return;
         }
 
-        listEl.innerHTML = html; // eslint-disable-line no-unsanitized/property
+        listEl.innerHTML = html;
 
         // Use shared helper - skip specific logic that might conflict or be handled by the main panel listeners if they are global
         // However, we DO want priority and focus logic here for the AI panel
@@ -1270,9 +1268,9 @@
     // Track if the browser forced exit from real fullscreen while editing; we keep the pseudo-fullscreen styling active.
     let _forcedExitDuringEdit = false;
     let editingAnnotationId = null;
-    let savingAnnotationId = null; // Track annotation being saved to prevent blur handler race condition
-    let updatingPriorityId = null; // Track annotation having priority updated to prevent blur handler deletion
-    let isDraggingAnnotation = false; // FIX Issue #32: Track when annotation is being dragged to prevent deletion
+    let _savingAnnotationId = null; // Track annotation being saved to prevent blur handler race condition
+    let _updatingPriorityId = null; // Track annotation having priority updated to prevent blur handler deletion
+    let _isDraggingAnnotation = false; // FIX Issue #32: Track when annotation is being dragged to prevent deletion
     // FIX Issue #27: Track currently selected annotation to preserve highlight after scroll/re-render
     let selectedAnnotation = { pageIdx: null, identifier: null };
     let dragHandlers = { mousemove: null, mouseup: null };
@@ -1283,7 +1281,7 @@
     let skipNextPollingCycle = false; // Skip reload for our own changes
     const ANNOTATIONS_POLL_INTERVAL_MS = 5000; // Poll every 5 seconds
 
-    function startAnnotationsPolling() {
+    function _startAnnotationsPolling() {
         // Delegate to version-sync module if available
         if (_currentVersionSync) { _currentVersionSync.start(); return; }
         if (annotationsPollInterval) return; // Already polling
@@ -1723,8 +1721,8 @@
 
                 if (!identifier) return;
 
-                // CRITICAL: Set updatingPriorityId to prevent blur handler from deleting annotation
-                updatingPriorityId = identifier;
+                // CRITICAL: Set _updatingPriorityId to prevent blur handler from deleting annotation
+                _updatingPriorityId = identifier;
 
                 // Update visual state immediately
                 priorityStrip.querySelectorAll('.strip-section').forEach(s => s.classList.remove('active'));
@@ -1769,7 +1767,7 @@
                         console.error('Failed to update priority:', error);
                     } finally {
                         // Clear the flag after a delay
-                        setTimeout(() => { updatingPriorityId = null; }, 300);
+                        setTimeout(() => { _updatingPriorityId = null; }, 300);
                     }
                 })();
 
@@ -2216,7 +2214,7 @@
                 };
 
                 (isUpdate
-                    ? updateAnnotationRequest(entry.annotationId, textboxBody)
+                    ? updateAnnotationRequest(buildApiAnnotationIdentifier({ identifier: entry.annotationId }) || entry.annotationId, textboxBody)
                     : createAnnotationRequest(textboxBody)
                 )
                 .then(function (data) {
@@ -2240,7 +2238,7 @@
 
             TextboxModule.onTextboxDeleted = function (entry) {
                 if (entry.annotationId) {
-                    deleteAnnotationRequest(entry.annotationId)
+                    deleteAnnotationRequest(buildApiAnnotationIdentifier({ identifier: entry.annotationId }) || entry.annotationId)
                     .then(function () {
                         removeAnnotationEntryLocal(entry.pageIdx, entry.annotationId);
                         refreshMarkupFromAnnotations();
@@ -2265,7 +2263,7 @@
                 }
 
                 if (annotationId) {
-                    deleteAnnotationRequest(annotationId)
+                    deleteAnnotationRequest(buildApiAnnotationIdentifier({ identifier: annotationId }) || annotationId)
                     .then(function () {
                         removeAnnotationEntryLocal(item.pageIdx, annotationId);
                         refreshMarkupFromAnnotations();
@@ -2342,7 +2340,7 @@
                 }
 
                 try {
-                    var data = await updateAnnotationRequest(item.entry.annotationId, body);
+                    var data = await updateAnnotationRequest(buildApiAnnotationIdentifier({ identifier: item.entry.annotationId }) || item.entry.annotationId, body);
                     if (data.success && data.annotation) {
                         item.entry.annotationId = data.annotation.stable_id || data.annotation.xref || item.entry.annotationId;
                         if (sourcePageIdx !== targetPageIdx) {
@@ -2976,7 +2974,7 @@
                     return;
                 }
 
-                const viewRect = viewport.convertToViewportRectangle(ann.rect);
+                const viewRect = RenderingModule.convertTopLeftRectToViewport(ann.rect, viewport);
                 const x = Math.min(viewRect[0], viewRect[2]);
                 const y = Math.min(viewRect[1], viewRect[3]);
                 const width = Math.abs(viewRect[0] - viewRect[2]);
@@ -3118,12 +3116,12 @@
 
     // Track which annotation markers are currently visible in the viewport
     const visibleAnnotationMarkers = new Set();
-    let annotationObserver = null;
+    let _annotationObserver = null;
     let observerInitialized = false;  // Track if observer has completed initial detection
     let pendingAnnotationsListFrame = null;
-    let annotationVisibilityScrollHandler = null;
+    let _annotationVisibilityScrollHandler = null;
 
-    function scheduleAnnotationsListRender() {
+    function _scheduleAnnotationsListRender() {
         if (pendingAnnotationsListFrame !== null) {
             return;
         }
@@ -3133,7 +3131,7 @@
         });
     }
 
-    function isMarkerVisibleInContainer(marker, containerRect) {
+    function _isMarkerVisibleInContainer(marker, containerRect) {
         if (!marker || !containerRect) {
             return false;
         }
@@ -3172,7 +3170,7 @@
     /**
      * Initialize Intersection Observer to track marker visibility
      */
-    function initializeAnnotationObserver() {
+    function _initializeAnnotationObserver() {
         if (!_currentAnnotationCtrl || !_currentAnnotationCtrl.initializeAnnotationObserver || _annotationCtrlDelegating) {
             throw new Error('Annotation controller must be initialized before starting visibility observation.');
         }
@@ -3199,7 +3197,7 @@
     /**
      * Unobserve an annotation marker
      */
-    function unobserveAnnotationMarker(marker) {
+    function _unobserveAnnotationMarker(marker) {
         if (!_currentAnnotationCtrl || !_currentAnnotationCtrl.unobserveAnnotationMarker || _annotationCtrlDelegating) {
             throw new Error('Annotation controller must be initialized before unobserving markers.');
         }
@@ -3569,7 +3567,7 @@
                         pageIdx: parseInt(pageIdx),
                         identifier: identifier,
                         xref: ann.xref,
-                        content: content
+                        content: ann.content
                     });
                 }
             });
@@ -3802,11 +3800,11 @@
                         if (movedXref) {
                             const sourceMarkerKey = buildAnnotationVisibilityKey(sourcePageIdx, {
                                 xref: movedXref,
-                                identifier: targetIdentifier,
+                                identifier: stableIdentifier,
                             });
                             const targetMarkerKey = buildAnnotationVisibilityKey(targetPageIdx, {
                                 xref: movedXref,
-                                identifier: targetIdentifier,
+                                identifier: stableIdentifier,
                             });
                             if (sourceMarkerKey) {
                                 visibleAnnotationMarkers.delete(sourceMarkerKey);
@@ -3836,12 +3834,12 @@
                     }
 
                     // Pass both source and target page indices
-                    // NOTE: isDraggingAnnotation will be cleared inside updateAnnotationPosition
+                    // NOTE: _isDraggingAnnotation will be cleared inside updateAnnotationPosition
                     // after the async API call completes (to prevent blur handler race condition)
                     updateAnnotationPosition(sourcePageIdx, targetPageIdx, stableIdentifier, marker, isOwnershipTransfer);
                 } else {
                     // FIX Issue #32: Only clear flag here if marker didn't move (no async call)
-                    isDraggingAnnotation = false;
+                    _isDraggingAnnotation = false;
                 }
                 cleanupDragHandlers();
             }
@@ -3862,7 +3860,7 @@
             }
 
             isDragging = true;
-            isDraggingAnnotation = true; // FIX Issue #32: Set global flag
+            _isDraggingAnnotation = true; // FIX Issue #32: Set global flag
             hasMoved = false;
             startX = e.clientX;
             startY = e.clientY;
@@ -4329,7 +4327,7 @@
                 return;
             }
 
-            // Note: updatingPriorityId and _isTemporary are already set in the click handler above
+            // Note: _updatingPriorityId and _isTemporary are already set in the click handler above
 
             const data = await updateAnnotationRequest(apiIdentifier, { color: priority });
 
@@ -4430,7 +4428,7 @@
                 // Clear flag after successful update, but with delay to ensure blur handler has checked it
                 // Blur handler runs after 200ms, so wait at least 300ms before clearing
                 setTimeout(() => {
-                    updatingPriorityId = null;
+                    _updatingPriorityId = null;
                 }, 300);
 
                 markLocalAnnotationChange(); // Prevent polling from reloading for our own change
@@ -4489,7 +4487,7 @@
         } catch (error) {
             // Clear flag on error, but with delay to ensure blur handler has checked it
             setTimeout(() => {
-                updatingPriorityId = null;
+                _updatingPriorityId = null;
             }, 300);
             console.error('Error updating annotation priority:', error);
             if (originalAnn && annotationsData[pageIdx]) {
@@ -5112,7 +5110,7 @@
         } finally {
             // FIX Issue #32: Clear drag flag AFTER async operation completes
             // This prevents blur handler from deleting temporary annotation during cross-page move
-            isDraggingAnnotation = false;
+            _isDraggingAnnotation = false;
         }
     }
 
@@ -6457,7 +6455,7 @@
                 createTemporaryAnnotation(data.rect, data.pageIdx);
             });
 
-            _currentOverlayRenderer.onOverlayReady(function (data) {
+            _currentOverlayRenderer.onOverlayReady(function (_data) {
                 // Reserved for future wiring
             });
         }

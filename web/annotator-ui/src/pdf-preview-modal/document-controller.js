@@ -15,7 +15,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
     'use strict';
 
     var UtilsModule = window.PdfPreviewModalUtils || {};
-    var debugLog = UtilsModule.debugLog || function () {};
+    var _debugLog = UtilsModule.debugLog || function () {};
 
     function translateText(key, params) {
         var translator = window.i18n && typeof window.i18n.t === 'function'
@@ -953,7 +953,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                 if (_destroyed) return;
                 _destroyed = true;
                 _blobUrls.forEach(function (url) {
-                    try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
+                    try { URL.revokeObjectURL(url); } catch (_e) { /* ignore */ }
                 });
                 _blobUrls = [];
                 _searchState.pageTextCache.clear();

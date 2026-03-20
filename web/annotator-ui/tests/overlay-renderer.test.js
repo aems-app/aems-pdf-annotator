@@ -12,7 +12,14 @@ describe('overlay-renderer', () => {
     vi.resetModules();
     delete window.PdfPreviewModalOverlayRenderer;
     window.PdfPreviewModalUtils = { debugLog: () => {} };
-    window.PdfPreviewModalRendering = { TEXT_ICON_SIZE: 22, MIN_MARKER_SIZE: 16 };
+    window.PdfPreviewModalRendering = {
+      TEXT_ICON_SIZE: 22,
+      MIN_MARKER_SIZE: 16,
+      convertTopLeftRectToViewport: (rect, viewport) => {
+        const scale = Number(viewport?.scale) || 1;
+        return rect.map((value) => Number(value) * scale);
+      },
+    };
     document.body.innerHTML = `
       <div id="pdfGradedContainer">
         <div class="pdf-page-wrapper" data-page-num="1">
@@ -94,6 +101,64 @@ describe('overlay-renderer', () => {
     expect(markers[0].dataset.annotationStableId).toBe('stable-1');
     markers[0].click();
     expect(onMarkerClicked).toHaveBeenCalledWith({ pageIdx: 0, identifier: 'stable-1' });
+  });
+
+  it('uses top-left annotation rectangles without vertically flipping marker placement', async () => {
+    window.__pdfGradedViewer.getViewportForPage = vi.fn().mockReturnValue({
+      width: 600,
+      height: 800,
+      scale: 1,
+      // Simulate PDF.js bottom-left conversion. The renderer must ignore this.
+      convertToViewportRectangle: (rect) => [rect[0], 800 - rect[1], rect[2], 800 - rect[3]],
+      convertToPdfPoint: (x, y) => [x, y],
+    });
+
+    const mod = await loadOverlayRendererModule();
+    const renderer = mod.createOverlayRenderer({
+      getAnnotationsData: () => ({
+        0: [
+          {
+            id: 'stable-top-left',
+            stable_id: 'stable-top-left',
+            xref: 42,
+            type: 'Text',
+            rect: [30, 120, 70, 160],
+            content: 'Top-left rect',
+            color: 'green',
+            source: 'AI',
+          },
+        ],
+      }),
+      getSelectedAnnotation: () => ({ pageIdx: null, identifier: null }),
+      helpers: {
+        normalizeAnnotationIdentifierValue: (value) => value || '',
+        resolveAnnotationIdParts: ({ xref, identifier }) => ({ xref, stableId: identifier }),
+        resolveAnnotationIdentifierValue: (ann) => ann.id || ann.stable_id || '',
+        deriveAnnotationPriority: (ann) => ann.color || 'amber',
+        resolveAnnotationSource: (ann) => ann.source || 'AI',
+        isPlaceholderAnnotation: () => false,
+        isMarkupType: () => false,
+        renderCompactInlineLabelContent: (label, number, text) => {
+          label.textContent = number + ' ' + text;
+        },
+        positionLabelOptimally: () => {},
+        repositionAllLabels: () => {},
+        setupLabelTooltipEvents: () => {},
+        buildDisplayOrderByPagePosition: () => ({}),
+        resolveDisplayOrderFromLookup: () => 1,
+        observeAnnotationMarker: () => {},
+        makeAnnotationDraggable: () => {},
+      },
+      capabilities: { annotationCrud: true },
+    });
+
+    renderer.renderPage(1, true);
+    vi.runAllTimers();
+
+    const marker = document.querySelector('.annotation-marker');
+    expect(marker).not.toBeNull();
+    expect(marker.style.top).toBe('120px');
+    expect(marker.style.left).toBe('30px');
   });
 
   it('cleans overlay DOM and handlers on destroy', async () => {

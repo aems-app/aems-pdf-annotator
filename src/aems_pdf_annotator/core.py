@@ -53,7 +53,7 @@ ANNOTATION_TYPE_NAMES = {
 }
 
 
-def _is_annotation_type_name(value: Optional[str]) -> bool:
+def is_annotation_type_name(value: Optional[str]) -> bool:
     """Check if a value is a PDF annotation type name (not a valid stable ID)."""
     if not value:
         return False
@@ -109,7 +109,9 @@ def _pdf_rect_to_pymupdf(
     return (x0, page_height - y1, x1, page_height - y0)
 
 
-def _rgb_ints_to_floats(rgb: Optional[Sequence[int]]) -> Optional[Tuple[float, float, float]]:
+def _rgb_ints_to_floats(
+    rgb: Optional[Sequence[int]],
+) -> Optional[Tuple[float, float, float]]:
     """Convert 0-255 RGB values to PyMuPDF's 0.0-1.0 float tuple."""
     if rgb is None or len(rgb) != 3:
         return None
@@ -222,10 +224,14 @@ def _encode_subject_metadata(
         stroke_o = 1.0 if stroke_opacity is None else stroke_opacity
         drawing_token = f"D:{drawing_style}:{stroke_w}:{stroke_o}"
         if stroke_color_rgb and len(stroke_color_rgb) == 3:
-            drawing_token += f":{','.join(str(component) for component in stroke_color_rgb)}"
+            drawing_token += (
+                f":{','.join(str(component) for component in stroke_color_rgb)}"
+            )
         metadata_tokens.append(drawing_token)
     if textbox_color_rgb and len(textbox_color_rgb) == 3:
-        metadata_tokens.append(f"T:{','.join(str(component) for component in textbox_color_rgb)}")
+        metadata_tokens.append(
+            f"T:{','.join(str(component) for component in textbox_color_rgb)}"
+        )
 
     if original_source is not None or metadata_tokens:
         tokens.append(original_source or "")
@@ -278,7 +284,10 @@ class PDFAnnotator:
         return self
 
     def __exit__(
-        self, exc_type: Optional[Type[BaseException]], exc_val: Optional[BaseException], exc_tb: Any
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Any,
     ) -> None:
         """Context manager exit."""
         self.close()
@@ -420,7 +429,9 @@ class PDFAnnotator:
                         annot_id,
                         annotation_source.value,
                         original_source=(
-                            original_source.value if original_source is not None else None
+                            original_source.value
+                            if original_source is not None
+                            else None
                         ),
                         is_verdict=bool(getattr(annotation, "is_verdict", False)),
                         drawing_style=annotation.drawing_style,
@@ -453,7 +464,8 @@ class PDFAnnotator:
                     grader_name_str = _normalize_pdf_author_name(str(grader_name))
                     _safe_set_info(annot, "title", grader_name_str)
                     logger.debug(
-                        "Stored grader_name in PDF annotation title field: '%s'", grader_name_str
+                        "Stored grader_name in PDF annotation title field: '%s'",
+                        grader_name_str,
                     )
                 except Exception as e:
                     logger.error(
@@ -472,7 +484,9 @@ class PDFAnnotator:
                 created_at = getattr(annotation, "created_at", None)
                 modified_at = getattr(annotation, "modified_at", None) or created_at
                 if created_at is not None:
-                    _safe_set_info(annot, "creationDate", _format_pdf_datetime(created_at))
+                    _safe_set_info(
+                        annot, "creationDate", _format_pdf_datetime(created_at)
+                    )
                 _safe_set_info(annot, "modDate", _format_pdf_datetime(modified_at))
             except Exception as date_error:
                 logger.warning(
@@ -506,7 +520,9 @@ class PDFAnnotator:
             logger.error(f"Failed to add annotation: {e}")
             return False
 
-    def _extract_ink_points_pdf(self, annot: Any, page_height: float) -> List[List[float]]:
+    def _extract_ink_points_pdf(
+        self, annot: Any, page_height: float
+    ) -> List[List[float]]:
         """Extract ink annotation points in PDF-space coordinates."""
         paths = getattr(annot, "vertices", None)
         if not paths:
@@ -568,7 +584,8 @@ class PDFAnnotator:
             stroke_opacity = 0.35 if drawing_style == "highlighter" else 1.0
 
         converted_points = [
-            (float(point[0]), float(page_height - point[1])) for point in points_to_store
+            (float(point[0]), float(page_height - point[1]))
+            for point in points_to_store
         ]
 
         try:
@@ -581,15 +598,24 @@ class PDFAnnotator:
             effective_grader_name = grader_name or info.get("title")
             if effective_grader_name:
                 _safe_set_info(
-                    new_annot, "title", _normalize_pdf_author_name(str(effective_grader_name))
+                    new_annot,
+                    "title",
+                    _normalize_pdf_author_name(str(effective_grader_name)),
                 )
+
+            effective_source = new_source or metadata.get("source") or "AI"
+            original_source_to_store = metadata.get("original_source")
+            if effective_source == "HUMAN" and not original_source_to_store:
+                original_source_to_store = metadata.get("source") or "AI"
 
             subject_value = _encode_subject_metadata(
                 metadata.get("stable_id") or str(uuid.uuid4()),
-                new_source or metadata.get("source") or "AI",
-                original_source=metadata.get("original_source"),
+                effective_source,
+                original_source=original_source_to_store,
                 is_verdict=(
-                    metadata.get("is_verdict") if new_is_verdict is None else bool(new_is_verdict)
+                    bool(metadata.get("is_verdict"))
+                    if new_is_verdict is None
+                    else bool(new_is_verdict)
                 ),
                 drawing_style=drawing_style,
                 stroke_width=stroke_width,
@@ -612,7 +638,9 @@ class PDFAnnotator:
             page.delete_annot(annot)
             return (True, page_index, new_xref)
         except Exception as e:
-            logger.error("Failed to replace drawing annotation %s: %s", annotation_identifier, e)
+            logger.error(
+                "Failed to replace drawing annotation %s: %s", annotation_identifier, e
+            )
             return False
 
     def _replace_textbox_annotation(
@@ -654,15 +682,24 @@ class PDFAnnotator:
             effective_grader_name = grader_name or info.get("title")
             if effective_grader_name:
                 _safe_set_info(
-                    new_annot, "title", _normalize_pdf_author_name(str(effective_grader_name))
+                    new_annot,
+                    "title",
+                    _normalize_pdf_author_name(str(effective_grader_name)),
                 )
+
+            effective_source = new_source or metadata.get("source") or "AI"
+            original_source_to_store = metadata.get("original_source")
+            if effective_source == "HUMAN" and not original_source_to_store:
+                original_source_to_store = metadata.get("source") or "AI"
 
             subject_value = _encode_subject_metadata(
                 metadata.get("stable_id") or str(uuid.uuid4()),
-                new_source or metadata.get("source") or "AI",
-                original_source=metadata.get("original_source"),
+                effective_source,
+                original_source=original_source_to_store,
                 is_verdict=(
-                    metadata.get("is_verdict") if new_is_verdict is None else bool(new_is_verdict)
+                    bool(metadata.get("is_verdict"))
+                    if new_is_verdict is None
+                    else bool(new_is_verdict)
                 ),
                 textbox_color_rgb=textbox_rgb,
             )
@@ -680,7 +717,9 @@ class PDFAnnotator:
             page.delete_annot(annot)
             return (True, page_index, new_xref)
         except Exception as e:
-            logger.error("Failed to replace textbox annotation %s: %s", annotation_identifier, e)
+            logger.error(
+                "Failed to replace textbox annotation %s: %s", annotation_identifier, e
+            )
             return False
 
     def _find_annotation(
@@ -730,7 +769,11 @@ class PDFAnnotator:
                     xref = xref_part
 
             # Handle "Note:1" or "Text:1" format - extract the numeric/ID part after colon
-            if search_id and ":" in search_id and not search_id.startswith(("xref:", "id:")):
+            if (
+                search_id
+                and ":" in search_id
+                and not search_id.startswith(("xref:", "id:"))
+            ):
                 parts = search_id.split(":", 1)
                 if len(parts) == 2:
                     search_id = parts[1].strip()
@@ -840,7 +883,11 @@ class PDFAnnotator:
         annotation_id = None
 
         # Handle composite formats like "xref:123|id:uuid" or "xref:123|uuid"
-        if "xref:" in identifier_str or "id:" in identifier_str or "|" in identifier_str:
+        if (
+            "xref:" in identifier_str
+            or "id:" in identifier_str
+            or "|" in identifier_str
+        ):
             parts = identifier_str.split("|")
             for part in parts:
                 part = part.strip()
@@ -906,7 +953,8 @@ class PDFAnnotator:
         Args:
             annotation_identifier: Stable annotation ID (preferred) or legacy/xref composite identifier
             new_content: New comment text (None to keep unchanged)
-            new_rect: Optional new bounding box (x0, y0, x1, y1) in PDF coordinates (None to keep unchanged)
+            new_rect: Optional new bounding box (x0, y0, x1, y1) in top-left page coordinates
+                (None to keep unchanged)
             new_color: Optional new color/priority: "red", "amber", or "green" (None to keep unchanged)
             new_page_index: Optional new page index to move annotation to (None to keep on same page)
             grader_name: Display name with role of modifier (e.g., "Prof. Smith (Teacher)")
@@ -963,11 +1011,6 @@ class PDFAnnotator:
             else:
                 logger.error("Failed to refresh annotation xref=%s", annot_xref)
 
-        if new_rect is not None:
-            target_page_index = new_page_index if new_page_index is not None else page_index
-            target_page = self.doc[target_page_index]
-            new_rect = _pdf_rect_to_pymupdf(new_rect, target_page.rect.height)
-
         # Auto-transfer ownership from AI to HUMAN if any field ACTUALLY changes
         # This ensures any human modification takes ownership
         if new_source is None:
@@ -977,7 +1020,9 @@ class PDFAnnotator:
             if current_source == "AI":
                 # Read current values to compare
                 old_content = info.get("content", "")
-                old_rect = tuple(annot.rect) if hasattr(annot, "rect") and annot.rect else None
+                old_rect = (
+                    tuple(annot.rect) if hasattr(annot, "rect") and annot.rect else None
+                )
 
                 # Determine current color name from RGB stroke
                 old_colors = annot.colors or {}
@@ -997,7 +1042,8 @@ class PDFAnnotator:
 
                 # Check if anything ACTUALLY changed
                 content_changed = (
-                    new_content is not None and new_content.strip() != (old_content or "").strip()
+                    new_content is not None
+                    and new_content.strip() != (old_content or "").strip()
                 )
                 color_changed = (
                     new_color is not None
@@ -1005,9 +1051,13 @@ class PDFAnnotator:
                     and new_color.lower() != current_color_name
                 )
                 position_changed = (
-                    new_rect is not None and old_rect is not None and tuple(new_rect) != old_rect
+                    new_rect is not None
+                    and old_rect is not None
+                    and tuple(new_rect) != old_rect
                 )
-                page_changed = new_page_index is not None and new_page_index != page_index
+                page_changed = (
+                    new_page_index is not None and new_page_index != page_index
+                )
                 points_changed = new_points is not None
 
                 # Transfer ownership if ANY field actually changed
@@ -1072,7 +1122,10 @@ class PDFAnnotator:
                     new_is_verdict,
                 )
 
-            if annot_type_code == fitz.PDF_ANNOT_FREE_TEXT and new_stroke_color_rgb is not None:
+            if (
+                annot_type_code == fitz.PDF_ANNOT_FREE_TEXT
+                and new_stroke_color_rgb is not None
+            ):
                 return self._replace_textbox_annotation(
                     page_index,
                     annot,
@@ -1084,6 +1137,35 @@ class PDFAnnotator:
                     new_source,
                     new_is_verdict,
                 )
+
+            if new_rect is not None and annot_type_code in {
+                fitz.PDF_ANNOT_HIGHLIGHT,
+                fitz.PDF_ANNOT_SQUIGGLY,
+                fitz.PDF_ANNOT_STRIKE_OUT,
+                fitz.PDF_ANNOT_UNDERLINE,
+            }:
+                target_page_idx = (
+                    new_page_index
+                    if new_page_index is not None
+                    else page_index
+                )
+                move_result = self._move_annotation_to_page(
+                    page_index,
+                    annot,
+                    target_page_idx,
+                    new_content,
+                    new_rect,
+                    new_color,
+                    annotation_id,
+                    grader_name,
+                    new_source,
+                    new_is_verdict,
+                    new_points,
+                    new_stroke_color_rgb,
+                )
+                # Preserve full tuple return (success, target_page, new_xref)
+                # so callers can learn the recreated annotation's xref.
+                return move_result
 
             # Update content if provided
             if new_content is not None:
@@ -1115,12 +1197,16 @@ class PDFAnnotator:
                         rgb,
                     )
                 else:
-                    logger.warning("Unknown color '%s', skipping color update", new_color)
+                    logger.warning(
+                        "Unknown color '%s', skipping color update", new_color
+                    )
 
             # Retag annotation with modifier's grader name
             if grader_name is not None:
                 try:
-                    _safe_set_info(annot, "title", _normalize_pdf_author_name(str(grader_name)))
+                    _safe_set_info(
+                        annot, "title", _normalize_pdf_author_name(str(grader_name))
+                    )
                     annot.update()
                     logger.info(
                         "Retagged annotation %s with grader name: %s",
@@ -1129,7 +1215,9 @@ class PDFAnnotator:
                     )
                 except Exception as e:
                     logger.error(
-                        "FAILED to update grader_name in title field: %s", e, exc_info=True
+                        "FAILED to update grader_name in title field: %s",
+                        e,
+                        exc_info=True,
                     )
 
             try:
@@ -1155,15 +1243,19 @@ class PDFAnnotator:
                     )
                     original_source_to_store = subject_metadata.get("original_source")
                     if source_to_store == "HUMAN" and not original_source_to_store:
-                        original_source_to_store = subject_metadata.get("source") or "AI"
+                        original_source_to_store = (
+                            subject_metadata.get("source") or "AI"
+                        )
                     is_verdict_to_store = (
-                        subject_metadata.get("is_verdict")
+                        bool(subject_metadata.get("is_verdict"))
                         if new_is_verdict is None
                         else bool(new_is_verdict)
                     )
 
                     new_subject = _encode_subject_metadata(
-                        subject_metadata.get("stable_id") or annotation_id or str(uuid.uuid4()),
+                        subject_metadata.get("stable_id")
+                        or annotation_id
+                        or str(uuid.uuid4()),
                         source_to_store,
                         original_source=original_source_to_store,
                         is_verdict=is_verdict_to_store,
@@ -1292,12 +1384,21 @@ class PDFAnnotator:
             annot_type_code = annot.type[0] if hasattr(annot, "type") else None
             annot_type = annot.type[1] if hasattr(annot, "type") else "Text"
             annot_type_name = str(annot_type).replace(" ", "").lower()
-            is_text = annot_type_code == fitz.PDF_ANNOT_TEXT or annot_type_name == "text"
-            is_freetext = annot_type_code == fitz.PDF_ANNOT_FREE_TEXT or annot_type_name in {
-                "freetext",
-                "textbox",
+            is_text = (
+                annot_type_code == fitz.PDF_ANNOT_TEXT or annot_type_name == "text"
+            )
+            is_freetext = (
+                annot_type_code == fitz.PDF_ANNOT_FREE_TEXT
+                or annot_type_name
+                in {
+                    "freetext",
+                    "textbox",
+                }
+            )
+            is_ink = annot_type_code == fitz.PDF_ANNOT_INK or annot_type_name in {
+                "ink",
+                "drawing",
             }
-            is_ink = annot_type_code == fitz.PDF_ANNOT_INK or annot_type_name in {"ink", "drawing"}
 
             # Get colors
             old_colors = annot.colors or {}
@@ -1319,7 +1420,11 @@ class PDFAnnotator:
             if new_rect:
                 rect = fitz.Rect(new_rect)
             else:
-                rect = fitz.Rect(annot.rect) if isinstance(annot.rect, tuple) else annot.rect
+                rect = (
+                    fitz.Rect(annot.rect)
+                    if isinstance(annot.rect, tuple)
+                    else annot.rect
+                )
 
             # Preserve or generate a stable ID
             subject_metadata = _decode_subject_metadata(info.get("subject", ""))
@@ -1330,12 +1435,19 @@ class PDFAnnotator:
                 or info.get("id")
                 or info.get("title")
             )
-            preserved_id = None if _is_annotation_type_name(candidate_id) else candidate_id
+            preserved_id = (
+                None if is_annotation_type_name(candidate_id) else candidate_id
+            )
             effective_drawing_style = subject_metadata.get("drawing_style")
             effective_stroke_width = subject_metadata.get("stroke_width")
             effective_stroke_opacity = subject_metadata.get("stroke_opacity")
 
-            logger.debug("Moving %s from page %d to %d", annot_type, old_page_index, new_page_index)
+            logger.debug(
+                "Moving %s from page %d to %d",
+                annot_type,
+                old_page_index,
+                new_page_index,
+            )
 
             # Get target page
             target_page = self.doc[new_page_index]
@@ -1354,7 +1466,9 @@ class PDFAnnotator:
                 position = fitz.Point(rect.x0, rect.y0)
                 new_annot = target_page.add_text_annot(position, content)
             elif is_freetext:
-                textbox_rgb = new_stroke_color_rgb or subject_metadata.get("textbox_color_rgb")
+                textbox_rgb = new_stroke_color_rgb or subject_metadata.get(
+                    "textbox_color_rgb"
+                )
                 text_color = _rgb_ints_to_floats(textbox_rgb) or (0.0, 0.0, 0.0)
                 new_annot = target_page.add_freetext_annot(
                     rect,
@@ -1373,7 +1487,9 @@ class PDFAnnotator:
                 )
                 if len(points_to_store) < 2:
                     annot_ref = preserved_id or (
-                        str(annot.xref) if hasattr(annot, "xref") and annot.xref else "unknown"
+                        str(annot.xref)
+                        if hasattr(annot, "xref") and annot.xref
+                        else "unknown"
                     )
                     logger.error(
                         "Cannot move drawing annotation %s without at least 2 points",
@@ -1381,7 +1497,9 @@ class PDFAnnotator:
                     )
                     return (False, None, None)
 
-                stroke_rgb = new_stroke_color_rgb or subject_metadata.get("stroke_color_rgb")
+                stroke_rgb = new_stroke_color_rgb or subject_metadata.get(
+                    "stroke_color_rgb"
+                )
                 stroke_rgb_float = _rgb_ints_to_floats(stroke_rgb)
                 effective_drawing_style = effective_drawing_style or "pen"
                 if effective_stroke_width is None:
@@ -1429,7 +1547,9 @@ class PDFAnnotator:
                 if not preserved_id:
                     preserved_id = str(uuid.uuid4())
                 source_to_set = (
-                    new_source if new_source else (subject_metadata.get("source") or "AI")
+                    new_source
+                    if new_source
+                    else (subject_metadata.get("source") or "AI")
                 )
                 original_source_to_set = subject_metadata.get("original_source")
                 if new_source == "HUMAN" and not original_source_to_set:
@@ -1463,28 +1583,37 @@ class PDFAnnotator:
                 )
                 _safe_set_info(new_annot, "subject", new_subject)
             except Exception as e:
-                logger.error("Failed to set UUID/source in subject field: %s", e, exc_info=True)
+                logger.error(
+                    "Failed to set UUID/source in subject field: %s", e, exc_info=True
+                )
 
             # Store grader_name in "title" field
             if grader_name:
                 try:
-                    _safe_set_info(new_annot, "title", _normalize_pdf_author_name(str(grader_name)))
+                    _safe_set_info(
+                        new_annot, "title", _normalize_pdf_author_name(str(grader_name))
+                    )
                 except Exception as e:
                     logger.error(
-                        "Failed to set grader_name on moved annotation: %s", e, exc_info=True
+                        "Failed to set grader_name on moved annotation: %s",
+                        e,
+                        exc_info=True,
                     )
 
             # Preserve creation date when moving; always refresh modification time.
             try:
                 existing_creation_date = info.get("creationDate")
                 if existing_creation_date:
-                    _safe_set_info(new_annot, "creationDate", str(existing_creation_date))
+                    _safe_set_info(
+                        new_annot, "creationDate", str(existing_creation_date)
+                    )
                 else:
                     _safe_set_info(new_annot, "creationDate", _format_pdf_datetime())
                 _safe_set_info(new_annot, "modDate", _format_pdf_datetime())
             except Exception as date_error:
                 logger.warning(
-                    "Failed to store timestamp metadata on moved annotation: %s", date_error
+                    "Failed to store timestamp metadata on moved annotation: %s",
+                    date_error,
                 )
 
             # Update the new annotation
@@ -1548,11 +1677,15 @@ class PDFAnnotator:
                     return False
 
                 if annot is None:
-                    logger.error("Failed to refresh annotation xref=%s for deletion", annot_xref)
+                    logger.error(
+                        "Failed to refresh annotation xref=%s for deletion", annot_xref
+                    )
                     return False
 
             page.delete_annot(annot)
-            logger.info("Deleted annotation %s from page %d", annotation_identifier, page_index)
+            logger.info(
+                "Deleted annotation %s from page %d", annotation_identifier, page_index
+            )
             return True
 
         except Exception as e:
@@ -1636,7 +1769,7 @@ class PDFAnnotator:
 
         Returns:
             List of annotation dictionaries with type, rect, color, content, xref, page_index.
-            Rect coordinates are in PDF space (origin at bottom-left).
+            Rect coordinates use the same top-left origin space as `BBox`.
         """
         if not self.doc:
             logger.error("PDF document not opened")
@@ -1678,7 +1811,7 @@ class PDFAnnotator:
                 grader_name = info.get("title")
 
                 # If no stable ID in subject, check for legacy ID storage
-                if not stable_id or _is_annotation_type_name(stable_id):
+                if not stable_id or is_annotation_type_name(stable_id):
                     stable_id = info.get("name") or info.get("id")
 
                 # Combine xref and stable_id for maximum compatibility
@@ -1692,27 +1825,33 @@ class PDFAnnotator:
                 else:
                     combined_id = None
 
-                page_height = page.rect.height
                 rect = None
                 if annot.rect:
-                    rect = list(_pymupdf_rect_to_pdf(annot.rect, page_height))
+                    rect = list(annot.rect)
                 # Determine annotation type, with special handling for ink/freetext
-                annot_type_str: str = annot.type[1] if hasattr(annot, "type") else "Unknown"
+                annot_type_str: str = (
+                    annot.type[1] if hasattr(annot, "type") else "Unknown"
+                )
                 extra_fields: dict[str, Any] = {}
 
                 if hasattr(annot, "type") and annot.type[0] == fitz.PDF_ANNOT_INK:
                     annot_type_str = "drawing"
                     try:
+                        page_height = page.rect.height
                         pdf_points = self._extract_ink_points_pdf(annot, page_height)
                         if pdf_points:
                             extra_fields["points"] = pdf_points
                     except Exception as e:
                         logger.warning("Failed to extract ink points: %s", e)
 
-                elif hasattr(annot, "type") and annot.type[0] == fitz.PDF_ANNOT_FREE_TEXT:
+                elif (
+                    hasattr(annot, "type") and annot.type[0] == fitz.PDF_ANNOT_FREE_TEXT
+                ):
                     annot_type_str = "textbox"
                     if subject_metadata.get("textbox_color_rgb"):
-                        extra_fields["stroke_color_rgb"] = subject_metadata["textbox_color_rgb"]
+                        extra_fields["stroke_color_rgb"] = subject_metadata[
+                            "textbox_color_rgb"
+                        ]
 
                 if subject_metadata.get("drawing_style"):
                     extra_fields["drawing_style"] = subject_metadata["drawing_style"]
@@ -1721,7 +1860,9 @@ class PDFAnnotator:
                 if subject_metadata.get("stroke_opacity") is not None:
                     extra_fields["stroke_opacity"] = subject_metadata["stroke_opacity"]
                 if subject_metadata.get("stroke_color_rgb"):
-                    extra_fields["stroke_color_rgb"] = subject_metadata["stroke_color_rgb"]
+                    extra_fields["stroke_color_rgb"] = subject_metadata[
+                        "stroke_color_rgb"
+                    ]
 
                 annotation_data = {
                     "type": annot_type_str,
@@ -1825,7 +1966,9 @@ class PDFAnnotator:
         if not bbox:
             if fallback_bbox:
                 bbox = fallback_bbox
-                logger.warning(f"Text '{search_text}' not found, using fallback position")
+                logger.warning(
+                    f"Text '{search_text}' not found, using fallback position"
+                )
             else:
                 logger.error(f"Text '{search_text}' not found and no fallback provided")
                 return False

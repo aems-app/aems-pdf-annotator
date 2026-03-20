@@ -271,6 +271,30 @@ class TestPDFAnnotator:
             assert len(annots) >= 1
             assert annots[0]["color"] == "green"
 
+    def test_update_annotation_rect_uses_top_left_coordinates(self, sample_pdf):
+        with PDFAnnotator(sample_pdf) as annotator:
+            annotator.add_annotation(PDFAnnotation(
+                id="ann-top-left",
+                page_index=0,
+                bbox=BBox(x0=50, y0=50, x1=200, y1=80),
+                kind=AnnotationType.TEXTBOX,
+                color=AnnotationColor.GREEN,
+                comment="Move me",
+                grader_name="Reader Grader",
+                stroke_color_rgb=[0, 0, 0],
+            ))
+
+            updated = annotator.update_annotation(
+                "ann-top-left",
+                new_rect=(60, 60, 210, 90),
+            )
+
+            assert updated is True
+            page = annotator.doc[0]
+            moved = next(page.annots())
+            assert moved.rect.x0 == pytest.approx(60, abs=0.5)
+            assert moved.rect.y0 == pytest.approx(60, abs=0.5)
+
     def test_delete_annotation_refreshes_by_xref_with_load_annot(self, sample_pdf):
         """Deletion should reload by xref directly instead of scanning all annotations."""
         with PDFAnnotator(sample_pdf) as annotator:

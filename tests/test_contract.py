@@ -279,3 +279,22 @@ class TestBatchConversion:
         assert len(annotations) == 1
         assert annotations[0].comment == "Exact placement"
         assert annotations[0].bbox.x0 == 10
+
+    def test_validate_contract_version_accepts_rendered_annotations_only(self):
+        payload = {
+            "annotation_contract_version": 1,
+            "coordinate_space": "visual_top_left_normalized_v1",
+            "rendered_annotations": [
+                {
+                    "id": "ann-1",
+                    "page_index": 0,
+                    "bbox": {"x0": 10, "y0": 20, "x1": 30, "y1": 40},
+                    "kind": "text",
+                    "color": "green",
+                    "comment": "Exact placement",
+                    "source": "AI",
+                }
+            ],
+        }
+
+        assert validate_contract_version(payload) is True

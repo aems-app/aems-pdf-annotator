@@ -22,7 +22,7 @@ window.PdfPreviewModalShell = window.PdfPreviewModalShell || {};
     var FULLSCREEN_CLASS = 'preview-fullscreen';
     var ICON_FULLSCREEN = 'bi-fullscreen';
     var ICON_FULLSCREEN_EXIT = 'bi-fullscreen-exit';
-    var RESIZE_DELAY = 400;
+    var _RESIZE_DELAY = 400;
     var SPLIT_PANEL_VISIBILITY_DELAY = 100;
 
     // =========================================================================

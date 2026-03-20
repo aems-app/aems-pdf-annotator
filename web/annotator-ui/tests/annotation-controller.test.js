@@ -162,4 +162,105 @@ describe('annotation-controller state ownership', () => {
     expect(annotationsState.selectedId).toBe(null);
     expect(annotationsState.annotationsData).toEqual({});
   });
+
+  it('prefixes numeric stable IDs in sidebar request identifiers', async () => {
+    document.body.innerHTML = `
+      <div id="pdfGradedContainer"></div>
+      <div id="pdfGradedCommentsList"></div>
+    `;
+    window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation = () => true;
+    const mod = await loadAnnotationControllerModule();
+    const annotationsState = {};
+    let currentAnnotationsData = {};
+    const controller = mod.createAnnotationController({
+      annotationsState,
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      getCurrentSubmissionId: () => 1001,
+      getCurrentAssignmentId: () => 501,
+      helpers: {
+        listAnnotationsRequest: vi.fn().mockResolvedValue({
+          success: true,
+          annotations: {
+            0: [{
+              pageIdx: 0,
+              id: '123',
+              stable_id: '123',
+              xref: 77,
+              content: 'Numeric stable id',
+            }],
+          },
+        }),
+        normalizeAnnotationsPayload: (data) => data,
+        refreshMarkupFromAnnotations: vi.fn(),
+      },
+    });
+
+    await controller.loadAnnotations();
+    controller.renderSidebar();
+
+    const item = document.querySelector('.list-group-item');
+    expect(item?.dataset.annotationRequestId).toBe('id:123');
+  });
+
+  it('uses the rendered button page when canceling a temporary edit', async () => {
+    document.body.innerHTML = `
+      <div id="pdfGradedContainer"></div>
+      <div id="pdfGradedCommentsList"></div>
+    `;
+    window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation = () => true;
+    const mod = await loadAnnotationControllerModule();
+    const annotationsState = {};
+    let currentAnnotationsData = {};
+    const deleteAnnotationSilently = vi.fn().mockResolvedValue(undefined);
+    const findAnnotationEntry = vi.fn((pageIdx, identifier) => {
+      if (pageIdx === 5 && identifier === 'ann-5') {
+        return {
+          pageIdx: 5,
+          requestIdentifier: 'ann-5',
+          content: '',
+          _originalContent: '',
+          _isTemporary: true,
+        };
+      }
+      return null;
+    });
+    const controller = mod.createAnnotationController({
+      annotationsState,
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      getCurrentSubmissionId: () => 1001,
+      getCurrentAssignmentId: () => 501,
+      getEditingAnnotationId: () => 'ann-5-ann-5',
+      setEditingAnnotationId: vi.fn(),
+      helpers: {
+        listAnnotationsRequest: vi.fn().mockResolvedValue({
+          success: true,
+          annotations: {
+            5: [{
+              pageIdx: 5,
+              id: 'ann-5',
+              stable_id: 'ann-5',
+              requestIdentifier: 'ann-5',
+              content: '',
+              _originalContent: '',
+              _isTemporary: true,
+            }],
+          },
+        }),
+        normalizeAnnotationsPayload: (data) => data,
+        refreshMarkupFromAnnotations: vi.fn(),
+        findAnnotationEntry,
+        deleteAnnotationSilently,
+      },
+    });
+
+    await controller.loadAnnotations();
+    controller.renderSidebar();
+    document.querySelector('.cancel-edit-btn')?.click();
+    await Promise.resolve();
+
+    expect(findAnnotationEntry).toHaveBeenCalledWith(5, 'ann-5');
+    expect(deleteAnnotationSilently).toHaveBeenCalledWith(5, 'ann-5');
+  });
 });

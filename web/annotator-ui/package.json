@@ -5,9 +5,13 @@
   "type": "module",
   "scripts": {
     "build": "rollup -c",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix"
   },
   "devDependencies": {
+    "eslint": "^9.39.4",
+    "globals": "^16.5.0",
     "jsdom": "^24.0.0",
     "rollup": "^4.9.6",
     "vitest": "^4.0.18"

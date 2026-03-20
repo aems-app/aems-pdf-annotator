@@ -24,7 +24,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
     // Module Imports
     // =========================================================================
     var UtilsModule = window.PdfPreviewModalUtils || {};
-    var PDF_DEBUG = UtilsModule.PDF_DEBUG || false;
+    var _PDF_DEBUG = UtilsModule.PDF_DEBUG || false;
     var debugLog = UtilsModule.debugLog || function () {};
     var PLACEHOLDER_STRINGS = UtilsModule.PLACEHOLDER_STRINGS || ['', 'New comment...', 'New comment'];
     var SidebarPanelModule = window.PdfPreviewModalSidebarPanel || {};
@@ -867,7 +867,14 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         identifier: identifier,
                     })
                     : { xref: xrefValue, stableId: identifier };
-                var requestId = resolvedIds.stableId || resolvedIds.xref || '';
+                var requestId = ann.requestIdentifier || '';
+                if (!requestId || requestId === stableId || requestId === xrefValue) {
+                    if (stableId) {
+                        requestId = /^\d+$/.test(stableId) ? 'id:' + stableId : stableId;
+                    } else {
+                        requestId = resolvedIds.xref || '';
+                    }
+                }
                 var displayIdentifier = escapeHtml(requestId || 'idx-' + ann.indexOnPage);
                 var domId = escapeHtml('ann-' + ann.pageIdx + '-' + displayIdentifier);
                 var priority = _h.deriveAnnotationPriority ? _h.deriveAnnotationPriority(ann) : 'amber';
@@ -925,7 +932,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                                                     '<span class="spinner-border spinner-border-sm d-none" role="status"></span>' +
                                                     '<span class="btn-text">Save</span>' +
                                                 '</button>' +
-                                                '<button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '">Cancel</button>' +
+                                                '<button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + ann.pageIdx + '">Cancel</button>' +
                                             '</div>'
                                         : displayContent) +
                                 '</div>' +
@@ -1189,6 +1196,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 if (!sidebarTextarea.id) {
                     return;
                 }
+                if (sidebarTextarea.dataset.listenersBound) {
+                    return;
+                }
+                sidebarTextarea.dataset.listenersBound = 'true';
                 sidebarTextarea.addEventListener('input', function () {
                     var inlineLabel = document.querySelector('.annotation-label.label-editing');
                     if (!inlineLabel) {
@@ -1202,10 +1213,14 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             });
 
             listEl.querySelectorAll('.cancel-edit-btn').forEach(function (btn) {
+                if (btn.dataset.listenersBound) {
+                    return;
+                }
+                btn.dataset.listenersBound = 'true';
                 btn.addEventListener('click', async function () {
                     var identifier = btn.dataset.annotationIdentifier || btn.dataset.annotationXref || null;
                     if (identifier) {
-                        var pageIdx = _currentAnnotationsPage;
+                        var pageIdx = parseInt(btn.dataset.annotationPage || _currentAnnotationsPage || '-1', 10);
                         var annotation = _h.findAnnotationEntry ? _h.findAnnotationEntry(pageIdx, identifier) : null;
                         var originalContent = (annotation && (annotation._originalContent !== undefined
                             ? annotation._originalContent
@@ -1257,6 +1272,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             });
 
             listEl.querySelectorAll('.list-group-item').forEach(function (item) {
+                if (item.dataset.listenersBound) {
+                    return;
+                }
+                item.dataset.listenersBound = 'true';
                 item.addEventListener('mousedown', function (event) {
                     var clickedElement = event.target;
                     if (clickedElement.closest('button') ||
