@@ -5043,7 +5043,7 @@
                         // The local annotationsData is already correct from the API response.
                         markLocalAnnotationChange(); // Prevent polling from reloading for our own change
                     } else {
-                        // Same page move: just update position
+                        // Same page move: just update position in local data
                         if (annotationsData[responsePageIdx]) {
                             const annIdx = findAnnotationIndex(responsePageIdx, targetIdentifier);
                             if (annIdx >= 0) {
@@ -5055,10 +5055,13 @@
                         markLocalAnnotationChange(); // Prevent polling from reloading for our own change
                     }
 
-                    // Update panel page based on viewer focus (avoid forcing to target page if not in view)
-                    const focusedPageIdx = (window.__pdfGradedViewer?.currentPage || responsePageIdx + 1) - 1;
-                    currentAnnotationsPage = focusedPageIdx;
-                    renderAnnotationsList();
+                    // Only re-render sidebar for cross-page moves (page numbering changes).
+                    // Same-page drags only change position — sidebar content is unchanged.
+                    if (isCrossPageMove) {
+                        const focusedPageIdx = (window.__pdfGradedViewer?.currentPage || responsePageIdx + 1) - 1;
+                        currentAnnotationsPage = focusedPageIdx;
+                        renderAnnotationsList();
+                    }
                 } else {
                     throw new Error(data.error || 'Position update failed');
                 }
