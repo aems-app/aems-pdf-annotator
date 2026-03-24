@@ -2522,27 +2522,56 @@
 
                     // CRITICAL FIX: Update annotation directly instead of reloading all annotations
                     if (data.success && data.annotation) {
-                        const _responsePageIdx = data.annotation.page_index;
-                        // Remove from new page if it exists there
-                        if (annotationsData[operation.newPageIdx]) {
-                            const newPageIdx = findAnnotationIndex(operation.newPageIdx, operation.identifier || operation.requestId);
-                            if (newPageIdx >= 0) {
-                                annotationsData[operation.newPageIdx].splice(newPageIdx, 1);
+                        const updatedAnn = enhanceAnnotationEntry(data.annotation);
+                        const isSamePageUndo = operation.oldPageIdx === operation.newPageIdx;
+
+                        if (isSamePageUndo) {
+                            // Same-page undo: update rect in-place (no splice+push on same array)
+                            const idx = findAnnotationIndex(operation.newPageIdx, operation.identifier || operation.requestId);
+                            if (idx >= 0) {
+                                annotationsData[operation.newPageIdx][idx] = updatedAnn;
+                            }
+                        } else {
+                            // Cross-page undo: remove from new page, add to old page
+                            if (annotationsData[operation.newPageIdx]) {
+                                const newIdx = findAnnotationIndex(operation.newPageIdx, operation.identifier || operation.requestId);
+                                if (newIdx >= 0) {
+                                    annotationsData[operation.newPageIdx].splice(newIdx, 1);
+                                }
+                            }
+                            if (annotationsData[operation.oldPageIdx]) {
+                                annotationsData[operation.oldPageIdx].push(updatedAnn);
+                            } else {
+                                annotationsData[operation.oldPageIdx] = [updatedAnn];
                             }
                         }
-                        // Add to old page
-                        if (annotationsData[operation.oldPageIdx]) {
-                            const updatedAnn = enhanceAnnotationEntry(data.annotation);
-                            annotationsData[operation.oldPageIdx].push(updatedAnn);
+
+                        // For same-page undo, update marker position in-place
+                        // to avoid destroying IntersectionObserver tracking
+                        if (isSamePageUndo) {
+                            const pageNum = operation.oldPageIdx + 1;
+                            const container = document.getElementById('pdfGradedContainer');
+                            const wrapper = container ? container.querySelector('.pdf-page-wrapper[data-page-num="' + pageNum + '"]') : null;
+                            const overlay = wrapper ? wrapper.querySelector('.pdf-annotation-overlay') : null;
+                            if (overlay) {
+                                const xref = operation.xref || (data.annotation && String(data.annotation.xref));
+                                const markers = overlay.querySelectorAll('.annotation-marker');
+                                for (const m of markers) {
+                                    if (m.dataset.annotationXref === xref ||
+                                        m.dataset.annotationRequestId === (operation.identifier || operation.requestId)) {
+                                        updateMarkerPositionInPlace(m, updatedAnn, operation.oldPageIdx);
+                                        break;
+                                    }
+                                }
+                            }
+                            // Sidebar content unchanged for same-page undo
                         } else {
-                            annotationsData[operation.oldPageIdx] = [enhanceAnnotationEntry(data.annotation)];
+                            renderAnnotationsList();
+                            renderAnnotationsForPage(operation.oldPageIdx + 1, true);
+                            renderAnnotationsForPage(operation.newPageIdx + 1, true);
                         }
                     }
 
-                    // Only re-render affected pages, don't reload all annotations
-                    renderAnnotationsList();
-                    renderAnnotationsForPage(operation.oldPageIdx + 1, true);
-                    renderAnnotationsForPage(operation.newPageIdx + 1, true);
                     markLocalAnnotationChange(); // Prevent polling from reloading
 
                     // Show toast for ownership revert
@@ -3538,6 +3567,63 @@
     function renderAllAnnotations(forceRender = false) {
         if (_currentOverlayRenderer) return _currentOverlayRenderer.renderAnnotations(forceRender);
         throw new Error('Overlay renderer must be initialized before rendering annotations.');
+    }
+
+    /**
+     * Update a single marker's DOM position in-place without recreating all markers.
+     * Used for same-page drags and undo to avoid destroying IntersectionObserver tracking.
+     *
+     * @param {HTMLElement} marker - The annotation marker element
+     * @param {Object} ann - The annotation data with .rect
+     * @param {number} pageIdx - 0-based page index
+     */
+    function updateMarkerPositionInPlace(marker, ann, pageIdx) {
+        const viewer = window.__pdfGradedViewer;
+        if (!viewer || !marker) return;
+
+        const pageNum = pageIdx + 1;
+        const viewport = viewer.getViewportForPage(pageNum);
+        if (!viewport) return;
+
+        const container = document.getElementById('pdfGradedContainer');
+        const wrapper = container ? container.querySelector('.pdf-page-wrapper[data-page-num="' + pageNum + '"]') : null;
+        if (!wrapper) return;
+        const canvas = wrapper.querySelector('.pdf-page-canvas');
+        if (!canvas) return;
+
+        const canvasRect = canvas.getBoundingClientRect();
+        const canvasWidth = canvas.clientWidth || canvasRect.width;
+        const canvasHeight = canvas.clientHeight || canvasRect.height;
+        if (!canvasWidth || !canvasHeight) return;
+
+        const scaleX = canvasWidth / viewport.width;
+        const scaleY = canvasHeight / viewport.height;
+
+        const rect = ann.rect;
+        if (!Array.isArray(rect) || rect.length !== 4) return;
+
+        const Rendering = window.PdfPreviewModalRendering || {};
+        const convertFn = Rendering.convertTopLeftRectToViewport || function (r) { return r; };
+        const MIN_SIZE = Rendering.MIN_MARKER_SIZE || 16;
+
+        const viewportRect = convertFn(rect, viewport);
+        const minX = Math.min(viewportRect[0], viewportRect[2]);
+        const maxX = Math.max(viewportRect[0], viewportRect[2]);
+        const minY = Math.min(viewportRect[1], viewportRect[3]);
+        const maxY = Math.max(viewportRect[1], viewportRect[3]);
+
+        marker.style.left = (minX * scaleX) + 'px';
+        marker.style.top = (minY * scaleY) + 'px';
+        marker.style.width = Math.max((maxX - minX) * scaleX, MIN_SIZE) + 'px';
+        marker.style.height = Math.max((maxY - minY) * scaleY, MIN_SIZE) + 'px';
+
+        // Reposition labels to avoid overlaps after position change
+        const overlay = marker.closest('.pdf-annotation-overlay');
+        if (overlay) {
+            requestAnimationFrame(function () {
+                repositionAllLabels(overlay);
+            });
+        }
     }
 
     // New function for continuous scroll: renders annotations for a specific page
@@ -5043,15 +5129,17 @@
                         // The local annotationsData is already correct from the API response.
                         markLocalAnnotationChange(); // Prevent polling from reloading for our own change
                     } else {
-                        // Same page move: just update position in local data
+                        // Same page move: update position in local data
                         if (annotationsData[responsePageIdx]) {
                             const annIdx = findAnnotationIndex(responsePageIdx, targetIdentifier);
                             if (annIdx >= 0) {
                                 annotationsData[responsePageIdx][annIdx] = normalizedAnn;
                             }
                         }
-                        // CRITICAL FIX: responsePageIdx is 0-based, renderAnnotationsForPage expects 1-based
-                        renderAnnotationsForPage(responsePageIdx + 1, true);  // Force render for position update
+                        // Update only the dragged marker's position in-place.
+                        // Do NOT force-render the whole page — that destroys all markers,
+                        // breaks IntersectionObserver tracking, and causes sidebar flash.
+                        updateMarkerPositionInPlace(marker, normalizedAnn, responsePageIdx);
                         markLocalAnnotationChange(); // Prevent polling from reloading for our own change
                     }
 
