@@ -3296,11 +3296,14 @@
      * @param {HTMLElement} label - The label element to position
      * @param {HTMLElement} overlay - The overlay container
      */
-    function positionLabelOptimally(marker, label, overlay) {
+    function positionLabelOptimally(marker, label, overlay, preComputed) {
         if (!marker || !label || !overlay) return;
 
-        const overlayRect = overlay.getBoundingClientRect();
-        const markerRect = marker.getBoundingClientRect();
+        // Use pre-computed rects when available (batch path from repositionAllLabels),
+        // otherwise read from DOM (standalone calls e.g. after drag)
+        const overlayRect = (preComputed && preComputed.overlayRect) || overlay.getBoundingClientRect();
+        const markerRect = (preComputed && preComputed.markerRects && preComputed.markerRects.get(marker))
+            || marker.getBoundingClientRect();
 
         // Label dimensions (estimate if not yet rendered)
         const labelWidth = label.offsetWidth || 120;
@@ -3314,7 +3317,8 @@
         const markerBottom = markerTop + markerRect.height;
         const markerCenterY = markerTop + markerRect.height / 2;
 
-        // Collect all other labels AND markers for collision detection
+        // Collect collision rects. Marker rects are stable (use pre-computed);
+        // label rects are read fresh since earlier labels may have been repositioned.
         const otherRects = [];
         const allLabels = overlay.querySelectorAll('.annotation-label');
         allLabels.forEach(otherLabel => {
@@ -3330,20 +3334,28 @@
             }
         });
 
-        // Also consider other markers (to avoid label covering another marker's highlight)
-        const allMarkers = overlay.querySelectorAll('.annotation-marker');
-        allMarkers.forEach(otherMarker => {
-            if (otherMarker !== marker) {
-                const rect = otherMarker.getBoundingClientRect();
-                otherRects.push({
-                    left: rect.left - overlayRect.left,
-                    top: rect.top - overlayRect.top,
-                    right: rect.right - overlayRect.left,
-                    bottom: rect.bottom - overlayRect.top,
-                    isMarker: true
-                });
-            }
-        });
+        if (preComputed && preComputed.allMarkerRects) {
+            // Use pre-computed marker collision rects (skip this marker)
+            preComputed.allMarkerRects.forEach(mr => {
+                if (mr.el !== marker) {
+                    otherRects.push(mr);
+                }
+            });
+        } else {
+            const allMarkers = overlay.querySelectorAll('.annotation-marker');
+            allMarkers.forEach(otherMarker => {
+                if (otherMarker !== marker) {
+                    const rect = otherMarker.getBoundingClientRect();
+                    otherRects.push({
+                        left: rect.left - overlayRect.left,
+                        top: rect.top - overlayRect.top,
+                        right: rect.right - overlayRect.left,
+                        bottom: rect.bottom - overlayRect.top,
+                        isMarker: true
+                    });
+                }
+            });
+        }
 
         // Calculate overlap area between two rectangles
         function getOverlapArea(rect1, rect2) {
@@ -3463,7 +3475,7 @@
         // Get all markers and sort by vertical position (top to bottom)
         const markers = Array.from(overlay.querySelectorAll('.annotation-marker'));
 
-        // Fix 4D: Batch-read all bounding rects ONCE before sorting or positioning
+        // Batch-read all bounding rects ONCE before sorting or positioning
         const overlayRect = overlay.getBoundingClientRect();
         const markerRects = new Map();
         markers.forEach(m => {
@@ -3474,22 +3486,8 @@
             return markerRects.get(a).top - markerRects.get(b).top;
         });
 
-        // Pre-compute all label and marker rects for collision detection
-        const allLabelRects = [];
+        // Pre-compute stable marker collision rects (markers don't move during repositioning)
         const allMarkerRects = [];
-        overlay.querySelectorAll('.annotation-label').forEach(label => {
-            if (label.offsetParent !== null) {
-                const rect = label.getBoundingClientRect();
-                allLabelRects.push({
-                    el: label,
-                    left: rect.left - overlayRect.left,
-                    top: rect.top - overlayRect.top,
-                    right: rect.right - overlayRect.left,
-                    bottom: rect.bottom - overlayRect.top,
-                    isLabel: true
-                });
-            }
-        });
         markers.forEach(m => {
             const rect = markerRects.get(m);
             allMarkerRects.push({
@@ -3502,9 +3500,11 @@
             });
         });
 
-        // Position OTHER labels in order from top to bottom (skip priority marker)
+        // Build pre-computed data to pass into positionLabelOptimally
+        const preComputed = { overlayRect, markerRects, allMarkerRects };
+
+        // Position labels in order from top to bottom (skip priority marker)
         markers.forEach(marker => {
-            // Check if this marker matches the priority identifier
             if (priorityIdentifier) {
                 const markerIdentifier = marker.dataset.identifier ||
                     marker.dataset.annotationRequestId ||
@@ -3517,7 +3517,7 @@
 
             const label = marker.querySelector('.annotation-label');
             if (label) {
-                positionLabelOptimally(marker, label, overlay);
+                positionLabelOptimally(marker, label, overlay, preComputed);
             }
         });
     }

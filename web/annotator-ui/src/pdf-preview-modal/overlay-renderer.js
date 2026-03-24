@@ -332,8 +332,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
 
                 marker.appendChild(label);
 
-                // Smart positioning
-                setTimeout(function () { positionLabelOptimally(marker, label, overlay); }, 0);
+                // Label positioning deferred to single repositionAllLabels pass below
 
                 // Setup tooltip
                 setupLabelTooltipEvents(label, commentText);
@@ -367,11 +366,10 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                 observeAnnotationMarker(marker);
             });
 
-            // Second pass: reposition all labels to avoid overlaps
-            setTimeout(function () {
+            // Single pass: reposition all labels to avoid overlaps (after DOM settles)
+            requestAnimationFrame(function () {
                 repositionAllLabels(overlay);
-                setTimeout(function () { repositionAllLabels(overlay); }, 50);
-            }, 10);
+            });
 
             // Add double-click handler for creating new annotations on empty space
             _setupOverlayDoubleClickHandler(overlay, viewport, scaleX, scaleY, pageIdx);

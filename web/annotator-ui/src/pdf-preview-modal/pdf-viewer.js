@@ -117,6 +117,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             this.observer = null;
             this.isGradedViewer = containerId === 'pdfGradedContainer';
             this.lastRenderContainerWidth = null;
+            this.zoomVersion = 0; // Incremented on zoom to invalidate stale renders
 
             // Store viewport for coordinate conversion (single-page mode)
             this.currentViewport = null;
@@ -507,8 +508,8 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
 
             const options = {
                 root: this.container,
-                rootMargin: '200px',
-                threshold: [0, 0.1, 0.5, 1.0]
+                rootMargin: '100px',
+                threshold: [0.1, 0.5]
             };
 
             this.observer = new IntersectionObserver((entries) => {
@@ -553,6 +554,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 return;
             }
             this.renderingPages.add(pageNum);
+            const startVersion = this.zoomVersion;
 
             debugLog(`[FRONTEND] Starting render for page ${pageNum}`);
 
@@ -612,6 +614,13 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
 
                 await renderTask.promise;
                 this.renderTasks.delete(pageNum);
+
+                // Discard result if zoom changed during render
+                if (startVersion !== this.zoomVersion) {
+                    debugLog(`[FRONTEND] Page ${pageNum} render discarded (zoom version changed ${startVersion}->${this.zoomVersion})`);
+                    return;
+                }
+
                 this.renderedPages.add(pageNum);
                 debugLog(`[FRONTEND] Page ${pageNum} rendered successfully (${this.renderedPages.size}/${this.pdf.numPages})`);
 
@@ -739,7 +748,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 if (this.useSinglePageMode) {
                     await this.renderPage(this.currentPage);
                 } else {
-                    await this.reRenderAllPages(true);
+                    await this.zoomResizeAndRenderVisible();
                 }
             } catch (error) {
                 console.error('[ZOOM] Error during zoom in:', error);
@@ -761,7 +770,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 if (this.useSinglePageMode) {
                     await this.renderPage(this.currentPage);
                 } else {
-                    await this.reRenderAllPages(true);
+                    await this.zoomResizeAndRenderVisible();
                 }
             } catch (error) {
                 console.error('[ZOOM] Error during zoom out:', error);
@@ -770,7 +779,85 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
         }
 
         // =====================================================================
-        // Re-render All Pages
+        // Zoom: resize skeletons in place, re-render only visible pages
+        // =====================================================================
+
+        async zoomResizeAndRenderVisible() {
+            if (!this.pdf) return;
+            this.zoomVersion++;
+            const capturedVersion = this.zoomVersion;
+
+            // Cancel in-flight renders (they use stale zoom)
+            this.renderTasks.forEach((task) => {
+                try { task.cancel(); } catch { /* ignore */ }
+            });
+            this.renderTasks.clear();
+            this.renderingPages.clear();
+
+            // Get first page viewport to compute new dimensions
+            const firstPage = await this.pdf.getPage(1);
+            const baseViewport = firstPage.getViewport({ scale: this.scale });
+            const containerWidth = this.getEffectiveContainerWidth();
+            const fitScaleFactor = Math.min(1, containerWidth / baseViewport.width);
+            const displayWidth = baseViewport.width * fitScaleFactor * this.zoom;
+            const displayHeight = baseViewport.height * fitScaleFactor * this.zoom;
+
+            // Capture scroll anchor before resizing
+            let scrollAnchor = null;
+            const currentWrapper = this.container.querySelector(`.pdf-page-wrapper[data-page-num="${this.currentPage}"]`);
+            if (currentWrapper && this.container) {
+                const rect = currentWrapper.getBoundingClientRect();
+                const containerRect = this.container.getBoundingClientRect();
+                const relativeTop = rect.top - containerRect.top;
+                const ratio = rect.height ? relativeTop / rect.height : 0;
+                scrollAnchor = { page: this.currentPage, ratio };
+            }
+
+            // Update ALL wrapper/canvas dimensions in place (no DOM recreation)
+            const wrappers = this.container.querySelectorAll('.pdf-page-wrapper');
+            wrappers.forEach(wrapper => {
+                wrapper.style.width = `${displayWidth}px`;
+                wrapper.style.height = `${displayHeight}px`;
+                const canvas = wrapper.querySelector('.pdf-page-canvas');
+                if (canvas) {
+                    canvas.style.width = `${displayWidth}px`;
+                    canvas.style.height = `${displayHeight}px`;
+                }
+            });
+
+            // Mark all pages as needing re-render (clear rendered state)
+            this.renderedPages.clear();
+            this.pageViewports.clear();
+            this.lastRenderContainerWidth = containerWidth;
+
+            // Restore scroll position
+            if (scrollAnchor) {
+                const newWrapper = this.container.querySelector(`.pdf-page-wrapper[data-page-num="${scrollAnchor.page}"]`);
+                if (newWrapper && this.container) {
+                    const newHeight = newWrapper.offsetHeight || 1;
+                    this.container.scrollTop = newWrapper.offsetTop - (scrollAnchor.ratio * newHeight);
+                }
+            }
+
+            // Determine visible pages (current ± 1 buffer)
+            const visibleStart = Math.max(1, this.currentPage - 1);
+            const visibleEnd = Math.min(this.pdf.numPages, this.currentPage + 1);
+
+            // Immediately re-render visible pages
+            const renderPromises = [];
+            for (let p = visibleStart; p <= visibleEnd; p++) {
+                if (capturedVersion === this.zoomVersion) {
+                    renderPromises.push(this.renderSpecificPage(p));
+                }
+            }
+            await Promise.all(renderPromises);
+
+            // Observer will handle the rest when user scrolls
+            debugLog(`[ZOOM] Resized all pages, rendered ${visibleStart}-${visibleEnd}, version=${capturedVersion}`);
+        }
+
+        // =====================================================================
+        // Re-render All Pages (used by resize observer, not zoom)
         // =====================================================================
 
         async reRenderAllPages(force = false) {
