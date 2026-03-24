@@ -2507,9 +2507,22 @@
                     return;
                 }
 
+                // oldRect is in PyMuPDF top-left format (from annotationsData),
+                // but the API expects PDF bottom-left format and converts internally.
+                // Convert PyMuPDF → PDF to avoid double-conversion.
+                let apiRect = operation.oldRect;
+                const viewer = window.__pdfGradedViewer;
+                if (apiRect && viewer && viewer.pdf) {
+                    try {
+                        const pg = await viewer.pdf.getPage(operation.oldPageIdx + 1);
+                        const pageHeight = pg.view[3] - pg.view[1];
+                        apiRect = [apiRect[0], pageHeight - apiRect[3], apiRect[2], pageHeight - apiRect[1]];
+                    } catch (_e) { /* fallback to raw rect */ }
+                }
+
                 const updateData = {
                     page_index: operation.oldPageIdx,
-                    rect: operation.oldRect,
+                    rect: apiRect,
                 };
 
                 // Revert source if this was an ownership transfer
@@ -2549,6 +2562,7 @@
                         // For same-page undo, update marker position in-place
                         // to avoid destroying IntersectionObserver tracking
                         if (isSamePageUndo) {
+                            _suppressSidebarRender = true;
                             const pageNum = operation.oldPageIdx + 1;
                             const container = document.getElementById('pdfGradedContainer');
                             const wrapper = container ? container.querySelector('.pdf-page-wrapper[data-page-num="' + pageNum + '"]') : null;
@@ -2564,6 +2578,7 @@
                                     }
                                 }
                             }
+                            setTimeout(() => { _suppressSidebarRender = false; }, 300);
                             // Sidebar content unchanged for same-page undo
                         } else {
                             renderAnnotationsList();
@@ -3160,15 +3175,20 @@
     let _annotationObserver = null;
     let observerInitialized = false;  // Track if observer has completed initial detection
     let pendingAnnotationsListFrame = null;
+    // Suppress observer-triggered sidebar re-renders during same-page drag/undo
+    let _suppressSidebarRender = false;
     let _annotationVisibilityScrollHandler = null;
 
     function _scheduleAnnotationsListRender() {
+        if (_suppressSidebarRender) return;
         if (pendingAnnotationsListFrame !== null) {
             return;
         }
         pendingAnnotationsListFrame = requestAnimationFrame(() => {
             pendingAnnotationsListFrame = null;
-            renderAnnotationsList();
+            if (!_suppressSidebarRender) {
+                renderAnnotationsList();
+            }
         });
     }
 
@@ -5137,10 +5157,12 @@
                             }
                         }
                         // Update only the dragged marker's position in-place.
-                        // Do NOT force-render the whole page — that destroys all markers,
-                        // breaks IntersectionObserver tracking, and causes sidebar flash.
+                        // Suppress observer-triggered sidebar re-renders during the update
+                        // to prevent sidebar badge flash (red→blue from stale visibility data).
+                        _suppressSidebarRender = true;
                         updateMarkerPositionInPlace(marker, normalizedAnn, responsePageIdx);
-                        markLocalAnnotationChange(); // Prevent polling from reloading for our own change
+                        markLocalAnnotationChange();
+                        setTimeout(() => { _suppressSidebarRender = false; }, 300);
                     }
 
                     // Only re-render sidebar for cross-page moves (page numbering changes).
