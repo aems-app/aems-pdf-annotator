@@ -1453,18 +1453,25 @@
             enterEditFromLabel();
         });
 
-        // MOUSEENTER: Instant expand (read-only) if collapsed
+        // MOUSEENTER: Expand (read-only) after short delay if collapsed
+        let hoverExpandTimer = null;
         label.addEventListener('mouseenter', () => {
             cancelCollapseTimer();
 
             if (label.classList.contains('label-expanded')) return;
 
-            label.dataset.expandSource = 'hover';
-            expandInlineLabelReadOnly(label);
+            hoverExpandTimer = setTimeout(() => {
+                hoverExpandTimer = null;
+                if (!label.classList.contains('label-expanded') && label.matches(':hover')) {
+                    label.dataset.expandSource = 'hover';
+                    expandInlineLabelReadOnly(label);
+                }
+            }, 350);
         });
 
         // MOUSELEAVE: Collapse after 200ms grace, only if hover-expanded (not click-pinned or editing)
         label.addEventListener('mouseleave', () => {
+            if (hoverExpandTimer) { clearTimeout(hoverExpandTimer); hoverExpandTimer = null; }
             // Never collapse if editing
             if (label.classList.contains('label-editing')) return;
 
