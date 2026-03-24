@@ -1304,7 +1304,19 @@
     // Call this after any local annotation change to prevent self-triggered reloads
     function markLocalAnnotationChange() {
         // Delegate to version-sync module if available
-        if (_currentVersionSync) { _currentVersionSync.markLocalChange(); return; }
+        if (_currentVersionSync) {
+            _currentVersionSync.markLocalChange();
+            // Immediately fetch the new version to prevent subsequent poll cycles
+            // from treating our own change as external
+            if (_annotationAdapter && currentSubmissionId) {
+                getAnnotationsVersionRequest().then(function (data) {
+                    if (data && data.version) {
+                        _currentVersionSync.markLocalChange(data.version);
+                    }
+                }).catch(function () { /* ignore */ });
+            }
+            return;
+        }
         skipNextPollingCycle = true;
     }
 

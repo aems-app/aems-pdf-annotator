@@ -66,8 +66,14 @@ window.PdfPreviewModalVersionSync = window.PdfPreviewModalVersionSync || {};
                 }
                 if (syncState) syncState.polling = false;
             },
-            markLocalChange: function () {
+            markLocalChange: function (newVersion) {
                 _skipNextCycle = true;
+                // If the caller knows the new version (e.g. from PUT response mtime),
+                // update _currentVersion so subsequent polls don't treat it as external.
+                if (newVersion) {
+                    _currentVersion = String(newVersion);
+                    if (syncState) syncState.versionToken = _currentVersion;
+                }
             },
             destroy: function () {
                 if (_destroyed) return;
