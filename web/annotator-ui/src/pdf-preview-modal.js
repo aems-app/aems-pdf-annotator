@@ -1466,7 +1466,7 @@
                     label.dataset.expandSource = 'hover';
                     expandInlineLabelReadOnly(label);
                 }
-            }, 350);
+            }, 500);
         });
 
         // MOUSELEAVE: Collapse after 200ms grace, only if hover-expanded (not click-pinned or editing)
