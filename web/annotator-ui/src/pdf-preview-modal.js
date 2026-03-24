@@ -6566,9 +6566,10 @@
                 }
             });
 
-            _currentAnnotationCtrl.onRenderOverlaysNeeded(function () {
+            _currentAnnotationCtrl.onRenderOverlaysNeeded(function (data) {
                 if (typeof renderAllAnnotations === 'function') {
-                    renderAllAnnotations(true);
+                    var force = data && data.forceRender !== undefined ? data.forceRender : false;
+                    renderAllAnnotations(force);
                 }
             });
 
@@ -6596,6 +6597,9 @@
                 assignmentId: state.options.assignmentId,
             });
             _currentVersionSync.onExternalChange(function () {
+                // Reload annotations — the overlay renderer's xref-based cache
+                // check (forceRender=false) will skip re-rendering pages where
+                // annotation data hasn't actually changed.
                 if (_currentAnnotationCtrl) {
                     _currentAnnotationCtrl.reload();
                 } else {
