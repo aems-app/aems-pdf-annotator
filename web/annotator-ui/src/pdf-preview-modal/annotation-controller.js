@@ -751,9 +751,6 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     if (typeof target.focus === 'function') {
                         target.focus({ preventScroll: true });
                     }
-                    if (typeof target.scrollIntoView === 'function') {
-                        target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-                    }
                 }
             }
             _emit('onSelectionChanged', { pageIdx: pageIdx, identifier: identifierValue });

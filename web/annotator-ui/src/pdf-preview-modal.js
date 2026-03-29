@@ -1466,7 +1466,7 @@
                     label.dataset.expandSource = 'hover';
                     expandInlineLabelReadOnly(label);
                 }
-            }, 500);
+            }, 150);
         });
 
         // MOUSELEAVE: Collapse after 200ms grace, only if hover-expanded (not click-pinned or editing)
@@ -1510,6 +1510,883 @@
     // Track currently editing inline label (for escape handling in fullscreen)
     let inlineEditingLabel = null;
 
+    function resolveExpandedLabelMaxWidth(label) {
+        const marker = label?.closest('.annotation-marker');
+        const overlay = marker?.parentElement;
+        const container = document.getElementById('pdfGradedContainer');
+        const overlayWidth = overlay?.getBoundingClientRect?.().width || 0;
+        const containerWidth = container?.getBoundingClientRect?.().width || 0;
+        const availableWidth = overlayWidth || containerWidth;
+        if (!availableWidth) {
+            return 420;
+        }
+        return Math.max(180, Math.min(420, Math.floor(availableWidth - 24)));
+    }
+
+    function composeLabelTransform(anchorTransform, dx = 0, dy = 0) {
+        const safeAnchor = anchorTransform || 'translate(2px, 2px)';
+        const transforms = [safeAnchor];
+        if (dx || dy) {
+            transforms.push(`translate(${Math.round(dx)}px, ${Math.round(dy)}px)`);
+        }
+        return transforms.join(' ');
+    }
+
+    function readStoredLabelOffset(label) {
+        return {
+            dx: Number.parseFloat(label?.dataset?.residualDx || '0') || 0,
+            dy: Number.parseFloat(label?.dataset?.residualDy || '0') || 0,
+        };
+    }
+
+    function applyStoredLabelTransform(label, dx, dy) {
+        if (!label) return;
+        const anchorTransform = label.dataset.anchorTransform || label.dataset.baseTransform || 'translate(2px, 2px)';
+        const transform = composeLabelTransform(anchorTransform, dx, dy);
+        label.dataset.residualDx = String(Math.round(dx));
+        label.dataset.residualDy = String(Math.round(dy));
+        label.dataset.baseTransform = transform;
+        label.style.transform = transform;
+    }
+
+    function resetStoredLabelOffset(label) {
+        if (!label) return;
+        delete label.dataset.residualDx;
+        delete label.dataset.residualDy;
+        const anchorTransform = label.dataset.anchorTransform || label.dataset.baseTransform || 'translate(2px, 2px)';
+        label.dataset.baseTransform = anchorTransform;
+        label.style.transform = anchorTransform;
+    }
+
+    function parseTranslatePair(transform) {
+        const match = String(transform || '').match(/translate\(\s*(-?\d+(?:\.\d+)?)px,\s*(-?\d+(?:\.\d+)?)px\s*\)/);
+        if (!match) {
+            return { x: 2, y: 2 };
+        }
+        return {
+            x: Number.parseFloat(match[1]) || 0,
+            y: Number.parseFloat(match[2]) || 0,
+        };
+    }
+
+    function getRelativeRect(element, originRect) {
+        const rect = element.getBoundingClientRect();
+        return {
+            left: rect.left - originRect.left,
+            top: rect.top - originRect.top,
+            right: rect.right - originRect.left,
+            bottom: rect.bottom - originRect.top,
+            width: rect.width,
+            height: rect.height,
+        };
+    }
+
+    function resolveLabelClampRect(overlayRect, options = {}) {
+        const clampRect = {
+            left: overlayRect.left,
+            top: overlayRect.top,
+            right: overlayRect.right,
+            bottom: overlayRect.bottom,
+        };
+
+        if (!options || !options.respectViewport) {
+            return clampRect;
+        }
+
+        const container = document.getElementById('pdfGradedContainer');
+        const containerRect = container?.getBoundingClientRect?.();
+        if (!containerRect) {
+            return clampRect;
+        }
+
+        return {
+            left: Math.max(clampRect.left, containerRect.left),
+            top: Math.max(clampRect.top, containerRect.top),
+            right: Math.min(clampRect.right, containerRect.right),
+            bottom: Math.min(clampRect.bottom, containerRect.bottom),
+        };
+    }
+
+    function clampLabelToOverlayBounds(label, overlay, options = {}) {
+        if (!label || !overlay) return;
+
+        const overlayRect = overlay.getBoundingClientRect();
+        const clampRect = resolveLabelClampRect(overlayRect, options);
+        if (clampRect.right <= clampRect.left || clampRect.bottom <= clampRect.top) {
+            return;
+        }
+        const labelRect = label.getBoundingClientRect();
+        const margin = 8;
+        let dx = 0;
+        let dy = 0;
+
+        if (labelRect.left < clampRect.left + margin) {
+            dx = clampRect.left + margin - labelRect.left;
+        } else if (labelRect.right > clampRect.right - margin) {
+            dx = clampRect.right - margin - labelRect.right;
+        }
+
+        if (labelRect.top < clampRect.top + margin) {
+            dy = clampRect.top + margin - labelRect.top;
+        } else if (labelRect.bottom > clampRect.bottom - margin) {
+            dy = clampRect.bottom - margin - labelRect.bottom;
+        }
+
+        const currentOffset = readStoredLabelOffset(label);
+        if (dx || dy) {
+            applyStoredLabelTransform(
+                label,
+                currentOffset.dx + dx,
+                currentOffset.dy + dy,
+            );
+            return;
+        }
+
+        applyStoredLabelTransform(label, currentOffset.dx, currentOffset.dy);
+    }
+
+    function clearPendingInlineLabelReposition(label) {
+        if (!label?._repositionTimeouts) return;
+        label._repositionTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
+        label._repositionTimeouts = [];
+    }
+
+    function getLabelPlacementBounds(overlay, overlayRect, labelWidth, labelHeight, options = {}) {
+        const clampRect = resolveLabelClampRect(overlayRect, options);
+
+        if (clampRect.right <= clampRect.left || clampRect.bottom <= clampRect.top) {
+            return {
+                left: 0,
+                top: 0,
+                right: overlayRect.width,
+                bottom: overlayRect.height,
+            };
+        }
+
+        return {
+            left: Math.max(0, clampRect.left - overlayRect.left),
+            top: Math.max(0, clampRect.top - overlayRect.top),
+            right: Math.min(overlayRect.width, clampRect.right - overlayRect.left),
+            bottom: Math.min(overlayRect.height, clampRect.bottom - overlayRect.top),
+        };
+    }
+
+    function getBoundsOverflow(left, top, width, height, bounds) {
+        let overflow = 0;
+        if (left < bounds.left) {
+            overflow += bounds.left - left;
+        }
+        if (top < bounds.top) {
+            overflow += bounds.top - top;
+        }
+        if (left + width > bounds.right) {
+            overflow += left + width - bounds.right;
+        }
+        if (top + height > bounds.bottom) {
+            overflow += top + height - bounds.bottom;
+        }
+        return overflow;
+    }
+
+    function buildLabelPosition(
+        name,
+        markerLeft,
+        markerTop,
+        offsetLeft,
+        offsetTop,
+    ) {
+        const left = markerLeft + offsetLeft;
+        const top = markerTop + offsetTop;
+        return {
+            name,
+            left,
+            top,
+            css: {
+                top: '0',
+                left: '0',
+                bottom: 'auto',
+                right: 'auto',
+                transform: `translate(${Math.round(offsetLeft)}px, ${Math.round(offsetTop)}px)`,
+            },
+        };
+    }
+
+    function getRectOverlapArea(rect1, rect2, gap = 0) {
+        const xOverlap = Math.max(
+            0,
+            Math.min(rect1.right + gap, rect2.right + gap) - Math.max(rect1.left - gap, rect2.left - gap),
+        );
+        const yOverlap = Math.max(
+            0,
+            Math.min(rect1.bottom + gap, rect2.bottom + gap) - Math.max(rect1.top - gap, rect2.top - gap),
+        );
+        return xOverlap * yOverlap;
+    }
+
+    function cloneRelativeRect(rect) {
+        return {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            width: rect.width,
+            height: rect.height,
+        };
+    }
+
+    function createRelativeRect(left, top, width, height) {
+        return {
+            left,
+            top,
+            right: left + width,
+            bottom: top + height,
+            width,
+            height,
+        };
+    }
+
+    function clampRelativeRectToBounds(rect, bounds, margin = 0) {
+        const minLeft = bounds.left + margin;
+        const maxLeft = bounds.right - rect.width - margin;
+        const minTop = bounds.top + margin;
+        const maxTop = bounds.bottom - rect.height - margin;
+        const left = Math.min(Math.max(rect.left, minLeft), Math.max(minLeft, maxLeft));
+        const top = Math.min(Math.max(rect.top, minTop), Math.max(minTop, maxTop));
+        return createRelativeRect(left, top, rect.width, rect.height);
+    }
+
+    function buildProtectedCornerRect(overlayRect) {
+        return {
+            left: 0,
+            top: 0,
+            right: Math.min(overlayRect.width * 0.28, 180),
+            bottom: Math.min(overlayRect.height * 0.16, 120),
+        };
+    }
+
+    function deriveMarkerTaskGroupKey(marker) {
+        if (!marker) {
+            return '';
+        }
+
+        const directTaskId = String(marker.dataset.annotationTaskId || '').trim();
+        if (directTaskId) {
+            return directTaskId;
+        }
+
+        const checkId = String(marker.dataset.annotationCheckId || '').trim();
+        if (checkId) {
+            const match = checkId.match(/^(Q\d+)/i);
+            if (match) {
+                return match[1].toUpperCase();
+            }
+            return checkId;
+        }
+
+        const labelText = String(marker.querySelector('.annotation-label')?.dataset?.fullText || marker.querySelector('.annotation-label')?.textContent || '').trim();
+        const labelMatch = labelText.match(/^(Q\d+)\s*:/i);
+        if (labelMatch) {
+            return labelMatch[1].toUpperCase();
+        }
+
+        return '';
+    }
+
+    function isSummaryPlacementEntry(entry) {
+        const marker = entry?.label?.closest?.('.annotation-marker');
+        const checkId = String(marker?.dataset?.annotationCheckId || '').trim();
+        return checkId.endsWith('_SUMMARY');
+    }
+
+    function compareTaskPlacementEntries(a, b) {
+        const aIsSummary = isSummaryPlacementEntry(a);
+        const bIsSummary = isSummaryPlacementEntry(b);
+        if (aIsSummary !== bIsSummary) {
+            return aIsSummary ? 1 : -1;
+        }
+        if (Math.abs(a.markerRect.top - b.markerRect.top) > 1) {
+            return a.markerRect.top - b.markerRect.top;
+        }
+        return a.markerRect.left - b.markerRect.left;
+    }
+
+    function buildTaskPlacementBands(entries, pageBounds, margin = 0) {
+        const summaryAnchors = entries
+            .filter(entry => entry.taskGroupKey)
+            .map(entry => ({
+                key: entry.taskGroupKey,
+                centerY: entry.markerRect.top + (entry.markerRect.height / 2),
+            }));
+
+        entries.forEach(entry => {
+            if (entry.taskGroupKey) {
+                return;
+            }
+
+            if (summaryAnchors.length) {
+                const markerCenterY = entry.markerRect.top + (entry.markerRect.height / 2);
+                const nearestSummary = summaryAnchors
+                    .slice()
+                    .sort((a, b) => Math.abs(a.centerY - markerCenterY) - Math.abs(b.centerY - markerCenterY))[0];
+                if (nearestSummary?.key) {
+                    entry.taskGroupKey = nearestSummary.key;
+                    return;
+                }
+            }
+
+            const pageKey = entry.label.closest('.annotation-marker')?.dataset.annotationPage
+                || entry.label.closest('.annotation-marker')?.dataset.pageIdx
+                || '0';
+            entry.taskGroupKey = `page-${pageKey}`;
+        });
+
+        const groups = new Map();
+        entries.forEach(entry => {
+            const groupKey = entry.taskGroupKey || `page-${entry.markerRect.top}`;
+            if (!groups.has(groupKey)) {
+                groups.set(groupKey, {
+                    key: groupKey,
+                    entries: [],
+                    minTop: entry.markerRect.top,
+                    maxBottom: entry.markerRect.bottom,
+                });
+            }
+
+            const group = groups.get(groupKey);
+            group.entries.push(entry);
+            group.minTop = Math.min(group.minTop, entry.markerRect.top, entry.baseRect.top);
+            group.maxBottom = Math.max(group.maxBottom, entry.markerRect.bottom, entry.baseRect.bottom);
+        });
+
+        const orderedGroups = Array.from(groups.values()).sort((a, b) => a.minTop - b.minTop);
+        const bandByKey = new Map();
+        const seamPadding = Math.max(0, Math.round(margin));
+
+        orderedGroups.forEach((group, index) => {
+            const previous = orderedGroups[index - 1];
+            const next = orderedGroups[index + 1];
+            let top = pageBounds.top;
+            let bottom = pageBounds.bottom;
+            let midpointTop = pageBounds.top;
+            let midpointBottom = pageBounds.bottom;
+
+            if (previous) {
+                midpointTop = Math.ceil((previous.maxBottom + group.minTop) / 2);
+                top = Math.max(pageBounds.top, midpointTop + seamPadding);
+            }
+
+            if (next) {
+                midpointBottom = Math.floor((group.maxBottom + next.minTop) / 2);
+                bottom = Math.min(pageBounds.bottom, midpointBottom - seamPadding);
+            }
+
+            // Fall back to midpoint-only bands if the desired seam would collapse a tight group.
+            if (bottom <= top) {
+                top = Math.max(pageBounds.top, midpointTop);
+                bottom = Math.min(pageBounds.bottom, Math.max(midpointBottom, top + 1));
+            }
+
+            bandByKey.set(group.key, {
+                left: pageBounds.left,
+                right: pageBounds.right,
+                top,
+                bottom: Math.max(top + 1, bottom),
+            });
+        });
+
+        return bandByKey;
+    }
+
+    function nudgeRelativeRectAwayFromProtectedCorner(rect, bounds, overlayRect, margin = 0) {
+        const adjusted = clampRelativeRectToBounds(rect, bounds, margin);
+        const protectedCorner = buildProtectedCornerRect(overlayRect);
+        const overlapArea = getRectOverlapArea(adjusted, protectedCorner, 0);
+        if (!overlapArea) {
+            return adjusted;
+        }
+
+        const padding = 10;
+        const candidates = [];
+        const pushRight = protectedCorner.right + padding - adjusted.left;
+        const pushDown = protectedCorner.bottom + padding - adjusted.top;
+
+        if (pushRight > 0) {
+            candidates.push(
+                clampRelativeRectToBounds(
+                    createRelativeRect(
+                        adjusted.left + pushRight,
+                        adjusted.top,
+                        adjusted.width,
+                        adjusted.height,
+                    ),
+                    bounds,
+                    margin,
+                ),
+            );
+        }
+
+        if (pushDown > 0) {
+            candidates.push(
+                clampRelativeRectToBounds(
+                    createRelativeRect(
+                        adjusted.left,
+                        adjusted.top + pushDown,
+                        adjusted.width,
+                        adjusted.height,
+                    ),
+                    bounds,
+                    margin,
+                ),
+            );
+        }
+
+        candidates.push(adjusted);
+
+        let bestRect = adjusted;
+        let bestScore = Number.POSITIVE_INFINITY;
+        candidates.forEach(candidate => {
+            const protectedOverlap = getRectOverlapArea(candidate, protectedCorner, 0);
+            const drift =
+                Math.abs(candidate.left - rect.left) +
+                Math.abs(candidate.top - rect.top);
+            const score = protectedOverlap * 1000 + drift;
+            if (score < bestScore) {
+                bestScore = score;
+                bestRect = candidate;
+            }
+        });
+
+        return bestRect;
+    }
+
+    function scoreResidualPlacementRect(rect, referenceRect, occupiedRects, bounds, overlayRect) {
+        const overlapPenalty = occupiedRects.reduce(
+            (total, occupiedRect) => total + getRectOverlapArea(rect, occupiedRect, 0),
+            0,
+        );
+        const boundsOverflow = getBoundsOverflow(
+            rect.left,
+            rect.top,
+            rect.width,
+            rect.height,
+            bounds,
+        );
+        const protectedPenalty = getRectOverlapArea(
+            rect,
+            buildProtectedCornerRect(overlayRect),
+            0,
+        );
+        const topBandLimit = Math.min(overlayRect.height * 0.14, 96);
+        const topBandPenalty = rect.top < topBandLimit
+            ? Math.ceil((topBandLimit - rect.top) * 12)
+            : 0;
+        const driftPenalty = Math.abs(rect.left - referenceRect.left) + Math.abs(rect.top - referenceRect.top);
+        return overlapPenalty * 1000 + boundsOverflow * 500 + protectedPenalty * 24 + topBandPenalty + driftPenalty;
+    }
+
+    function resolveResidualLabelOverlaps(overlay) {
+        if (!overlay) return;
+
+        const overlayRect = overlay.getBoundingClientRect();
+        const pageBounds = {
+            left: 0,
+            top: 0,
+            right: overlayRect.width,
+            bottom: overlayRect.height,
+        };
+        const labelGap = 8;
+        const margin = 8;
+        const labels = Array.from(overlay.querySelectorAll('.annotation-label'))
+            .filter(label => label && label.offsetParent !== null);
+
+        if (labels.length < 2) {
+            return;
+        }
+
+        labels.forEach(label => {
+            resetStoredLabelOffset(label);
+        });
+        const anchorEntries = labels.map(label => {
+            const labelRect = label.getBoundingClientRect();
+            const marker = label.closest('.annotation-marker');
+            const markerRect = marker?.getBoundingClientRect();
+            const anchorTransform = label.dataset.anchorTransform || label.dataset.baseTransform || 'translate(2px, 2px)';
+            const anchorOffset = parseTranslatePair(anchorTransform);
+            const rect = markerRect
+                ? createRelativeRect(
+                    markerRect.left - overlayRect.left + anchorOffset.x,
+                    markerRect.top - overlayRect.top + anchorOffset.y,
+                    labelRect.width,
+                    labelRect.height,
+                )
+                : getRelativeRect(label, overlayRect);
+            const adjustedRect = nudgeRelativeRectAwayFromProtectedCorner(
+                rect,
+                pageBounds,
+                overlayRect,
+                margin,
+            );
+            return {
+                label,
+                baseRect: adjustedRect,
+                placedRect: cloneRelativeRect(adjustedRect),
+                bounds: pageBounds,
+                markerRect: markerRect
+                    ? createRelativeRect(
+                        markerRect.left - overlayRect.left,
+                        markerRect.top - overlayRect.top,
+                        markerRect.width,
+                        markerRect.height,
+                    )
+                    : cloneRelativeRect(adjustedRect),
+                taskGroupKey: deriveMarkerTaskGroupKey(marker),
+            };
+        });
+
+        const taskBands = buildTaskPlacementBands(anchorEntries, pageBounds, margin);
+        anchorEntries.forEach(entry => {
+            entry.bounds = taskBands.get(entry.taskGroupKey) || pageBounds;
+            entry.baseRect = clampRelativeRectToBounds(entry.baseRect, entry.bounds, margin);
+            entry.placedRect = cloneRelativeRect(entry.baseRect);
+        });
+
+        function horizontalOverlap(rectA, rectB) {
+            return Math.max(0, Math.min(rectA.right, rectB.right) - Math.max(rectA.left, rectB.left));
+        }
+
+        function sharesLane(rectA, rectB) {
+            const overlap = horizontalOverlap(rectA, rectB);
+            const minWidth = Math.min(rectA.width, rectB.width);
+            const verticalDistance = Math.abs(rectA.top - rectB.top);
+            return (
+                verticalDistance <= 96 &&
+                (overlap >= 30 || overlap >= minWidth * 0.25)
+            );
+        }
+
+        function sharesTaskGroup(entryA, entryB) {
+            return (entryA.taskGroupKey || '') === (entryB.taskGroupKey || '');
+        }
+
+        const visited = new Set();
+        const components = [];
+
+        anchorEntries.forEach((entry) => {
+            if (visited.has(entry.label)) {
+                return;
+            }
+            const queue = [entry];
+            const component = [];
+            visited.add(entry.label);
+
+            while (queue.length) {
+                const current = queue.shift();
+                component.push(current);
+                anchorEntries.forEach((candidate) => {
+                    if (visited.has(candidate.label)) {
+                        return;
+                    }
+                    if (sharesTaskGroup(current, candidate) && sharesLane(current.baseRect, candidate.baseRect)) {
+                        visited.add(candidate.label);
+                        queue.push(candidate);
+                    }
+                });
+            }
+
+            components.push(component);
+        });
+
+        components.forEach(component => {
+            if (component.length < 2) {
+                return;
+            }
+
+            const placements = component
+                .slice()
+                .sort(compareTaskPlacementEntries)
+                .map(entry => ({
+                    entry,
+                    top: Math.max(entry.baseRect.top, entry.bounds.top + margin),
+                }));
+
+            for (let index = 1; index < placements.length; index += 1) {
+                const previous = placements[index - 1];
+                placements[index].top = Math.max(
+                    placements[index].top,
+                    previous.top + previous.entry.baseRect.height + labelGap,
+                );
+            }
+
+            const maxBottom = Math.max(...placements.map(item => item.top + item.entry.baseRect.height));
+            const componentBottomLimit = Math.min(
+                ...placements.map(item => item.entry.bounds.bottom - margin),
+            );
+            const overflow = Math.max(0, maxBottom - componentBottomLimit);
+            if (overflow > 0) {
+                const maxUpwardShift = Math.max(
+                    0,
+                    Math.min(
+                        ...placements.map(item => item.top - (item.entry.bounds.top + margin)),
+                    ),
+                );
+                const shift = Math.min(overflow, maxUpwardShift);
+                if (shift > 0) {
+                    placements.forEach(item => {
+                        item.top -= shift;
+                    });
+                }
+            }
+
+            placements.forEach(({ entry, top }) => {
+                entry.placedRect = nudgeRelativeRectAwayFromProtectedCorner(
+                    createRelativeRect(
+                        entry.baseRect.left,
+                        top,
+                        entry.baseRect.width,
+                        entry.baseRect.height,
+                    ),
+                    entry.bounds,
+                    overlayRect,
+                    margin,
+                );
+            });
+        });
+
+        function sharesResidualCluster(rectA, rectB) {
+            const overlapArea = getRectOverlapArea(rectA, rectB, 0);
+            const overlapWidth = horizontalOverlap(rectA, rectB);
+            const minWidth = Math.min(rectA.width, rectB.width);
+            const verticalGap = Math.max(
+                0,
+                Math.max(rectA.top, rectB.top) - Math.min(rectA.bottom, rectB.bottom),
+            );
+            return (
+                overlapArea > 0 ||
+                (
+                    verticalGap <= 140 &&
+                    (overlapWidth >= 20 || overlapWidth >= minWidth * 0.15)
+                )
+            );
+        }
+
+        function repackPlacedComponents() {
+            const repackVisited = new Set();
+            const repackComponents = [];
+
+            anchorEntries.forEach(entry => {
+                if (repackVisited.has(entry.label)) {
+                    return;
+                }
+                const queue = [entry];
+                const component = [];
+                repackVisited.add(entry.label);
+
+                while (queue.length) {
+                    const current = queue.shift();
+                    component.push(current);
+                    anchorEntries.forEach(candidate => {
+                        if (repackVisited.has(candidate.label)) {
+                            return;
+                        }
+                        if (sharesTaskGroup(current, candidate) && sharesResidualCluster(current.placedRect, candidate.placedRect)) {
+                            repackVisited.add(candidate.label);
+                            queue.push(candidate);
+                        }
+                    });
+                }
+
+                repackComponents.push(component);
+            });
+
+            repackComponents.forEach(component => {
+                if (component.length < 2) {
+                    return;
+                }
+
+                const ordered = component
+                    .slice()
+                    .sort(compareTaskPlacementEntries);
+
+                ordered.forEach((entry, index) => {
+                    const previous = ordered[index - 1];
+                    const top = index === 0
+                        ? entry.placedRect.top
+                        : Math.max(entry.placedRect.top, previous.placedRect.bottom + labelGap);
+                    entry.placedRect = nudgeRelativeRectAwayFromProtectedCorner(
+                        createRelativeRect(
+                            entry.placedRect.left,
+                            top,
+                            entry.placedRect.width,
+                            entry.placedRect.height,
+                        ),
+                        entry.bounds,
+                        overlayRect,
+                        margin,
+                    );
+                });
+
+                const componentBottomLimit = Math.min(
+                    ...ordered.map(entry => entry.bounds.bottom - margin),
+                );
+                const maxBottom = Math.max(...ordered.map(entry => entry.placedRect.bottom));
+                const overflow = Math.max(0, maxBottom - componentBottomLimit);
+                if (overflow > 0) {
+                    const maxUpwardShift = Math.max(
+                        0,
+                        Math.min(
+                            ...ordered.map(entry => entry.placedRect.top - (entry.bounds.top + margin)),
+                        ),
+                    );
+                    const shift = Math.min(overflow, maxUpwardShift);
+                    if (shift > 0) {
+                        ordered.forEach(entry => {
+                            entry.placedRect = nudgeRelativeRectAwayFromProtectedCorner(
+                                createRelativeRect(
+                                    entry.placedRect.left,
+                                    entry.placedRect.top - shift,
+                                    entry.placedRect.width,
+                                    entry.placedRect.height,
+                                ),
+                                entry.bounds,
+                                overlayRect,
+                                margin,
+                            );
+                        });
+                    }
+                }
+            });
+        }
+
+        function normalizeTaskGroupSpacing() {
+            const groups = new Map();
+            anchorEntries.forEach(entry => {
+                const key = entry.taskGroupKey || 'page';
+                if (!groups.has(key)) {
+                    groups.set(key, []);
+                }
+                groups.get(key).push(entry);
+            });
+
+            groups.forEach(entries => {
+                if (entries.length < 2) {
+                    return;
+                }
+
+                const ordered = entries
+                    .slice()
+                    .sort(compareTaskPlacementEntries);
+
+                ordered.forEach((entry, index) => {
+                    const minTop = index === 0
+                        ? entry.bounds.top + margin
+                        : ordered[index - 1].placedRect.bottom + labelGap;
+                    const top = Math.max(entry.placedRect.top, minTop);
+                    entry.placedRect = nudgeRelativeRectAwayFromProtectedCorner(
+                        createRelativeRect(
+                            entry.placedRect.left,
+                            top,
+                            entry.placedRect.width,
+                            entry.placedRect.height,
+                        ),
+                        entry.bounds,
+                        overlayRect,
+                        margin,
+                    );
+                });
+
+                const groupBottomLimit = Math.min(
+                    ...ordered.map(entry => entry.bounds.bottom - margin),
+                );
+                const overflow = Math.max(0, Math.max(...ordered.map(entry => entry.placedRect.bottom)) - groupBottomLimit);
+                if (overflow > 0) {
+                    const maxUpwardShift = Math.max(
+                        0,
+                        Math.min(
+                            ...ordered.map((entry, index) => {
+                                const minTop = index === 0
+                                    ? entry.bounds.top + margin
+                                    : ordered[index - 1].placedRect.bottom + labelGap;
+                                return entry.placedRect.top - minTop;
+                            }),
+                        ),
+                    );
+                    const shift = Math.min(overflow, maxUpwardShift);
+                    if (shift > 0) {
+                        ordered.forEach(entry => {
+                            entry.placedRect = createRelativeRect(
+                                entry.placedRect.left,
+                                entry.placedRect.top - shift,
+                                entry.placedRect.width,
+                                entry.placedRect.height,
+                            );
+                        });
+                    }
+                }
+
+                ordered.forEach((entry, index) => {
+                    if (index === 0) {
+                        return;
+                    }
+                    const minTop = ordered[index - 1].placedRect.bottom + labelGap;
+                    if (entry.placedRect.top < minTop) {
+                        entry.placedRect = createRelativeRect(
+                            entry.placedRect.left,
+                            minTop,
+                            entry.placedRect.width,
+                            entry.placedRect.height,
+                        );
+                    }
+                });
+            });
+        }
+
+        repackPlacedComponents();
+        repackPlacedComponents();
+        normalizeTaskGroupSpacing();
+
+        anchorEntries.forEach(entry => {
+            const dx = entry.placedRect.left - entry.baseRect.left;
+            const dy = entry.placedRect.top - entry.baseRect.top;
+            applyStoredLabelTransform(entry.label, dx, dy);
+            clampLabelToOverlayBounds(entry.label, overlay);
+        });
+    }
+
+    function repositionInlineLabel(label) {
+        if (!label) return;
+        const marker = label.closest('.annotation-marker');
+        const overlay = marker?.parentElement;
+        if (!marker || !overlay) return;
+
+        clearPendingInlineLabelReposition(label);
+
+        const syncLabelBounds = () => {
+            if (!label.isConnected || !marker.isConnected || !overlay.isConnected) return;
+            const restrictToViewport =
+                label.classList.contains('label-expanded') ||
+                label.classList.contains('label-editing');
+            positionLabelOptimally(marker, label, overlay, undefined, {
+                respectViewport: restrictToViewport,
+            });
+            clampLabelToOverlayBounds(label, overlay, {
+                respectViewport: restrictToViewport,
+            });
+        };
+
+        requestAnimationFrame(() => {
+            syncLabelBounds();
+            requestAnimationFrame(() => {
+                syncLabelBounds();
+            });
+        });
+
+        label._repositionTimeouts = [120, 240, 400, 640, 900, 1200].map(delay => (
+            setTimeout(() => {
+                syncLabelBounds();
+            }, delay)
+        ));
+    }
+
     // Expand label to show full text (read-only mode)
     function expandInlineLabelReadOnly(label) {
         if (!label) return;
@@ -1528,7 +2405,8 @@
         label.classList.remove('label-editing');
 
         // Expand the label - fit content, with min-width only for long lines
-        label.style.maxWidth = '400px';
+        const maxWidthPx = resolveExpandedLabelMaxWidth(label);
+        label.style.maxWidth = `${maxWidthPx}px`;
         // Check longest line - if any line >= 30 chars, use wider box for readability
         const longestLine = Math.max(...fullText.split('\n').map(line => line.length));
         label.style.minWidth = longestLine >= 30 ? '200px' : '';
@@ -1547,6 +2425,7 @@
             word-wrap: break-word;
         `;
         label.appendChild(textSpan);
+        repositionInlineLabel(label);
     }
 
     // Enter edit mode with textarea
@@ -1578,9 +2457,11 @@
         }
 
         // EDIT MODE: ALWAYS set full width for comfortable editing (even if already expanded from read-only)
-        label.style.maxWidth = '400px';
-        label.style.minWidth = '300px';
-        label.style.width = '300px';
+        const maxWidthPx = resolveExpandedLabelMaxWidth(label);
+        const editWidthPx = Math.min(300, maxWidthPx);
+        label.style.maxWidth = `${maxWidthPx}px`;
+        label.style.minWidth = `${editWidthPx}px`;
+        label.style.width = `${editWidthPx}px`;
         label.style.whiteSpace = 'pre-wrap';
         label.style.overflow = 'visible';
         label.style.zIndex = '1000';
@@ -1618,6 +2499,7 @@
         const autoResize = () => {
             textarea.style.height = 'auto';
             textarea.style.height = Math.min(200, textarea.scrollHeight) + 'px';
+            repositionInlineLabel(label);
         };
         textarea.addEventListener('input', autoResize);
 
@@ -1800,6 +2682,7 @@
         // Add strip and textarea to label
         label.appendChild(priorityStrip);
         label.appendChild(textarea);
+        repositionInlineLabel(label);
 
         // Focus textarea and put cursor at beginning
         setTimeout(() => {
@@ -1813,6 +2696,8 @@
     // Collapse label back to compact view
     function collapseInlineLabel(label) {
         if (!label || !label.classList.contains('label-expanded')) return;
+
+        clearPendingInlineLabelReposition(label);
 
         // Remove escape handler if exists
         if (label._escapeHandler) {
@@ -3347,9 +4232,6 @@
                 if (typeof target.focus === 'function') {
                     target.focus({ preventScroll: true });
                 }
-                if (typeof target.scrollIntoView === 'function') {
-                    target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-                }
             }
         }
     }
@@ -3364,7 +4246,7 @@
      * @param {HTMLElement} label - The label element to position
      * @param {HTMLElement} overlay - The overlay container
      */
-    function positionLabelOptimally(marker, label, overlay, preComputed) {
+    function positionLabelOptimally(marker, label, overlay, preComputed, options = {}) {
         if (!marker || !label || !overlay) return;
 
         // Use pre-computed rects when available (batch path from repositionAllLabels),
@@ -3381,9 +4263,19 @@
         // Calculate marker position relative to overlay
         const markerLeft = markerRect.left - overlayRect.left;
         const markerTop = markerRect.top - overlayRect.top;
+        const markerWidth = markerRect.width;
+        const markerHeight = markerRect.height;
         const markerRight = markerLeft + markerRect.width;
         const markerBottom = markerTop + markerRect.height;
+        const markerCenterX = markerLeft + markerWidth / 2;
         const markerCenterY = markerTop + markerRect.height / 2;
+        const placementBounds = getLabelPlacementBounds(
+            overlay,
+            overlayRect,
+            labelWidth,
+            labelHeight,
+            options,
+        );
 
         // Collect collision rects. Marker rects are stable (use pre-computed);
         // label rects are read fresh since earlier labels may have been repositioned.
@@ -3425,6 +4317,8 @@
             });
         }
 
+        const isExpandedLabel = label.classList.contains('label-expanded') || label.classList.contains('label-editing');
+
         // Calculate overlap area between two rectangles
         function getOverlapArea(rect1, rect2) {
             const xOverlap = Math.max(0, Math.min(rect1.right, rect2.right) - Math.max(rect1.left, rect2.left));
@@ -3433,68 +4327,155 @@
         }
 
         // Calculate total overlap for a label position
-        function getTotalOverlap(left, top, width, height) {
+        function getOverlapTotals(left, top, width, height) {
             const labelRect = { left, top, right: left + width, bottom: top + height };
-            let totalOverlap = 0;
+            let labelOverlap = 0;
+            let markerOverlap = 0;
             for (const rect of otherRects) {
                 const overlap = getOverlapArea(labelRect, rect);
-                // Weight label overlaps more heavily than marker overlaps
-                totalOverlap += rect.isLabel ? overlap * 2 : overlap;
+                if (rect.isLabel) {
+                    labelOverlap += overlap;
+                } else {
+                    markerOverlap += overlap;
+                }
             }
-            return totalOverlap;
+            return {
+                labelOverlap,
+                markerOverlap,
+                totalOverlap: labelOverlap + markerOverlap,
+            };
         }
 
-        // Check if position is within overlay bounds
-        function isWithinBounds(left, top, width, height) {
-            return left >= 0 && top >= 0 &&
-                left + width <= overlayRect.width &&
-                top + height <= overlayRect.height;
-        }
+        const centerOffsetX = (markerWidth - labelWidth) / 2;
+        const centerOffsetY = (markerHeight - labelHeight) / 2;
 
         // Define all possible positions
         const positions = [
-            {
-                name: 'bottom-right',
-                left: markerRight + gap,
-                top: markerBottom + gap,
-                css: { top: '100%', left: '100%', bottom: 'auto', right: 'auto', transform: `translate(${gap}px, ${gap}px)` }
-            },
-            {
-                name: 'top-right',
-                left: markerRight + gap,
-                top: markerTop - labelHeight - gap,
-                css: { bottom: '100%', left: '100%', top: 'auto', right: 'auto', transform: `translate(${gap}px, -${gap}px)` }
-            },
-            {
-                name: 'bottom-left',
-                left: markerLeft - labelWidth - gap,
-                top: markerBottom + gap,
-                css: { top: '100%', right: '100%', bottom: 'auto', left: 'auto', transform: `translate(-${gap}px, ${gap}px)` }
-            },
-            {
-                name: 'top-left',
-                left: markerLeft - labelWidth - gap,
-                top: markerTop - labelHeight - gap,
-                css: { bottom: '100%', right: '100%', top: 'auto', left: 'auto', transform: `translate(-${gap}px, -${gap}px)` }
-            }
+            buildLabelPosition(
+                'right-center',
+                markerLeft,
+                markerTop,
+                markerWidth + gap,
+                centerOffsetY,
+            ),
+            buildLabelPosition(
+                'left-center',
+                markerLeft,
+                markerTop,
+                -(labelWidth + gap),
+                centerOffsetY,
+            ),
+            buildLabelPosition(
+                'bottom-right',
+                markerLeft,
+                markerTop,
+                markerWidth + gap,
+                markerHeight + gap,
+            ),
+            buildLabelPosition(
+                'top-right',
+                markerLeft,
+                markerTop,
+                markerWidth + gap,
+                -(labelHeight + gap),
+            ),
+            buildLabelPosition(
+                'bottom-left',
+                markerLeft,
+                markerTop,
+                -(labelWidth + gap),
+                markerHeight + gap,
+            ),
+            buildLabelPosition(
+                'top-left',
+                markerLeft,
+                markerTop,
+                -(labelWidth + gap),
+                -(labelHeight + gap),
+            ),
+            buildLabelPosition(
+                'top-center',
+                markerLeft,
+                markerTop,
+                centerOffsetX,
+                -(labelHeight + gap),
+            ),
+            buildLabelPosition(
+                'bottom-center',
+                markerLeft,
+                markerTop,
+                centerOffsetX,
+                markerHeight + gap,
+            ),
         ];
 
         // Score each position
         let bestPosition = positions[0];
         let bestScore = -Infinity;
+        const pageBounds = {
+            left: 0,
+            top: 0,
+            right: overlayRect.width,
+            bottom: overlayRect.height,
+        };
+        const spaceLeft = Math.max(0, markerLeft - placementBounds.left);
+        const spaceRight = Math.max(0, placementBounds.right - markerRight);
+        const spaceAbove = Math.max(0, markerTop - placementBounds.top);
+        const spaceBelow = Math.max(0, placementBounds.bottom - markerBottom);
+        const nearLeftEdge = spaceLeft <= labelWidth + gap + 16;
+        const nearRightEdge = spaceRight <= labelWidth + gap + 16;
+        const nearTopEdge = spaceAbove <= labelHeight + gap + 20;
+        const nearBottomEdge = spaceBelow <= labelHeight + gap + 16;
+        const nearUpperLeftCorner =
+            spaceLeft <= labelWidth + 28 &&
+            spaceAbove <= labelHeight + 28;
+        const nearUpperRightCorner =
+            spaceRight <= labelWidth + 28 &&
+            spaceAbove <= labelHeight + 28;
+        const positionMetrics = positions.map(pos => {
+            const boundsOverflow = getBoundsOverflow(
+                pos.left,
+                pos.top,
+                labelWidth,
+                labelHeight,
+                placementBounds,
+            );
+            const pageOverflow = getBoundsOverflow(
+                pos.left,
+                pos.top,
+                labelWidth,
+                labelHeight,
+                pageBounds,
+            );
+            const overlaps = getOverlapTotals(pos.left, pos.top, labelWidth, labelHeight);
+            return {
+                pos,
+                boundsOverflow,
+                pageOverflow,
+                overlaps,
+                fullyVisible: boundsOverflow === 0 && pageOverflow === 0,
+            };
+        });
+        const hasFullyVisiblePosition = positionMetrics.some(metric => metric.fullyVisible);
 
-        for (const pos of positions) {
+        for (const metric of positionMetrics) {
+            const pos = metric.pos;
             let score = 0;
 
-            // Check if within bounds (heavy penalty if not)
-            const inBounds = isWithinBounds(pos.left, pos.top, labelWidth, labelHeight);
-            if (!inBounds) {
-                score -= 10000;
+            const boundsOverflow = metric.boundsOverflow;
+            const pageOverflow = metric.pageOverflow;
+            const overlapTotals = metric.overlaps;
+            if (hasFullyVisiblePosition && (boundsOverflow > 0 || pageOverflow > 0)) {
+                continue;
             }
 
-            // Calculate overlap penalty
-            const overlap = getTotalOverlap(pos.left, pos.top, labelWidth, labelHeight);
-            score -= overlap * 10; // Penalize overlap heavily
+            score -= boundsOverflow * 240;
+            score -= pageOverflow * (isExpandedLabel ? 320 : 220);
+
+            const labelOverlapPenalty = isExpandedLabel ? 1.2 : 20;
+            const markerOverlapPenalty = isExpandedLabel ? 12 : 10;
+            score -= overlapTotals.labelOverlap * labelOverlapPenalty;
+            score -= overlapTotals.markerOverlap * markerOverlapPenalty;
 
             // Slight preference for positions that don't cover markers below
             // If there's a marker below this one, prefer top positions
@@ -3502,16 +4483,126 @@
             const hasMarkerAbove = otherRects.some(r => r.isMarker && r.bottom < markerCenterY);
 
             if (pos.name.startsWith('top') && hasMarkerBelow) {
-                score += 50; // Bonus for top when there's stuff below
+                score += 40; // Bonus for top when there's stuff below
             }
             if (pos.name.startsWith('bottom') && hasMarkerAbove && !hasMarkerBelow) {
-                score += 50; // Bonus for bottom when there's stuff above but not below
+                score += 40; // Bonus for bottom when there's stuff above but not below
             }
 
-            // Small preference for right side (closer to comments panel)
-            if (pos.name.endsWith('right')) {
-                score += 10;
+            if (pageOverflow > 0) {
+                score -= Math.max(40, pageOverflow * 24);
             }
+
+            if (pos.name.includes('left') && spaceLeft < labelWidth + gap) {
+                score -= (labelWidth + gap - spaceLeft) * 18;
+            }
+            if (pos.name.includes('right') && spaceRight < labelWidth + gap) {
+                score -= (labelWidth + gap - spaceRight) * 18;
+            }
+            if (pos.name.startsWith('top') && spaceAbove < labelHeight + gap) {
+                score -= (labelHeight + gap - spaceAbove) * 24;
+            }
+            if (pos.name.startsWith('bottom') && spaceBelow < labelHeight + gap) {
+                score -= (labelHeight + gap - spaceBelow) * 16;
+            }
+
+            if (nearLeftEdge && pos.name.includes('right')) {
+                score += 70;
+            }
+            if (nearLeftEdge && pos.name.includes('left')) {
+                score -= 55;
+            }
+            if (nearRightEdge && pos.name.includes('left')) {
+                score += 70;
+            }
+            if (nearRightEdge && pos.name.includes('right')) {
+                score -= 55;
+            }
+            if (nearTopEdge && pos.name.startsWith('bottom')) {
+                score += 52;
+            }
+            if (nearTopEdge && pos.name.startsWith('top')) {
+                score -= 90;
+            }
+            if (nearBottomEdge && pos.name.startsWith('top')) {
+                score += 36;
+            }
+            if (nearBottomEdge && pos.name.startsWith('bottom')) {
+                score -= 30;
+            }
+
+            if (isExpandedLabel) {
+                if (pos.name.includes('center')) {
+                    score += 28;
+                }
+                if (pos.name.includes('right') && spaceRight >= labelWidth + gap) {
+                    score += 42;
+                }
+                if (pos.name.includes('left') && spaceLeft >= labelWidth + gap) {
+                    score += 28;
+                }
+                if (pos.name.startsWith('top') && spaceAbove >= labelHeight + gap) {
+                    score += 16;
+                }
+                if (pos.name.startsWith('bottom') && spaceBelow >= labelHeight + gap) {
+                    score += 16;
+                }
+            }
+
+            const labelRect = {
+                left: pos.left,
+                top: pos.top,
+                right: pos.left + labelWidth,
+                bottom: pos.top + labelHeight,
+            };
+            const protectedCorner = {
+                left: 0,
+                top: 0,
+                right: Math.min(overlayRect.width * 0.28, 180),
+                bottom: Math.min(overlayRect.height * 0.16, 120),
+            };
+            score -= getOverlapArea(labelRect, protectedCorner) * 16;
+
+            const nearTopBand = markerTop <= Math.min(overlayRect.height * 0.22, 170);
+            const nearLeftThird = markerLeft <= overlayRect.width * 0.38;
+            if (nearTopBand && pos.name.startsWith('top')) {
+                score -= 120;
+            }
+            if (nearTopBand && pos.name.startsWith('bottom')) {
+                score += 45;
+            }
+            if (nearTopBand && nearLeftThird && (pos.name.includes('left') || pos.name === 'top-center')) {
+                score -= 80;
+            }
+            if (nearTopBand && nearLeftThird && pos.name.includes('right')) {
+                score += 32;
+            }
+
+            if (nearUpperLeftCorner) {
+                if (pos.name === 'top-left' || pos.name === 'left-center' || pos.name === 'top-center') {
+                    score -= 140;
+                }
+                if (pos.name === 'right-center' || pos.name === 'bottom-right' || pos.name === 'bottom-center') {
+                    score += 48;
+                }
+            }
+
+            if (nearUpperRightCorner) {
+                if (pos.name === 'top-right' || pos.name === 'right-center' || pos.name === 'top-center') {
+                    score -= 140;
+                }
+                if (pos.name === 'left-center' || pos.name === 'bottom-left' || pos.name === 'bottom-center') {
+                    score += 48;
+                }
+            }
+
+            if ((pos.name === 'left-center' || pos.name === 'right-center') && otherRects.length >= 4) {
+                score += 20;
+            }
+
+            const dx = pos.left + labelWidth / 2 - markerCenterX;
+            const dy = pos.top + labelHeight / 2 - markerCenterY;
+            score -= Math.hypot(dx, dy) * 0.08;
 
             if (score > bestScore) {
                 bestScore = score;
@@ -3527,7 +4618,10 @@
         label.style.transform = bestPosition.css.transform;
 
         // Store the transform and position for hover effects and tooltip direction
+        label.dataset.anchorTransform = bestPosition.css.transform;
         label.dataset.baseTransform = bestPosition.css.transform;
+        delete label.dataset.residualDx;
+        delete label.dataset.residualDy;
         label.dataset.position = bestPosition.name;  // e.g., 'bottom-right', 'top-left'
     }
 
@@ -3588,6 +4682,8 @@
                 positionLabelOptimally(marker, label, overlay, preComputed);
             }
         });
+
+        resolveResidualLabelOverlaps(overlay);
     }
 
     // Helper function to re-render annotations for all rendered pages (continuous scroll)
@@ -3631,7 +4727,8 @@
 
         const Rendering = window.PdfPreviewModalRendering || {};
         const convertFn = Rendering.convertTopLeftRectToViewport || function (r) { return r; };
-        const MIN_SIZE = Rendering.MIN_MARKER_SIZE || 16;
+        const zoom = (viewer && viewer.zoom) || 1.0;
+        const MIN_SIZE = Math.round((Rendering.MIN_MARKER_SIZE || 16) * zoom);
 
         const viewportRect = convertFn(rect, viewport);
         const minX = Math.min(viewportRect[0], viewportRect[2]);
@@ -6895,6 +7992,12 @@
     window.PdfPreviewModal = window.PdfPreviewModal || {};
     window.PdfPreviewModal.createPdfPreviewModal = function (options) {
         return createPdfPreviewModal(normalizePackageOptions(options));
+    };
+    window.PdfPreviewModal.__test = {
+        buildTaskPlacementBands,
+        compareTaskPlacementEntries,
+        deriveMarkerTaskGroupKey,
+        isSummaryPlacementEntry,
     };
 
     window.AEMSPdfAnnotator = window.AEMSPdfAnnotator || {};

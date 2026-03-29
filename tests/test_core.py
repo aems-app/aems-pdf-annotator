@@ -8,6 +8,8 @@ from aems_pdf_annotator.core import (
     _encode_subject_metadata,
     _decode_subject_metadata,
     _format_pdf_datetime,
+    _infer_check_id,
+    _looks_like_check_id,
     _normalize_pdf_author_name,
     _pdf_rect_to_pymupdf,
     _pymupdf_rect_to_pdf,
@@ -61,11 +63,13 @@ class TestMetadataEncoding:
     def test_encode_decode_round_trip(self):
         encoded = _encode_subject_metadata(
             "abc-123", "AI",
+            check_id="Q1-1",
             original_source="AI",
             is_verdict=True,
         )
         decoded = _decode_subject_metadata(encoded)
         assert decoded["stable_id"] == "abc-123"
+        assert decoded["check_id"] == "Q1-1"
         assert decoded["source"] == "AI"
         assert decoded["is_verdict"] is True
 
@@ -99,6 +103,11 @@ class TestMetadataEncoding:
         decoded = _decode_subject_metadata("some-uuid-here")
         assert decoded["stable_id"] == "some-uuid-here"
         assert decoded["source"] is None
+
+    def test_uuid_like_stable_id_is_not_treated_as_check_id(self):
+        stable_id = "c8e2181b-151f-4d6c-bb69-5a0aaeda6314"
+        assert _looks_like_check_id(stable_id) is False
+        assert _infer_check_id(stable_id, "Plain comment") is None
 
 
 class TestAuthorNormalization:
@@ -260,16 +269,42 @@ class TestPDFAnnotator:
         """Verify reading back annotations from a page."""
         with PDFAnnotator(sample_pdf) as annotator:
             annotator.add_annotation(PDFAnnotation(
+                id="Q4-06",
                 page_index=0,
                 bbox=BBox(x0=50, y0=50, x1=200, y1=80),
                 kind=AnnotationType.HIGHLIGHT,
                 color=AnnotationColor.GREEN,
                 comment="Test comment",
+                check_id="Q4-06",
                 grader_name="Reader Grader",
             ))
             annots = annotator.get_annotations_on_page(0)
             assert len(annots) >= 1
-            assert annots[0]["color"] == "green"
+            entry = next(annot for annot in annots if annot.get("check_id") == "Q4-06")
+            assert entry["check_id"] == "Q4-06"
+            assert entry["task_id"] == "Q4"
+
+    def test_get_annotations_on_page_uses_check_id_not_uuid_prefix(self, sample_pdf):
+        """Rubric IDs must survive PDF round-tripping even when stable IDs are UUIDs."""
+        with PDFAnnotator(sample_pdf) as annotator:
+            annotator.add_annotation(PDFAnnotation(
+                id="c8e2181b-151f-4d6c-bb69-5a0aaeda6314",
+                page_index=0,
+                bbox=BBox(x0=50, y0=120, x1=200, y1=150),
+                kind=AnnotationType.TEXT,
+                color=AnnotationColor.GREEN,
+                comment="Anchored by rubric ID",
+                check_id="Q1-1",
+                grader_name="Reader Grader",
+            ))
+            annots = annotator.get_annotations_on_page(0)
+            entry = next(
+                annot
+                for annot in annots
+                if annot.get("content", "").endswith("Anchored by rubric ID")
+            )
+            assert entry["check_id"] == "Q1-1"
+            assert entry["task_id"] == "Q1"
 
     def test_update_annotation_rect_uses_top_left_coordinates(self, sample_pdf):
         with PDFAnnotator(sample_pdf) as annotator:

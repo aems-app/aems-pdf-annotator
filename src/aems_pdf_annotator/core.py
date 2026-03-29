@@ -52,12 +52,50 @@ ANNOTATION_TYPE_NAMES = {
     "Sound",
 }
 
+_CHECK_ID_PREFIX_RE = re.compile(r"^(?P<task>[A-Za-z]+\d+[A-Za-z]*)")
+_CHECK_ID_FULL_RE = re.compile(r"^[A-Za-z]+\d+[A-Za-z]*(?:[-_][A-Za-z0-9]+)?$")
+_CHECK_ID_FROM_CONTENT_RE = re.compile(r"^\[(?P<check_id>[^\]]+)\]\s*")
+
 
 def is_annotation_type_name(value: Optional[str]) -> bool:
     """Check if a value is a PDF annotation type name (not a valid stable ID)."""
     if not value:
         return False
     return str(value).strip() in ANNOTATION_TYPE_NAMES
+
+
+def _looks_like_check_id(value: Optional[str]) -> bool:
+    """Return True when a stable identifier looks like a rubric check ID."""
+    candidate = str(value or "").strip()
+    if not candidate or is_annotation_type_name(candidate):
+        return False
+    return bool(_CHECK_ID_FULL_RE.fullmatch(candidate))
+
+
+def _infer_check_id(stable_id: Optional[str], content: Optional[str]) -> Optional[str]:
+    """Recover check ID from persisted stable ID or legacy bracketed content."""
+    stable_candidate = str(stable_id or "").strip()
+    if _looks_like_check_id(stable_candidate):
+        return stable_candidate
+
+    content_match = _CHECK_ID_FROM_CONTENT_RE.match(str(content or "").strip())
+    if content_match:
+        content_candidate = content_match.group("check_id").strip()
+        if _looks_like_check_id(content_candidate):
+            return content_candidate
+    return None
+
+
+def _derive_task_id_from_check_id(check_id: Optional[str]) -> Optional[str]:
+    """Derive the owning task identifier from a check ID."""
+    candidate = str(check_id or "").strip()
+    if not candidate:
+        return None
+    match = _CHECK_ID_PREFIX_RE.match(candidate)
+    if match:
+        return match.group("task")
+    head = re.split(r"[_-]", candidate, maxsplit=1)[0].strip()
+    return head or None
 
 
 def _safe_set_info(annot: Any, key: str, value: str) -> None:
@@ -137,6 +175,7 @@ def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
     subject_text = str(subject_value or "").strip()
     metadata: Dict[str, Any] = {
         "stable_id": None,
+        "check_id": None,
         "source": None,
         "original_source": None,
         "is_verdict": False,
@@ -181,6 +220,9 @@ def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
         if token == "V":
             metadata["is_verdict"] = True
             continue
+        if token.startswith("C:"):
+            metadata["check_id"] = token[2:] or None
+            continue
         if token.startswith("D:"):
             drawing_parts = token.split(":")
             if len(drawing_parts) >= 4:
@@ -206,6 +248,7 @@ def _encode_subject_metadata(
     stable_id: str,
     source: str,
     *,
+    check_id: Optional[str] = None,
     original_source: Optional[str] = None,
     is_verdict: bool = False,
     drawing_style: Optional[str] = None,
@@ -219,6 +262,8 @@ def _encode_subject_metadata(
     metadata_tokens: List[str] = []
     if is_verdict:
         metadata_tokens.append("V")
+    if check_id:
+        metadata_tokens.append(f"C:{check_id}")
     if drawing_style:
         stroke_w = 2.0 if stroke_width is None else stroke_width
         stroke_o = 1.0 if stroke_opacity is None else stroke_opacity
@@ -428,6 +473,7 @@ class PDFAnnotator:
                     subject_value = _encode_subject_metadata(
                         annot_id,
                         annotation_source.value,
+                        check_id=getattr(annotation, "check_id", None),
                         original_source=(
                             original_source.value
                             if original_source is not None
@@ -611,6 +657,7 @@ class PDFAnnotator:
             subject_value = _encode_subject_metadata(
                 metadata.get("stable_id") or str(uuid.uuid4()),
                 effective_source,
+                check_id=metadata.get("check_id"),
                 original_source=original_source_to_store,
                 is_verdict=(
                     bool(metadata.get("is_verdict"))
@@ -695,6 +742,7 @@ class PDFAnnotator:
             subject_value = _encode_subject_metadata(
                 metadata.get("stable_id") or str(uuid.uuid4()),
                 effective_source,
+                check_id=metadata.get("check_id"),
                 original_source=original_source_to_store,
                 is_verdict=(
                     bool(metadata.get("is_verdict"))
@@ -1257,6 +1305,7 @@ class PDFAnnotator:
                         or annotation_id
                         or str(uuid.uuid4()),
                         source_to_store,
+                        check_id=subject_metadata.get("check_id"),
                         original_source=original_source_to_store,
                         is_verdict=is_verdict_to_store,
                         drawing_style=subject_metadata.get("drawing_style"),
@@ -1569,6 +1618,7 @@ class PDFAnnotator:
                 new_subject = _encode_subject_metadata(
                     preserved_id,
                     source_to_set,
+                    check_id=subject_metadata.get("check_id"),
                     original_source=original_source_to_set,
                     is_verdict=(
                         bool(subject_metadata.get("is_verdict"))
@@ -1880,6 +1930,13 @@ class PDFAnnotator:
                     "is_verdict": bool(subject_metadata.get("is_verdict")),
                     **extra_fields,
                 }
+                annotation_data["check_id"] = (
+                    subject_metadata.get("check_id")
+                    or _infer_check_id(stable_id, annotation_data.get("content"))
+                )
+                annotation_data["task_id"] = _derive_task_id_from_check_id(
+                    annotation_data.get("check_id")
+                )
                 # Debug: log what source is being read for this annotation
                 logger.debug(
                     "Reading annotation xref=%s, stable_id=%s: source=%s (from info keys: %s), full_info=%s",

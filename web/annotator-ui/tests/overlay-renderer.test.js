@@ -62,7 +62,7 @@ describe('overlay-renderer', () => {
     const mod = await loadOverlayRendererModule();
     const annotationsData = {
       0: [
-        { id: 'stable-1', stable_id: 'stable-1', xref: 11, type: 'Text', rect: [10, 20, 60, 80], content: 'Visible comment', color: 'amber', source: 'AI' },
+        { id: 'stable-1', stable_id: 'stable-1', xref: 11, type: 'Text', rect: [10, 20, 60, 80], content: 'Visible comment', color: 'amber', source: 'AI', task_id: 'Q1', check_id: 'Q1-1', is_verdict: false },
         { id: 'drawing-1', xref: 12, type: 'drawing', rect: [10, 20, 60, 80], content: '', color: 'amber', source: 'HUMAN' },
       ],
     };
@@ -99,8 +99,60 @@ describe('overlay-renderer', () => {
     const markers = document.querySelectorAll('.annotation-marker');
     expect(markers).toHaveLength(1);
     expect(markers[0].dataset.annotationStableId).toBe('stable-1');
+    expect(markers[0].dataset.annotationTaskId).toBe('Q1');
+    expect(markers[0].dataset.annotationCheckId).toBe('Q1-1');
+    expect(markers[0].dataset.annotationIsVerdict).toBe('false');
     markers[0].click();
     expect(onMarkerClicked).toHaveBeenCalledWith({ pageIdx: 0, identifier: 'stable-1' });
+  });
+
+  it('renders compact labels as single-line preview pills', async () => {
+    const mod = await loadOverlayRendererModule();
+    const renderer = mod.createOverlayRenderer({
+      getAnnotationsData: () => ({
+        0: [
+          {
+            id: 'stable-wrap',
+            stable_id: 'stable-wrap',
+            xref: 13,
+            type: 'Text',
+            rect: [10, 20, 60, 80],
+            content: 'A somewhat longer preview comment',
+            color: 'amber',
+            source: 'AI',
+          },
+        ],
+      }),
+      getSelectedAnnotation: () => ({ pageIdx: null, identifier: null }),
+      helpers: {
+        normalizeAnnotationIdentifierValue: (value) => value || '',
+        resolveAnnotationIdParts: ({ xref, identifier }) => ({ xref, stableId: identifier }),
+        resolveAnnotationIdentifierValue: (ann) => ann.id || ann.stable_id || '',
+        deriveAnnotationPriority: (ann) => ann.color || 'amber',
+        resolveAnnotationSource: (ann) => ann.source || 'AI',
+        isPlaceholderAnnotation: () => false,
+        isMarkupType: () => false,
+        renderCompactInlineLabelContent: (label, number, text) => {
+          label.textContent = number + ' ' + text;
+        },
+        positionLabelOptimally: () => {},
+        repositionAllLabels: () => {},
+        setupLabelTooltipEvents: () => {},
+        buildDisplayOrderByPagePosition: () => ({}),
+        resolveDisplayOrderFromLookup: () => 1,
+        observeAnnotationMarker: () => {},
+        makeAnnotationDraggable: () => {},
+      },
+      capabilities: { annotationCrud: true },
+    });
+
+    renderer.renderPage(1, true);
+    vi.runAllTimers();
+
+    const label = document.querySelector('.annotation-label');
+    expect(label).not.toBeNull();
+    expect(label.style.whiteSpace).toBe('nowrap');
+    expect(label.style.maxWidth).toBe('180px');
   });
 
   it('uses top-left annotation rectangles without vertically flipping marker placement', async () => {

@@ -150,6 +150,11 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             var scaleX = canvasWidth / viewport.width;
             var scaleY = canvasHeight / viewport.height;
 
+            // Scale marker sizes with zoom so they stay proportional to the page
+            var zoom = (viewer && viewer.zoom) || 1.0;
+            var scaledTextIconSize = Math.round(TEXT_ICON_SIZE * zoom);
+            var scaledMinMarkerSize = Math.round(MIN_MARKER_SIZE * zoom);
+
             overlay.style.pointerEvents = 'auto';
 
             pageAnnotations.forEach(function (ann) {
@@ -178,8 +183,8 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                 // Page-relative coordinates
                 var containerX0 = minX * scaleX;
                 var containerY0 = minY * scaleY;
-                var markerWidth = Math.max((maxX - minX) * scaleX, MIN_MARKER_SIZE);
-                var markerHeight = Math.max((maxY - minY) * scaleY, MIN_MARKER_SIZE);
+                var markerWidth = Math.max((maxX - minX) * scaleX, scaledMinMarkerSize);
+                var markerHeight = Math.max((maxY - minY) * scaleY, scaledMinMarkerSize);
 
                 var xrefString = normalizeAnnotationIdentifierValue(
                     typeof ann.xref === 'number' ? String(ann.xref) : ann.xref
@@ -202,8 +207,8 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                 var annotationType = (ann.type || '').toLowerCase();
 
                 if (annotationType === 'text') {
-                    markerWidth = TEXT_ICON_SIZE;
-                    markerHeight = TEXT_ICON_SIZE;
+                    markerWidth = scaledTextIconSize;
+                    markerHeight = scaledTextIconSize;
                 }
 
                 var marker = document.createElement('div');
@@ -223,6 +228,9 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                 marker.dataset.annotationIdentifier = displayIdentifier;
                 marker.dataset.annotationType = annotationType;
                 marker.dataset.annotationNumber = annotationNumber;
+                marker.dataset.annotationTaskId = ann.task_id || '';
+                marker.dataset.annotationCheckId = ann.check_id || '';
+                marker.dataset.annotationIsVerdict = ann.is_verdict ? 'true' : 'false';
 
                 if (!ann.xref) {
                     console.error('[CREATE-MARKER] CRITICAL: ann.xref is null/undefined!');
@@ -293,7 +301,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                     'left: 100%;' +
                     'background: ' + labelBg + ';' +
                     'color: ' + labelColor + ';' +
-                    'padding: 3px 8px 3px 10px;' +
+                    'padding: 4px 8px 4px 10px;' +
                     'border-radius: 3px;' +
                     'font-size: 12px;' +
                     'font-weight: 600;' +
@@ -315,8 +323,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                 // Hover effects
                 label.addEventListener('mouseenter', function () {
                     label.style.background = 'rgba(40, 40, 40, 0.8)';
-                    var baseTransform = label.dataset.baseTransform || 'translate(2px, 2px)';
-                    label.style.transform = baseTransform + ' scale(1.05)';
+                    label.style.transform = label.dataset.baseTransform || 'translate(2px, 2px)';
                 });
                 label.addEventListener('mouseleave', function () {
                     label.style.background = label.dataset.labelBg || labelBg;
@@ -369,6 +376,9 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             // Single pass: reposition all labels to avoid overlaps (after DOM settles)
             requestAnimationFrame(function () {
                 repositionAllLabels(overlay);
+                requestAnimationFrame(function () {
+                    repositionAllLabels(overlay);
+                });
             });
 
             // Add double-click handler for creating new annotations on empty space
