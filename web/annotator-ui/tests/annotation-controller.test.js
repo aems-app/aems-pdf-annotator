@@ -263,4 +263,117 @@ describe('annotation-controller state ownership', () => {
     expect(findAnnotationEntry).toHaveBeenCalledWith(5, 'ann-5');
     expect(deleteAnnotationSilently).toHaveBeenCalledWith(5, 'ann-5');
   });
+
+  it('keeps a new annotation editor alive when a detached pre-save textarea blurs after rerender', async () => {
+    vi.useFakeTimers();
+    try {
+      document.body.innerHTML = `
+        <div id="pdfGradedContainer"></div>
+        <div id="pdfGradedCommentsList"></div>
+      `;
+      window.__pdfGradedViewer = { pdf: {}, currentPage: 1 };
+      window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation = () => true;
+
+      const mod = await loadAnnotationControllerModule();
+      const annotationsState = {};
+      let currentAnnotationsData = {};
+      let editingAnnotationId = null;
+      let resolveCreateRequest;
+      const deleteAnnotationSilently = vi.fn().mockResolvedValue(undefined);
+
+      const resolveIdentifier = (annotation) =>
+        annotation?.stable_id || annotation?.id || (annotation?.xref != null ? String(annotation.xref) : null);
+
+      const enhanceAnnotationEntry = (annotation) => ({
+        ...annotation,
+        requestIdentifier: annotation?.requestIdentifier || annotation?.stable_id || annotation?.id || (annotation?.xref != null ? String(annotation.xref) : null),
+      });
+
+      const findAnnotationIndex = (pageIdx, identifier) => {
+        const pageAnnotations = currentAnnotationsData[pageIdx] || [];
+        return pageAnnotations.findIndex((annotation) => (
+          String(annotation.requestIdentifier || '') === String(identifier)
+          || String(annotation.stable_id || '') === String(identifier)
+          || String(annotation.id || '') === String(identifier)
+          || String(annotation.xref || '') === String(identifier)
+        ));
+      };
+
+      const findAnnotationEntry = (pageIdx, identifier) => {
+        const index = findAnnotationIndex(pageIdx, identifier);
+        return index >= 0 ? currentAnnotationsData[pageIdx][index] : null;
+      };
+
+      const controller = mod.createAnnotationController({
+        annotationsState,
+        getAnnotationsData: () => currentAnnotationsData,
+        setAnnotationsData: (data) => { currentAnnotationsData = data; },
+        getCurrentSubmissionId: () => 1001,
+        getCurrentAssignmentId: () => 501,
+        getEditingAnnotationId: () => editingAnnotationId,
+        setEditingAnnotationId: (value) => { editingAnnotationId = value; },
+        helpers: {
+          enhanceAnnotationEntry,
+          resolveAnnotationIdentifierValue: resolveIdentifier,
+          buildAnnotationVisibilityKey: (pageIdx, params) => {
+            const annotation = params?.annotation;
+            const key = params?.identifier
+              || annotation?.requestIdentifier
+              || annotation?.stable_id
+              || annotation?.id
+              || params?.xref
+              || annotation?.xref;
+            return key ? `${pageIdx}:${key}` : null;
+          },
+          findAnnotationIndex,
+          findAnnotationEntry,
+          createAnnotationRequest: vi.fn().mockImplementation(() => new Promise((resolve) => {
+            resolveCreateRequest = resolve;
+          })),
+          deleteAnnotationSilently,
+          escapeCssAttribute: (value) => value,
+          normalizeAnnotationIdentifierValue: (value) => value == null ? null : String(value),
+          setupTextareaAutoResize: vi.fn(),
+          refreshMarkupFromAnnotations: vi.fn(),
+        },
+      });
+
+      const createPromise = controller.createTemporaryAnnotation([10, 20, 30, 40], 0);
+      await vi.advanceTimersByTimeAsync(120);
+
+      const optimisticTextarea = document.querySelector('.auto-resize-textarea');
+      expect(optimisticTextarea).not.toBeNull();
+      expect(optimisticTextarea.isConnected).toBe(true);
+
+      resolveCreateRequest({
+        success: true,
+        annotation: {
+          id: 'xref:87|id:145218ef-3812-4912-b76c-24ec1bfbd255',
+          stable_id: '145218ef-3812-4912-b76c-24ec1bfbd255',
+          xref: 87,
+          page_index: 0,
+          type: 'Text',
+          rect: [10, 20, 30, 40],
+          content: 'New comment...',
+          source: 'HUMAN',
+          color: 'amber',
+        },
+      });
+
+      await createPromise;
+      await vi.runAllTimersAsync();
+
+      expect(optimisticTextarea.isConnected).toBe(false);
+      expect(document.getElementById('edit-annotation-text-145218ef-3812-4912-b76c-24ec1bfbd255')).not.toBeNull();
+
+      optimisticTextarea.dispatchEvent(new window.FocusEvent('blur', { relatedTarget: null }));
+      await vi.advanceTimersByTimeAsync(150);
+
+      expect(deleteAnnotationSilently).not.toHaveBeenCalled();
+      expect(document.getElementById('edit-annotation-text-145218ef-3812-4912-b76c-24ec1bfbd255')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+      delete window.__pdfGradedViewer;
+    }
+  });
 });

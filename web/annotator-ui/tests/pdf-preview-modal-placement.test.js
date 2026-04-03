@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const MODULE_PATH = '../src/pdf-preview-modal.js';
 
@@ -30,6 +30,11 @@ function createMarker({
   document.body.appendChild(marker);
 
   return { marker, label };
+}
+
+async function loadOverlayRendererModule() {
+  await import('../src/pdf-preview-modal/overlay-renderer.js');
+  return window.PdfPreviewModalOverlayRenderer;
 }
 
 function createPlacementEntry({
@@ -68,6 +73,18 @@ function createPlacementEntry({
   };
 }
 
+function sumTranslateOffsets(transform) {
+  const translatePattern = /translate\(\s*(-?\d+(?:\.\d+)?)px,\s*(-?\d+(?:\.\d+)?)px\s*\)/g;
+  let match;
+  let x = 0;
+  let y = 0;
+  while ((match = translatePattern.exec(String(transform || ''))) !== null) {
+    x += Number.parseFloat(match[1]) || 0;
+    y += Number.parseFloat(match[2]) || 0;
+  }
+  return { x, y };
+}
+
 describe('pdf-preview-modal placement helpers', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -98,6 +115,16 @@ describe('pdf-preview-modal placement helpers', () => {
         getInstance: () => null,
       },
     };
+    vi.stubGlobal('requestAnimationFrame', (callback) => {
+      callback();
+      return 1;
+    });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('derives the task group key from task id, check id, or label text', async () => {
@@ -249,5 +276,356 @@ describe('pdf-preview-modal placement helpers', () => {
       top: 0,
       bottom: 300,
     });
+  });
+
+  it('ignores inline blur cleanup for detached rerendered editors', async () => {
+    const { shouldIgnoreDetachedInlineBlur } = await loadPlacementHelpers();
+    const { label } = createMarker({ labelText: 'Placeholder' });
+    const textarea = document.createElement('textarea');
+    label.appendChild(textarea);
+
+    expect(shouldIgnoreDetachedInlineBlur(textarea, label)).toBe(false);
+
+    textarea.remove();
+    expect(shouldIgnoreDetachedInlineBlur(textarea, label)).toBe(true);
+  });
+
+  it('restores the compact label anchor after hover expansion collapses', async () => {
+    const {
+      collapseInlineLabel,
+      expandInlineLabelReadOnly,
+      positionLabelOptimally,
+      renderCompactInlineLabelContent,
+    } = await loadPlacementHelpers();
+
+    const container = document.getElementById('pdfGradedContainer');
+    container.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      right: 480,
+      bottom: 640,
+      width: 480,
+      height: 640,
+    });
+
+    const overlay = document.createElement('div');
+    overlay.className = 'pdf-annotation-overlay';
+    overlay.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      right: 480,
+      bottom: 640,
+      width: 480,
+      height: 640,
+    });
+    container.appendChild(overlay);
+
+    const marker = document.createElement('div');
+    marker.className = 'annotation-marker';
+    marker.dataset.annotationPage = '0';
+    marker.getBoundingClientRect = () => ({
+      left: 182,
+      top: 166,
+      right: 204,
+      bottom: 188,
+      width: 22,
+      height: 22,
+    });
+
+    const markerBelow = document.createElement('div');
+    markerBelow.className = 'annotation-marker';
+    markerBelow.getBoundingClientRect = () => ({
+      left: 194,
+      top: 214,
+      right: 216,
+      bottom: 236,
+      width: 22,
+      height: 22,
+    });
+
+    const label = document.createElement('div');
+    label.className = 'annotation-label';
+    label.dataset.fullText = 'Identify the correct stress tensor and explain the strain relation.';
+    label.style.position = 'absolute';
+    label.style.maxWidth = '180px';
+    label.style.whiteSpace = 'nowrap';
+    label.style.overflow = 'visible';
+    label.style.transform = 'translate(2px, 2px)';
+
+    Object.defineProperty(label, 'offsetWidth', {
+      configurable: true,
+      get() {
+        return label.classList.contains('label-expanded') ? 216 : 88;
+      },
+    });
+    Object.defineProperty(label, 'offsetHeight', {
+      configurable: true,
+      get() {
+        return label.classList.contains('label-expanded') ? 88 : 24;
+      },
+    });
+
+    label.getBoundingClientRect = () => {
+      const markerRect = marker.getBoundingClientRect();
+      const { x, y } = sumTranslateOffsets(label.style.transform);
+      const width = label.offsetWidth;
+      const height = label.offsetHeight;
+      return {
+        left: markerRect.left + x,
+        top: markerRect.top + y,
+        right: markerRect.left + x + width,
+        bottom: markerRect.top + y + height,
+        width,
+        height,
+      };
+    };
+
+    marker.appendChild(label);
+    overlay.appendChild(marker);
+    overlay.appendChild(markerBelow);
+
+    renderCompactInlineLabelContent(label, '2.3', label.dataset.fullText);
+    positionLabelOptimally(marker, label, overlay);
+
+    const compactTransform = label.style.transform;
+    const compactPosition = label.dataset.position;
+
+    expandInlineLabelReadOnly(label);
+    vi.runAllTimers();
+
+    expect(label.style.transform).not.toBe(compactTransform);
+    expect(label.dataset.position).not.toBe(compactPosition);
+
+    collapseInlineLabel(label);
+    vi.runAllTimers();
+
+    expect(label.classList.contains('label-expanded')).toBe(false);
+    expect(label.dataset.position).toBe(compactPosition);
+    expect(label.style.transform).toBe(compactTransform);
+  });
+
+  it('does not rewrite compact label transforms on plain hover', async () => {
+    const helpers = await loadPlacementHelpers();
+    const overlayModule = await loadOverlayRendererModule();
+
+    const container = document.getElementById('pdfGradedContainer');
+    container.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      right: 480,
+      bottom: 640,
+      width: 480,
+      height: 640,
+    });
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'pdf-page-wrapper';
+    wrapper.dataset.pageNum = '1';
+    const canvas = document.createElement('canvas');
+    canvas.className = 'pdf-page-canvas';
+    Object.defineProperty(canvas, 'clientWidth', { configurable: true, get: () => 480 });
+    Object.defineProperty(canvas, 'clientHeight', { configurable: true, get: () => 640 });
+    canvas.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      right: 480,
+      bottom: 640,
+      width: 480,
+      height: 640,
+    });
+
+    const overlay = document.createElement('div');
+    overlay.className = 'pdf-annotation-overlay';
+    overlay.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      right: 480,
+      bottom: 640,
+      width: 480,
+      height: 640,
+    });
+    wrapper.appendChild(canvas);
+    wrapper.appendChild(overlay);
+    container.appendChild(wrapper);
+
+    window.__pdfGradedViewer = {
+      getViewportForPage: () => ({ width: 480, height: 640 }),
+      zoom: 1,
+    };
+
+    const annotation = {
+      id: 'ann-1',
+      stable_id: 'ann-1',
+      requestIdentifier: 'ann-1',
+      xref: 'ann-1',
+      page_index: 0,
+      type: 'Text',
+      rect: [180, 190, 202, 212],
+      content: 'Compact hover anchor should stay attached',
+      source: 'HUMAN',
+      color: 'amber',
+    };
+
+    const renderer = overlayModule.createOverlayRenderer({
+      getAnnotationsData: () => ({ 0: [annotation] }),
+      helpers: {
+        normalizeAnnotationIdentifierValue: (value) => value == null ? null : String(value),
+        resolveAnnotationIdParts: ({ xref, requestId, identifier }) => ({
+          xref: xref || null,
+          stableId: requestId || identifier || null,
+        }),
+        resolveAnnotationIdentifierValue: (entry) => entry.requestIdentifier || entry.stable_id || entry.id || entry.xref,
+        deriveAnnotationPriority: () => 'amber',
+        resolveAnnotationSource: () => 'HUMAN',
+        isPlaceholderAnnotation: () => false,
+        isMarkupType: () => false,
+        renderCompactInlineLabelContent: helpers.renderCompactInlineLabelContent,
+        positionLabelOptimally: helpers.positionLabelOptimally,
+        repositionAllLabels: helpers.repositionAllLabels,
+        setupLabelTooltipEvents: () => {},
+        buildDisplayOrderByPagePosition: () => new Map([['ann-1', 1]]),
+        resolveDisplayOrderFromLookup: () => 1,
+        observeAnnotationMarker: () => {},
+        makeAnnotationDraggable: () => {},
+      },
+    });
+
+    renderer.renderPage(1, true);
+
+    const label = overlay.querySelector('.annotation-label');
+    expect(label).not.toBeNull();
+
+    const compactTransform = label.style.transform;
+    label.dispatchEvent(new window.MouseEvent('mouseenter', { bubbles: true }));
+    expect(label.style.transform).toBe(compactTransform);
+    label.dispatchEvent(new window.MouseEvent('mouseleave', { bubbles: true }));
+    expect(label.style.transform).toBe(compactTransform);
+  });
+
+  it('keeps compact labels anchored without residual drift near the left boundary', async () => {
+    const {
+      positionLabelOptimally,
+      renderCompactInlineLabelContent,
+      repositionAllLabels,
+    } = await loadPlacementHelpers();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'pdf-annotation-overlay';
+    overlay.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      right: 520,
+      bottom: 760,
+      width: 520,
+      height: 760,
+    });
+    document.body.appendChild(overlay);
+
+    const makeMarker = ({ left, top, text }) => {
+      const marker = document.createElement('div');
+      marker.className = 'annotation-marker';
+      marker.dataset.annotationPage = '0';
+      marker.getBoundingClientRect = () => ({
+        left,
+        top,
+        right: left + 22,
+        bottom: top + 22,
+        width: 22,
+        height: 22,
+      });
+
+      const label = document.createElement('div');
+      label.className = 'annotation-label';
+      label.dataset.fullText = text;
+      label.style.position = 'absolute';
+      label.style.maxWidth = '180px';
+      label.style.whiteSpace = 'nowrap';
+      label.style.overflow = 'visible';
+      label.style.transform = 'translate(2px, 2px)';
+      Object.defineProperty(label, 'offsetWidth', {
+        configurable: true,
+        get() {
+          return 128;
+        },
+      });
+      Object.defineProperty(label, 'offsetHeight', {
+        configurable: true,
+        get() {
+          return 28;
+        },
+      });
+      label.getBoundingClientRect = () => {
+        const markerRect = marker.getBoundingClientRect();
+        const { x, y } = sumTranslateOffsets(label.style.transform);
+        const width = label.offsetWidth;
+        const height = label.offsetHeight;
+        return {
+          left: markerRect.left + x,
+          top: markerRect.top + y,
+          right: markerRect.left + x + width,
+          bottom: markerRect.top + y + height,
+          width,
+          height,
+        };
+      };
+
+      marker.appendChild(label);
+      overlay.appendChild(marker);
+      renderCompactInlineLabelContent(label, '4.1', text);
+      positionLabelOptimally(marker, label, overlay);
+      return { marker, label };
+    };
+
+    const leftEdge = makeMarker({
+      left: 18,
+      top: 180,
+      text: 'Left boundary marker',
+    });
+    const center = makeMarker({
+      left: 188,
+      top: 236,
+      text: 'Center marker',
+    });
+
+    repositionAllLabels(overlay);
+
+    expect(leftEdge.label.dataset.residualDx).toBeUndefined();
+    expect(leftEdge.label.dataset.residualDy).toBeUndefined();
+    expect(leftEdge.label.style.transform).toBe(leftEdge.label.dataset.anchorTransform);
+    expect(leftEdge.label.dataset.position).toMatch(/right|bottom/);
+
+    expect(center.label.dataset.residualDx).toBeUndefined();
+    expect(center.label.dataset.residualDy).toBeUndefined();
+    expect(center.label.style.transform).toBe(center.label.dataset.anchorTransform);
+  });
+
+  it('waits 800ms before hover expands a compact label', async () => {
+    const {
+      renderCompactInlineLabelContent,
+      setupLabelTooltipEvents,
+    } = await loadPlacementHelpers();
+
+    const marker = document.createElement('div');
+    marker.className = 'annotation-marker';
+    marker.dataset.pageIdx = '0';
+    marker.dataset.identifier = 'ann-1';
+
+    const label = document.createElement('div');
+    label.className = 'annotation-label';
+    label.style.transform = 'translate(2px, 2px)';
+    label.dataset.fullText = 'Hover delay should not expand immediately.';
+    marker.appendChild(label);
+    document.body.appendChild(marker);
+
+    renderCompactInlineLabelContent(label, '2.3', label.dataset.fullText);
+    setupLabelTooltipEvents(label, label.dataset.fullText);
+    vi.spyOn(label, 'matches').mockImplementation((selector) => selector === ':hover');
+
+    label.dispatchEvent(new window.MouseEvent('mouseenter', { bubbles: true }));
+    vi.advanceTimersByTime(799);
+    expect(label.classList.contains('label-expanded')).toBe(false);
+
+    vi.advanceTimersByTime(1);
+    expect(label.classList.contains('label-expanded')).toBe(true);
   });
 });

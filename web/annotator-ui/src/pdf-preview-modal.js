@@ -1466,7 +1466,7 @@
                     label.dataset.expandSource = 'hover';
                     expandInlineLabelReadOnly(label);
                 }
-            }, 150);
+            }, 800);
         });
 
         // MOUSELEAVE: Collapse after 200ms grace, only if hover-expanded (not click-pinned or editing)
@@ -1556,6 +1556,17 @@
         const anchorTransform = label.dataset.anchorTransform || label.dataset.baseTransform || 'translate(2px, 2px)';
         label.dataset.baseTransform = anchorTransform;
         label.style.transform = anchorTransform;
+    }
+
+    function focusElementWithoutScroll(element) {
+        if (!element || typeof element.focus !== 'function') {
+            return;
+        }
+        try {
+            element.focus({ preventScroll: true });
+        } catch (_error) {
+            element.focus();
+        }
     }
 
     function parseTranslatePair(transform) {
@@ -2387,6 +2398,10 @@
         ));
     }
 
+    function shouldIgnoreDetachedInlineBlur(textarea, label) {
+        return !textarea || !label || !textarea.isConnected || !label.isConnected;
+    }
+
     // Expand label to show full text (read-only mode)
     function expandInlineLabelReadOnly(label) {
         if (!label) return;
@@ -2535,6 +2550,9 @@
         textarea.addEventListener('blur', async () => {
             // Small delay to check if clicking on another element within the label
             setTimeout(async () => {
+                if (shouldIgnoreDetachedInlineBlur(textarea, label)) {
+                    return;
+                }
                 if (document.activeElement !== textarea && label.classList.contains('label-editing')) {
                     // CRITICAL FIX: Check if focus moved to the sidebar textarea for same annotation
                     // If so, DON'T collapse - keep BOTH editors open for bidirectional editing
@@ -2673,7 +2691,7 @@
                 })();
 
                 // Keep focus on textarea - DO NOT re-render
-                textarea.focus();
+                focusElementWithoutScroll(textarea);
             });
 
             priorityStrip.appendChild(section);
@@ -2686,7 +2704,7 @@
 
         // Focus textarea and put cursor at beginning
         setTimeout(() => {
-            textarea.focus();
+            focusElementWithoutScroll(textarea);
             // Put cursor at beginning of text
             textarea.setSelectionRange(0, 0);
             autoResize();
@@ -2760,6 +2778,7 @@
         const annotationNumber = label.dataset.annotationNumber || markerNumber;
         const compactTextSource = label.dataset.fullText || label.dataset.originalText || 'Click to edit';
         renderCompactInlineLabelContent(label, annotationNumber, compactTextSource);
+        repositionInlineLabel(label);
     }
 
     // Save edits and collapse label
@@ -4683,7 +4702,21 @@
             }
         });
 
-        resolveResidualLabelOverlaps(overlay);
+        const hasExpandedOrEditingLabels = markers.some(marker => {
+            const label = marker.querySelector('.annotation-label');
+            return label && (
+                label.classList.contains('label-expanded') ||
+                label.classList.contains('label-editing')
+            );
+        });
+
+        // Keep compact labels anchored tightly to their marker corner. The
+        // residual overlap packer deliberately detaches labels from their
+        // original anchor to make room, which is useful while editing but
+        // visually wrong for the resting annotation state.
+        if (hasExpandedOrEditingLabels) {
+            resolveResidualLabelOverlaps(overlay);
+        }
     }
 
     // Helper function to re-render annotations for all rendered pages (continuous scroll)
@@ -7368,7 +7401,6 @@
                                 window.__pdfGradedViewer.loadPDF(url).then(() => {
                                     // FIX Issue #31: Check if PDF is searchable after loading
                                     checkPdfSearchable();
-                                    scheduleGradedViewerRelayout();
                                 }).catch(err => console.error('[FRONTEND] PDF load error:', err));
                             }
                             loadAnnotations(submissionId, resolvedAssignmentId);
@@ -7377,7 +7409,6 @@
                             if (window.__pdfGradedViewer) {
                                 window.__pdfGradedViewer.loadPDF(url).then(() => {
                                     checkPdfSearchable();
-                                    scheduleGradedViewerRelayout();
                                 }).catch(err => console.error('[FRONTEND] PDF load error:', err));
                             }
                             loadAnnotations(submissionId, resolvedAssignmentId);
@@ -7763,8 +7794,8 @@
             // Wire annotation controller events to monolith functions
             var _annCtrlCallbacks = state.options.callbacks || {};
             _currentAnnotationCtrl.onAnnotationsChanged(function (data) {
-                if (_currentOverlayRenderer) {
-                    _currentOverlayRenderer.renderAnnotations(true);
+                if (_currentOverlayRenderer && data?.renderOverlays !== false) {
+                    _currentOverlayRenderer.renderAnnotations(data?.forceRender === true);
                 }
                 if (_annCtrlCallbacks.onAnnotationsChanged) {
                     _annCtrlCallbacks.onAnnotationsChanged(data);
@@ -7998,6 +8029,14 @@
         compareTaskPlacementEntries,
         deriveMarkerTaskGroupKey,
         isSummaryPlacementEntry,
+        collapseInlineLabel,
+        expandInlineLabelReadOnly,
+        positionLabelOptimally,
+        repositionAllLabels,
+        renderCompactInlineLabelContent,
+        setupLabelTooltipEvents,
+        shouldIgnoreDetachedInlineBlur,
+        focusElementWithoutScroll,
     };
 
     window.AEMSPdfAnnotator = window.AEMSPdfAnnotator || {};

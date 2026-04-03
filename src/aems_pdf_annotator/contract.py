@@ -20,10 +20,12 @@ CURRENT_CONTRACT_VERSION = 1
 CURRENT_COORDINATE_SPACE = "visual_top_left_normalized_v1"
 SUPPORTED_CONTRACT_VERSIONS = frozenset({1})
 
-# Standard annotation dimensions (points)
-_HIGHLIGHT_WIDTH = 200.0
-_HIGHLIGHT_HEIGHT = 20.0
-_TEXT_NOTE_SIZE = 24.0
+# Standard annotation dimensions (points).
+# A US-letter page is 612pt wide. Keep highlights narrow enough to
+# mark a phrase without drowning surrounding text.
+_HIGHLIGHT_WIDTH = 80.0
+_HIGHLIGHT_HEIGHT = 14.0
+_TEXT_NOTE_SIZE = 18.0
 
 
 class ContractValidationError(ValueError):
@@ -153,12 +155,12 @@ def _priority_to_color(priority: str) -> AnnotationColor:
 
 
 def _priority_to_kind(priority: str, is_verdict: bool) -> AnnotationType:
-    """Map priority + verdict flag to annotation type."""
-    if is_verdict:
-        return AnnotationType.TEXT
-    if priority == "high":
-        return AnnotationType.SQUIGGLY
-    return AnnotationType.HIGHLIGHT
+    """Map priority + verdict flag to annotation type.
+
+    All automated annotations use TEXT (point marker / icon) rather than
+    highlight overlays so they don't obscure the student's work.
+    """
+    return AnnotationType.TEXT
 
 
 def _normalized_to_bbox(
@@ -240,10 +242,17 @@ def feedback_item_to_annotation(
 
     icon = item.get("icon")
     if icon is None and kind == AnnotationType.TEXT:
-        # Default icons for verdict summaries
-        if is_verdict:
-            verdict = str(item.get("verdict", "")).upper()
-            icon = "Check" if verdict == "PASS" else "Help"
+        # Assign icons based on verdict/priority:
+        #   PASS  -> Check  (green checkmark)
+        #   FAIL  -> Help   (red question mark)
+        #   other -> Comment (amber note)
+        verdict = str(item.get("verdict", "")).upper()
+        if verdict == "PASS" or priority == "low":
+            icon = "Check"
+        elif verdict == "FAIL" or priority == "high":
+            icon = "Help"
+        else:
+            icon = "Comment"
 
     return PDFAnnotation(
         id=str(item.get("stable_id") or item.get("check_id") or uuid.uuid4()),

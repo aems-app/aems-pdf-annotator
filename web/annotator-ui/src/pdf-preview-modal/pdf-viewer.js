@@ -477,6 +477,8 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 const canvas = document.createElement('canvas');
                 canvas.className = 'pdf-page-canvas';
                 canvas.dataset.pageNum = pageNum;
+                canvas.width = Math.ceil(baseViewport.width);
+                canvas.height = Math.ceil(baseViewport.height);
                 canvas.style.width = '100%';
                 canvas.style.height = '100%';
 
@@ -707,6 +709,24 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 wrapper.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
                 this.currentPage = pageNum;
                 this.updatePageInfo();
+                if (!this.useSinglePageMode && this.pdf) {
+                    const pagesToRender = [
+                        pageNum - 1,
+                        pageNum,
+                        pageNum + 1,
+                    ].filter((candidatePage) => (
+                        candidatePage >= 1 &&
+                        candidatePage <= this.pdf.numPages
+                    ));
+
+                    requestAnimationFrame(() => {
+                        pagesToRender.forEach((candidatePage) => {
+                            this.renderSpecificPage(candidatePage).catch((error) => {
+                                console.error(`[FRONTEND] Failed to render jumped-to page ${candidatePage}:`, error);
+                            });
+                        });
+                    });
+                }
             }
         }
 

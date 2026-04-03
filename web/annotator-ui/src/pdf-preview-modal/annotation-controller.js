@@ -800,7 +800,79 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             _currentAnnotationsPage = page;
         }
 
-        function _renderAfterMutation() {
+        function _focusElementWithoutScroll(element) {
+            if (!element || typeof element.focus !== 'function') {
+                return;
+            }
+            try {
+                element.focus({ preventScroll: true });
+            } catch (_error) {
+                element.focus();
+            }
+        }
+
+        function _findMarkerForIdentifiers(pageIdx, identifiers) {
+            if (!_h.escapeCssAttribute || !Array.isArray(identifiers) || identifiers.length === 0) {
+                return null;
+            }
+            var selectorParts = [];
+            identifiers.forEach(function (rawIdentifier) {
+                var normalized = _h.normalizeAnnotationIdentifierValue
+                    ? _h.normalizeAnnotationIdentifierValue(rawIdentifier)
+                    : rawIdentifier;
+                if (!normalized) {
+                    return;
+                }
+                var escaped = _h.escapeCssAttribute(normalized);
+                selectorParts.push(
+                    '.annotation-marker[data-annotation-page="' + pageIdx + '"][data-annotation-request-id="' + escaped + '"]',
+                    '.annotation-marker[data-annotation-page="' + pageIdx + '"][data-annotation-identifier="' + escaped + '"]',
+                    '.annotation-marker[data-annotation-page="' + pageIdx + '"][data-annotation-xref="' + escaped + '"]',
+                    '.annotation-marker[data-page-idx="' + pageIdx + '"][data-identifier="' + escaped + '"]'
+                );
+            });
+            if (selectorParts.length === 0) {
+                return null;
+            }
+            return document.querySelector(selectorParts.join(', '));
+        }
+
+        function _applyAnnotationIdentityToMarker(marker, pageIdx, annotation) {
+            if (!marker || !annotation) {
+                return null;
+            }
+            var requestIdentifier = _h.resolveAnnotationIdentifierValue
+                ? _h.resolveAnnotationIdentifierValue(annotation)
+                : (
+                    annotation.requestIdentifier ||
+                    annotation.stable_id ||
+                    annotation.id ||
+                    annotation.xref
+                );
+            var stableIdentifier = _h.normalizeAnnotationIdentifierValue
+                ? _h.normalizeAnnotationIdentifierValue(
+                    annotation.stable_id || annotation.id || requestIdentifier
+                )
+                : (annotation.stable_id || annotation.id || requestIdentifier);
+            var xrefIdentifier = _h.normalizeAnnotationIdentifierValue
+                ? _h.normalizeAnnotationIdentifierValue(
+                    typeof annotation.xref === 'number' ? String(annotation.xref) : annotation.xref
+                )
+                : annotation.xref;
+
+            marker.dataset.annotationPage = String(pageIdx);
+            marker.dataset.pageIdx = String(pageIdx);
+            marker.dataset.annotationSource = annotation.source || marker.dataset.annotationSource || 'HUMAN';
+            marker.dataset.annotationXref = xrefIdentifier || '';
+            marker.dataset.annotationStableId = stableIdentifier || '';
+            marker.dataset.annotationRequestId = requestIdentifier || '';
+            marker.dataset.annotationIdentifier = requestIdentifier || stableIdentifier || xrefIdentifier || '';
+            marker.dataset.identifier = requestIdentifier || stableIdentifier || xrefIdentifier || '';
+            return marker.querySelector('.annotation-label');
+        }
+
+        function _renderAfterMutation(options) {
+            options = options || {};
             _syncAnnotationsState({
                 annotationsData: _getAnnotationsData(),
                 editingId: _getEditingAnnotationId(),
@@ -813,6 +885,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
             _emit('onAnnotationsChanged', {
                 annotationsData: _getAnnotationsData(),
+                forceRender: options.forceRender === true,
+                renderOverlays: options.renderOverlays !== false,
             });
         }
 
@@ -1434,7 +1508,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     if (_h.setupTextareaAutoResize) {
                         _h.setupTextareaAutoResize(textarea);
                     }
-                    textarea.focus();
+                    _focusElementWithoutScroll(textarea);
                 }
             }, 50);
         }
@@ -1644,6 +1718,13 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                     setTimeout(async function () {
                         try {
+                            // Ignore blur events caused by rerender/removal of the
+                            // old temporary textarea after the create POST returns.
+                            // The replacement editor will be rebound separately.
+                            if (!textarea.isConnected) {
+                                return;
+                            }
+
                             if (_savingAnnotationId === currentEditingId ||
                                 _updatingPriorityId === currentEditingId ||
                                 _isDraggingAnnotation ||
@@ -1728,10 +1809,29 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     var previousIdentifier = _h.resolveAnnotationIdentifierValue
                         ? _h.resolveAnnotationIdentifierValue(optimisticAnnotation)
                         : null;
+                    var draftContent = null;
+                    var inlineDraftTextarea = document.querySelector('.annotation-label.label-editing .inline-annotation-editor');
+                    if (inlineDraftTextarea) {
+                        draftContent = inlineDraftTextarea.value;
+                    }
+                    if (draftContent === null || draftContent === undefined) {
+                        var sidebarDraftTextarea = document.querySelector('.auto-resize-textarea[id^="edit-annotation-text-"]');
+                        if (sidebarDraftTextarea) {
+                            draftContent = sidebarDraftTextarea.value;
+                        }
+                    }
                     var updatedAnnotation = _h.enhanceAnnotationEntry
                         ? _h.enhanceAnnotationEntry(data.annotation)
                         : data.annotation;
+                    var existingMarker = _findMarkerForIdentifiers(targetPage, [
+                        tempStableId,
+                        tempXref,
+                        previousIdentifier,
+                    ]);
                     Object.assign(optimisticAnnotation, updatedAnnotation);
+                    if (draftContent !== null && draftContent !== undefined) {
+                        optimisticAnnotation.content = draftContent;
+                    }
                     optimisticAnnotation._isTemporary = true;
                     optimisticAnnotation._createdAtSession = true;
                     optimisticAnnotation._isOptimistic = false;
@@ -1768,7 +1868,72 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                     delete optimisticAnnotation._abortController;
                     delete optimisticAnnotation._createPromise;
-                    _renderAfterMutation();
+                    var restoreIdentifier = newIdentifier || previousIdentifier || identifier;
+                    var existingLabel = _applyAnnotationIdentityToMarker(existingMarker, targetPage, optimisticAnnotation);
+                    var keepInlineEditor = !!(
+                        existingLabel &&
+                        existingLabel.classList.contains('label-editing') &&
+                        _h.expandInlineLabelEdit
+                    );
+
+                    if (keepInlineEditor) {
+                        var preservedOriginalFullText = existingLabel.dataset.originalFullText
+                            || existingLabel.dataset.fullText
+                            || 'New comment...';
+                        existingLabel.dataset.fullText = preservedOriginalFullText;
+                        _h.expandInlineLabelEdit(existingLabel);
+                        if (existingLabel.dataset.originalFullText !== preservedOriginalFullText) {
+                            existingLabel.dataset.originalFullText = preservedOriginalFullText;
+                        }
+                        _renderAfterMutation({ renderOverlays: false });
+                        if (draftContent !== null && draftContent !== undefined) {
+                            setTimeout(function () {
+                                var restoredSidebarTextarea = document.getElementById('edit-annotation-text-' + restoreIdentifier)
+                                    || document.querySelector('.auto-resize-textarea[id^="edit-annotation-text-"]');
+                                if (restoredSidebarTextarea) {
+                                    restoredSidebarTextarea.value = draftContent;
+                                    if (_h.setupTextareaAutoResize) {
+                                        _h.setupTextareaAutoResize(restoredSidebarTextarea);
+                                    }
+                                }
+                                var restoredInlineTextarea = existingLabel.querySelector('.inline-annotation-editor')
+                                    || document.querySelector('.annotation-label.label-editing .inline-annotation-editor');
+                                if (restoredInlineTextarea) {
+                                    restoredInlineTextarea.value = draftContent;
+                                    _focusElementWithoutScroll(restoredInlineTextarea);
+                                }
+                            }, 50);
+                        }
+                    } else {
+                        _renderAfterMutation();
+                        setTimeout(function () {
+                            if (!restoreIdentifier) {
+                                return;
+                            }
+                            beginEdit(
+                                targetPage,
+                                restoreIdentifier,
+                                'ann-' + targetPage + '-' + restoreIdentifier
+                            );
+                            if (draftContent === null || draftContent === undefined) {
+                                return;
+                            }
+                            setTimeout(function () {
+                                var restoredSidebarTextarea = document.getElementById('edit-annotation-text-' + restoreIdentifier)
+                                    || document.querySelector('.auto-resize-textarea[id^="edit-annotation-text-"]');
+                                if (restoredSidebarTextarea) {
+                                    restoredSidebarTextarea.value = draftContent;
+                                    if (_h.setupTextareaAutoResize) {
+                                        _h.setupTextareaAutoResize(restoredSidebarTextarea);
+                                    }
+                                }
+                                var restoredInlineTextarea = document.querySelector('.annotation-label.label-editing .inline-annotation-editor');
+                                if (restoredInlineTextarea) {
+                                    restoredInlineTextarea.value = draftContent;
+                                }
+                            }, 50);
+                        }, 0);
+                    }
                 } catch (error) {
                     if (error && error.name === 'AbortError') {
                         return;

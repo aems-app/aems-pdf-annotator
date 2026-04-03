@@ -315,7 +315,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                     'border: 1px solid rgba(255,255,255,0.12);' +
                     'display: block;' +
                     'cursor: pointer;' +
-                    'transition: background 0.2s ease, transform 0.1s ease;' +
+                    'transition: background 0.2s ease;' +
                     'border-left: 4px solid ' + leftBarColor + ';' +
                     '--annotation-number-color: ' + numberColor + ';' +
                     'transform: translate(2px, 2px);';
@@ -323,11 +323,9 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                 // Hover effects
                 label.addEventListener('mouseenter', function () {
                     label.style.background = 'rgba(40, 40, 40, 0.8)';
-                    label.style.transform = label.dataset.baseTransform || 'translate(2px, 2px)';
                 });
                 label.addEventListener('mouseleave', function () {
                     label.style.background = label.dataset.labelBg || labelBg;
-                    label.style.transform = label.dataset.baseTransform || 'translate(2px, 2px)';
                 });
 
                 var commentText = ann.content || 'Click to edit';

@@ -62,7 +62,7 @@ class TestContractValidation:
 
 
 class TestFeedbackItemConversion:
-    def test_low_priority_produces_green_highlight(self):
+    def test_low_priority_produces_green_text_marker_with_check_icon(self):
         item = {
             "stable_id": "ann-q1-01",
             "check_id": "Q1-01",
@@ -77,13 +77,14 @@ class TestFeedbackItemConversion:
             item, page_width=612, page_height=792
         )
         assert annot.id == "ann-q1-01"
-        assert annot.kind == AnnotationType.HIGHLIGHT
+        assert annot.kind == AnnotationType.TEXT
         assert annot.color == AnnotationColor.GREEN
+        assert annot.icon == "Check"
         assert annot.page_index == 0  # 1-based to 0-based
         assert annot.comment == "Good work"
         assert annot.check_id == "Q1-01"
 
-    def test_high_priority_produces_red_squiggly(self):
+    def test_high_priority_produces_red_text_marker_with_help_icon(self):
         item = {
             "check_id": "Q2-03",
             "page": 2,
@@ -96,11 +97,12 @@ class TestFeedbackItemConversion:
         annot = feedback_item_to_annotation(
             item, page_width=612, page_height=792
         )
-        assert annot.kind == AnnotationType.SQUIGGLY
+        assert annot.kind == AnnotationType.TEXT
         assert annot.color == AnnotationColor.RED
+        assert annot.icon == "Help"
         assert annot.page_index == 1
 
-    def test_medium_priority_produces_amber_highlight(self):
+    def test_medium_priority_produces_amber_text_marker_with_comment_icon(self):
         item = {
             "page": 1,
             "x_normalized": 0.3,
@@ -111,8 +113,9 @@ class TestFeedbackItemConversion:
         annot = feedback_item_to_annotation(
             item, page_width=612, page_height=792
         )
-        assert annot.kind == AnnotationType.HIGHLIGHT
+        assert annot.kind == AnnotationType.TEXT
         assert annot.color == AnnotationColor.AMBER
+        assert annot.icon == "Comment"
 
     def test_verdict_item_produces_text_note(self):
         item = {
@@ -129,6 +132,24 @@ class TestFeedbackItemConversion:
         )
         assert annot.kind == AnnotationType.TEXT
         assert annot.is_verdict is True
+        assert annot.icon == "Check"
+
+    def test_verdict_fail_item_uses_help_icon(self):
+        item = {
+            "check_id": "Q2_SUMMARY",
+            "page": 2,
+            "x_normalized": 0.4,
+            "y_normalized": 0.8,
+            "comment": "Task 2: 0/10",
+            "priority": "high",
+            "verdict": "FAIL",
+            "is_verdict": True,
+        }
+        annot = feedback_item_to_annotation(
+            item, page_width=612, page_height=792
+        )
+        assert annot.kind == AnnotationType.TEXT
+        assert annot.icon == "Help"
 
     def test_grader_name_passed_through(self):
         item = {
@@ -155,11 +176,9 @@ class TestFeedbackItemConversion:
         annot = feedback_item_to_annotation(
             item, page_width=612, page_height=792
         )
-        # BBox should be centered around (306, 396) in PDF coords
-        assert annot.bbox.x0 == pytest.approx(306, abs=1)
-        # y in PDF space: origin at bottom, so y_norm=0.5 means middle
-        assert annot.bbox.y0 > 0
-        assert annot.bbox.y1 > annot.bbox.y0
+        # Text marker bbox should be centered around (306, 396).
+        assert ((annot.bbox.x0 + annot.bbox.x1) / 2.0) == pytest.approx(306, abs=1)
+        assert ((annot.bbox.y0 + annot.bbox.y1) / 2.0) == pytest.approx(396, abs=1)
 
     def test_unknown_fields_ignored(self):
         item = {
