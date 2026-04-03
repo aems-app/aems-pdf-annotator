@@ -393,8 +393,8 @@ describe('pdf-preview-modal placement helpers', () => {
     expandInlineLabelReadOnly(label);
     vi.runAllTimers();
 
-    expect(label.style.transform).not.toBe(compactTransform);
-    expect(label.dataset.position).not.toBe(compactPosition);
+    expect(label.dataset.position).toBe(compactPosition);
+    expect(label.dataset.anchorTransform).toContain('translate(');
 
     collapseInlineLabel(label);
     vi.runAllTimers();
@@ -597,6 +597,270 @@ describe('pdf-preview-modal placement helpers', () => {
     expect(center.label.dataset.residualDx).toBeUndefined();
     expect(center.label.dataset.residualDy).toBeUndefined();
     expect(center.label.style.transform).toBe(center.label.dataset.anchorTransform);
+  });
+
+  it('uses corner anchors for compact labels even near page boundaries', async () => {
+    const {
+      positionLabelOptimally,
+      renderCompactInlineLabelContent,
+    } = await loadPlacementHelpers();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'pdf-annotation-overlay';
+    overlay.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      right: 520,
+      bottom: 760,
+      width: 520,
+      height: 760,
+    });
+    document.body.appendChild(overlay);
+
+    const marker = document.createElement('div');
+    marker.className = 'annotation-marker';
+    marker.dataset.annotationPage = '0';
+    marker.getBoundingClientRect = () => ({
+      left: 16,
+      top: 34,
+      right: 38,
+      bottom: 56,
+      width: 22,
+      height: 22,
+    });
+
+    const label = document.createElement('div');
+    label.className = 'annotation-label';
+    label.dataset.fullText = 'Compact labels should stay corner-attached.';
+    label.style.position = 'absolute';
+    label.style.maxWidth = '180px';
+    label.style.whiteSpace = 'nowrap';
+    label.style.overflow = 'visible';
+    label.style.transform = 'translate(2px, 2px)';
+    Object.defineProperty(label, 'offsetWidth', {
+      configurable: true,
+      get() {
+        return 132;
+      },
+    });
+    Object.defineProperty(label, 'offsetHeight', {
+      configurable: true,
+      get() {
+        return 28;
+      },
+    });
+    label.getBoundingClientRect = () => {
+      const markerRect = marker.getBoundingClientRect();
+      const { x, y } = sumTranslateOffsets(label.style.transform);
+      const width = label.offsetWidth;
+      const height = label.offsetHeight;
+      return {
+        left: markerRect.left + x,
+        top: markerRect.top + y,
+        right: markerRect.left + x + width,
+        bottom: markerRect.top + y + height,
+        width,
+        height,
+      };
+    };
+
+    marker.appendChild(label);
+    overlay.appendChild(marker);
+    renderCompactInlineLabelContent(label, '2.3', label.dataset.fullText);
+    positionLabelOptimally(marker, label, overlay);
+
+    expect(label.dataset.position).toMatch(/^(top|bottom)-(left|right)$/);
+    expect(label.dataset.position).not.toMatch(/center/);
+  });
+
+  it('preserves the compact anchor when a label expands', async () => {
+    const {
+      expandInlineLabelReadOnly,
+      positionLabelOptimally,
+      renderCompactInlineLabelContent,
+    } = await loadPlacementHelpers();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'pdf-annotation-overlay';
+    overlay.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      right: 520,
+      bottom: 760,
+      width: 520,
+      height: 760,
+    });
+    document.body.appendChild(overlay);
+
+    const marker = document.createElement('div');
+    marker.className = 'annotation-marker';
+    marker.dataset.annotationPage = '0';
+    marker.getBoundingClientRect = () => ({
+      left: 18,
+      top: 180,
+      right: 40,
+      bottom: 202,
+      width: 22,
+      height: 22,
+    });
+
+    const label = document.createElement('div');
+    label.className = 'annotation-label';
+    label.dataset.fullText = 'Expanded labels should keep the same anchor corner they had while compact.';
+    label.style.position = 'absolute';
+    label.style.maxWidth = '180px';
+    label.style.whiteSpace = 'nowrap';
+    label.style.overflow = 'visible';
+    Object.defineProperty(label, 'offsetWidth', {
+      configurable: true,
+      get() {
+        return label.classList.contains('label-expanded') ? 216 : 96;
+      },
+    });
+    Object.defineProperty(label, 'offsetHeight', {
+      configurable: true,
+      get() {
+        return label.classList.contains('label-expanded') ? 72 : 24;
+      },
+    });
+    label.getBoundingClientRect = () => {
+      const markerRect = marker.getBoundingClientRect();
+      const { x, y } = sumTranslateOffsets(label.style.transform);
+      const width = label.offsetWidth;
+      const height = label.offsetHeight;
+      return {
+        left: markerRect.left + x,
+        top: markerRect.top + y,
+        right: markerRect.left + x + width,
+        bottom: markerRect.top + y + height,
+        width,
+        height,
+      };
+    };
+
+    marker.appendChild(label);
+    overlay.appendChild(marker);
+    renderCompactInlineLabelContent(label, '2.3', label.dataset.fullText);
+    positionLabelOptimally(marker, label, overlay);
+
+    const compactPosition = label.dataset.position;
+    expect(compactPosition).toBe('bottom-right');
+
+    expandInlineLabelReadOnly(label);
+    vi.runAllTimers();
+
+    expect(label.classList.contains('label-expanded')).toBe(true);
+    expect(label.dataset.position).toBe(compactPosition);
+    expect(label.dataset.anchorTransform).toContain('translate(24px');
+  });
+
+  it('keeps the dragged compact label on its existing side until the marker moves far enough', async () => {
+    const {
+      positionLabelOptimally,
+      renderCompactInlineLabelContent,
+    } = await loadPlacementHelpers();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'pdf-annotation-overlay';
+    overlay.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      right: 520,
+      bottom: 760,
+      width: 520,
+      height: 760,
+    });
+    document.body.appendChild(overlay);
+
+    let markerLeft = 386;
+    const markerTop = 180;
+    const marker = document.createElement('div');
+    marker.className = 'annotation-marker';
+    marker.dataset.annotationPage = '0';
+    marker.getBoundingClientRect = () => ({
+      left: markerLeft,
+      top: markerTop,
+      right: markerLeft + 22,
+      bottom: markerTop + 22,
+      width: 22,
+      height: 22,
+    });
+
+    const label = document.createElement('div');
+    label.className = 'annotation-label';
+    label.dataset.fullText = 'Dragged labels should not flip sides immediately.';
+    label.style.position = 'absolute';
+    label.style.maxWidth = '180px';
+    label.style.whiteSpace = 'nowrap';
+    label.style.overflow = 'visible';
+    Object.defineProperty(label, 'offsetWidth', {
+      configurable: true,
+      get() {
+        return 132;
+      },
+    });
+    Object.defineProperty(label, 'offsetHeight', {
+      configurable: true,
+      get() {
+        return 28;
+      },
+    });
+    label.getBoundingClientRect = () => {
+      const markerRect = marker.getBoundingClientRect();
+      const { x, y } = sumTranslateOffsets(label.style.transform);
+      const width = label.offsetWidth;
+      const height = label.offsetHeight;
+      return {
+        left: markerRect.left + x,
+        top: markerRect.top + y,
+        right: markerRect.left + x + width,
+        bottom: markerRect.top + y + height,
+        width,
+        height,
+      };
+    };
+
+    marker.appendChild(label);
+    overlay.appendChild(marker);
+    renderCompactInlineLabelContent(label, '2.3', label.dataset.fullText);
+    positionLabelOptimally(marker, label, overlay);
+
+    expect(label.dataset.position).toBe('bottom-left');
+
+    markerLeft = 260;
+    positionLabelOptimally(marker, label, overlay, undefined, {
+      preferredPosition: label.dataset.compactPosition,
+      stabilizeCompactPosition: true,
+    });
+
+    expect(label.dataset.position).toBe('bottom-left');
+
+    markerLeft = 54;
+    positionLabelOptimally(marker, label, overlay, undefined, {
+      preferredPosition: label.dataset.compactPosition,
+      stabilizeCompactPosition: true,
+    });
+
+    expect(label.dataset.position).toBe('bottom-right');
+  });
+
+  it('excludes drawing and textbox markup from display numbering', async () => {
+    window.PdfPreviewModalCrud = {
+      isMarkupType: (type) => type === 'drawing' || type === 'textbox',
+    };
+    const { buildDisplayOrderByPagePosition } = await loadPlacementHelpers();
+
+    const lookup = buildDisplayOrderByPagePosition([
+      { stable_id: 'ann-1', type: 'Text', rect: [10, 10, 40, 40], content: 'A' },
+      { stable_id: 'draw-1', type: 'drawing', rect: [12, 12, 42, 42], content: '' },
+      { stable_id: 'box-1', type: 'textbox', rect: [14, 14, 44, 44], content: 'Markup text' },
+      { stable_id: 'ann-2', type: 'Text', rect: [50, 50, 80, 80], content: 'B' },
+    ]);
+
+    expect(lookup.get('ann-1')).toBe(1);
+    expect(lookup.get('ann-2')).toBe(2);
+    expect(lookup.has('draw-1')).toBe(false);
+    expect(lookup.has('box-1')).toBe(false);
   });
 
   it('waits 800ms before hover expands a compact label', async () => {

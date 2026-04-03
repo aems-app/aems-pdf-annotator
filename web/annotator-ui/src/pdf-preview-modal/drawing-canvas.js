@@ -19,7 +19,13 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
     // =========================================================================
 
     /** @type {number} Pen stroke width in pixels */
-    var PEN_WIDTH = 1.5;
+    var PEN_WIDTH = 2.25;
+
+    /** @type {number} Subtle contrast underlay width added behind pen strokes */
+    var PEN_UNDERLAY_EXTRA_WIDTH = 1.25;
+
+    /** @type {number} Opacity for the pen contrast underlay */
+    var PEN_UNDERLAY_OPACITY = 0.72;
 
     /** @type {number} Highlighter stroke width in pixels */
     var HIGHLIGHTER_WIDTH = 10;
@@ -48,6 +54,8 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
 
     // Export constants for external use
     exports.PEN_WIDTH = PEN_WIDTH;
+    exports.PEN_UNDERLAY_EXTRA_WIDTH = PEN_UNDERLAY_EXTRA_WIDTH;
+    exports.PEN_UNDERLAY_OPACITY = PEN_UNDERLAY_OPACITY;
     exports.HIGHLIGHTER_WIDTH = HIGHLIGHTER_WIDTH;
     exports.HIGHLIGHTER_OPACITY = HIGHLIGHTER_OPACITY;
     exports.SMOOTHING_FACTOR = SMOOTHING_FACTOR;
@@ -508,6 +516,8 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
 
         ctx.save();
 
+        var baseLineWidth = stroke.strokeWidth * scaleFactor;
+
         // Set composite operation and style
         if (stroke.style === 'highlighter') {
             ctx.globalCompositeOperation = 'multiply';
@@ -519,7 +529,7 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
             ctx.strokeStyle = 'rgb(' + penRgb[0] + ', ' + penRgb[1] + ', ' + penRgb[2] + ')';
         }
 
-        ctx.lineWidth = stroke.strokeWidth * scaleFactor;
+        ctx.lineWidth = baseLineWidth;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.miterLimit = 2;
@@ -550,7 +560,17 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
             }
         }
 
-        ctx.stroke();
+        if (stroke.style === 'highlighter') {
+            ctx.stroke();
+        } else {
+            ctx.strokeStyle = 'rgba(255, 255, 255, ' + PEN_UNDERLAY_OPACITY + ')';
+            ctx.lineWidth = baseLineWidth + (PEN_UNDERLAY_EXTRA_WIDTH * scaleFactor);
+            ctx.stroke();
+
+            ctx.strokeStyle = 'rgb(' + penRgb[0] + ', ' + penRgb[1] + ', ' + penRgb[2] + ')';
+            ctx.lineWidth = baseLineWidth;
+            ctx.stroke();
+        }
         ctx.restore();
     }
 

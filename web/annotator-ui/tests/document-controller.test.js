@@ -154,6 +154,31 @@ describe('document-controller adapter routing', () => {
     expect(state.currentPage).toBe(2);
   });
 
+  it('navigates when the graded page input dispatches a change event', async () => {
+    document.body.innerHTML = '<input id="pdfGradedPageInput" value="1">';
+
+    const controllerModule = await loadDocumentControllerModule();
+    const controller = controllerModule.createDocumentController(
+      {},
+      {
+        modeAdapter: null,
+        assignmentId: 501,
+        submissionId: 1001,
+        mode: 'server',
+        capabilities: {},
+      },
+    );
+
+    const pageInput = document.getElementById('pdfGradedPageInput');
+    pageInput.value = '3';
+    pageInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(window.__pdfGradedViewer.renderPage).toHaveBeenLastCalledWith(3);
+    expect(pageInput.value).toBe('3');
+
+    controller.destroy();
+  });
+
   it('falls back to the server graded PDF URL when no adapter exists', async () => {
     const controllerModule = await loadDocumentControllerModule();
     const fetchSpy = vi.fn().mockResolvedValue({

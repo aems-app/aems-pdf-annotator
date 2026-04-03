@@ -38,8 +38,27 @@ describe('annotation-controller state ownership', () => {
 
     controller.pushUndoOperation({ type: 'create', identifier: 'ann-1' });
 
-    expect(controller.getUndoStack()).toEqual([{ type: 'create', identifier: 'ann-1' }]);
-    expect(annotationsState.undoStack).toEqual([{ type: 'create', identifier: 'ann-1' }]);
+    expect(controller.getUndoStack()).toHaveLength(1);
+    expect(controller.getUndoStack()[0]).toMatchObject({ type: 'create', identifier: 'ann-1' });
+    expect(annotationsState.undoStack).toHaveLength(1);
+    expect(annotationsState.undoStack[0]).toMatchObject({ type: 'create', identifier: 'ann-1' });
+  });
+
+  it('supports peeking and popping controller-owned undo operations', async () => {
+    const mod = await loadAnnotationControllerModule();
+    const annotationsState = { undoStack: [] };
+    const controller = mod.createAnnotationController({
+      annotationsState,
+      getAnnotationsData: () => ({}),
+    });
+
+    controller.pushUndoOperation({ type: 'delete', identifier: 'ann-7' });
+
+    expect(controller.peekUndoOperation()).toMatchObject({ type: 'delete', identifier: 'ann-7' });
+    const popped = controller.popUndoOperation();
+    expect(popped).toMatchObject({ type: 'delete', identifier: 'ann-7' });
+    expect(controller.getUndoStack()).toEqual([]);
+    expect(annotationsState.undoStack).toEqual([]);
   });
 
   it('selectAnnotation syncs selectedId and emits selection changes', async () => {

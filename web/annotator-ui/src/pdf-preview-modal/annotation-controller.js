@@ -424,15 +424,37 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
         function pushUndoOperation(operation) {
             if (_isUndoing) return;
+            if (operation && !operation.undoTimestamp) {
+                operation.undoTimestamp = Date.now();
+            }
             _undoStack.push(operation);
             if (_undoStack.length > MAX_UNDO_STACK_SIZE) {
                 _undoStack.shift();
             }
             _syncAnnotationsState({ undoStack: _undoStack.slice() });
+            if (typeof _h.pushUndoOperation === 'function') {
+                _h.pushUndoOperation(operation);
+            }
         }
 
         function getUndoStack() {
             return _undoStack;
+        }
+
+        function peekUndoOperation() {
+            if (_undoStack.length === 0) {
+                return null;
+            }
+            return _undoStack[_undoStack.length - 1] || null;
+        }
+
+        function popUndoOperation() {
+            if (_undoStack.length === 0) {
+                return null;
+            }
+            var operation = _undoStack.pop() || null;
+            _syncAnnotationsState({ undoStack: _undoStack.slice() });
+            return operation;
         }
 
         function clearUndoStack() {
@@ -2422,6 +2444,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             // --- Undo ---
             pushUndoOperation: pushUndoOperation,
             getUndoStack: getUndoStack,
+            peekUndoOperation: peekUndoOperation,
+            popUndoOperation: popUndoOperation,
             clearUndoStack: clearUndoStack,
 
             // --- Polling ---

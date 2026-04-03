@@ -98,6 +98,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
             sliderInput: null,
             pageInputKeydown: null,
             pageInputInput: null,
+            pageInputChange: null,
             pageInputBlur: null,
             searchGoClick: null,
             searchPrevClick: null,
@@ -454,38 +455,38 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
             if (pageInput && !pageInput.dataset.bound) {
                 pageInput.dataset.bound = 'true';
 
+                function navigateFromPageInput(updateValue) {
+                    var targetPage = parseInt(pageInput.value, 10) || 1;
+                    if (window.__pdfGradedViewer) {
+                        var maxPage = (window.__pdfGradedViewer.pdf && window.__pdfGradedViewer.pdf.numPages) || 1;
+                        var clampedPage = Math.max(1, Math.min(targetPage, maxPage));
+                        if (updateValue) {
+                            pageInput.value = clampedPage;
+                        }
+                        window.__pdfGradedViewer.renderPage(clampedPage);
+                    }
+                }
+
                 _boundHandlers.pageInputKeydown = function (e) {
                     if (e.key === 'Enter') {
                         e.preventDefault();
-                        var targetPage = parseInt(pageInput.value, 10) || 1;
-                        if (window.__pdfGradedViewer) {
-                            var maxPage = (window.__pdfGradedViewer.pdf && window.__pdfGradedViewer.pdf.numPages) || 1;
-                            var clampedPage = Math.max(1, Math.min(targetPage, maxPage));
-                            pageInput.value = clampedPage;
-                            window.__pdfGradedViewer.renderPage(clampedPage);
-                        }
+                        navigateFromPageInput(true);
                     }
                 };
                 pageInput.addEventListener('keydown', _boundHandlers.pageInputKeydown);
 
                 _boundHandlers.pageInputInput = function () {
-                    var targetPage = parseInt(pageInput.value, 10) || 1;
-                    if (window.__pdfGradedViewer) {
-                        var maxPage = (window.__pdfGradedViewer.pdf && window.__pdfGradedViewer.pdf.numPages) || 1;
-                        var clampedPage = Math.max(1, Math.min(targetPage, maxPage));
-                        window.__pdfGradedViewer.renderPage(clampedPage);
-                    }
+                    navigateFromPageInput(false);
                 };
                 pageInput.addEventListener('input', _boundHandlers.pageInputInput);
 
+                _boundHandlers.pageInputChange = function () {
+                    navigateFromPageInput(true);
+                };
+                pageInput.addEventListener('change', _boundHandlers.pageInputChange);
+
                 _boundHandlers.pageInputBlur = function () {
-                    var targetPage = parseInt(pageInput.value, 10) || 1;
-                    if (window.__pdfGradedViewer) {
-                        var maxPage = (window.__pdfGradedViewer.pdf && window.__pdfGradedViewer.pdf.numPages) || 1;
-                        var clampedPage = Math.max(1, Math.min(targetPage, maxPage));
-                        pageInput.value = clampedPage;
-                        window.__pdfGradedViewer.renderPage(clampedPage);
-                    }
+                    navigateFromPageInput(true);
                 };
                 pageInput.addEventListener('blur', _boundHandlers.pageInputBlur);
             }
@@ -973,6 +974,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                 if (pageInput) {
                     if (_boundHandlers.pageInputKeydown) pageInput.removeEventListener('keydown', _boundHandlers.pageInputKeydown);
                     if (_boundHandlers.pageInputInput) pageInput.removeEventListener('input', _boundHandlers.pageInputInput);
+                    if (_boundHandlers.pageInputChange) pageInput.removeEventListener('change', _boundHandlers.pageInputChange);
                     if (_boundHandlers.pageInputBlur) pageInput.removeEventListener('blur', _boundHandlers.pageInputBlur);
                     delete pageInput.dataset.bound;
                 }

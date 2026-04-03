@@ -118,6 +118,10 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             this.isGradedViewer = containerId === 'pdfGradedContainer';
             this.lastRenderContainerWidth = null;
             this.zoomVersion = 0; // Incremented on zoom to invalidate stale renders
+            this.pendingNavigationPage = null;
+            this._pendingNavigationToken = 0;
+            this._pendingNavigationTimer = null;
+            this.navigationLockUntil = 0;
 
             // Store viewport for coordinate conversion (single-page mode)
             this.currentViewport = null;
@@ -198,6 +202,12 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 this._resizeObserver.disconnect();
                 this._resizeObserver = null;
             }
+
+            if (this._pendingNavigationTimer) {
+                clearTimeout(this._pendingNavigationTimer);
+                this._pendingNavigationTimer = null;
+            }
+            this.pendingNavigationPage = null;
 
             // Disconnect observer
             if (this.observer) {
@@ -528,6 +538,14 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
 
                     // Update current page based on visibility
                     if (entry.isIntersecting && entry.intersectionRatio > 0.5) {
+                        if (this.pendingNavigationPage !== null) {
+                            if (pageNum !== this.pendingNavigationPage) {
+                                return;
+                            }
+                            this._clearPendingNavigation(pageNum);
+                        } else if (Date.now() < this.navigationLockUntil && pageNum !== this.currentPage) {
+                            return;
+                        }
                         this.currentPage = pageNum;
                         this.updatePageInfo();
 
@@ -695,7 +713,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                     this.isRendering = false;
                 }
             } else {
-                this.scrollToPage(pageNum);
+                await this.scrollToPage(pageNum);
             }
         }
 
@@ -703,16 +721,54 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
         // Navigation
         // =====================================================================
 
-        scrollToPage(pageNum, smooth = true) {
+        async ensurePageRendered(pageNum) {
+            if (!this.pdf || pageNum < 1 || pageNum > this.pdf.numPages) {
+                return;
+            }
+            if (this.renderedPages.has(pageNum)) {
+                return;
+            }
+
+            if (this.renderingPages.has(pageNum)) {
+                const waitDeadline = Date.now() + 4000;
+                while (!this.renderedPages.has(pageNum) && this.renderingPages.has(pageNum)) {
+                    const activeRenderTask = this.renderTasks.get(pageNum);
+                    if (activeRenderTask?.promise) {
+                        try {
+                            await activeRenderTask.promise;
+                        } catch (error) {
+                            if (!(error && error.name === 'RenderingCancelledException')) {
+                                throw error;
+                            }
+                        }
+                    } else {
+                        await new Promise((resolve) => setTimeout(resolve, 25));
+                    }
+
+                    if (Date.now() > waitDeadline) {
+                        break;
+                    }
+                }
+                return;
+            }
+
+            await this.renderSpecificPage(pageNum);
+        }
+
+        async scrollToPage(pageNum, smooth = true) {
             const wrapper = this.container.querySelector(`.pdf-page-wrapper[data-page-num="${pageNum}"]`);
             if (wrapper) {
-                wrapper.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+                this._setPendingNavigation(pageNum);
                 this.currentPage = pageNum;
                 this.updatePageInfo();
                 if (!this.useSinglePageMode && this.pdf) {
+                    await this.ensurePageRendered(pageNum);
+                }
+
+                wrapper.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+                if (!this.useSinglePageMode && this.pdf) {
                     const pagesToRender = [
                         pageNum - 1,
-                        pageNum,
                         pageNum + 1,
                     ].filter((candidatePage) => (
                         candidatePage >= 1 &&
@@ -731,21 +787,23 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
         }
 
         previousPage() {
-            if (this.currentPage > 1) {
+            const activePage = this.pendingNavigationPage || this.currentPage;
+            if (activePage > 1) {
                 if (this.useSinglePageMode) {
-                    this.renderPage(this.currentPage - 1);
+                    this.renderPage(activePage - 1);
                 } else {
-                    this.scrollToPage(this.currentPage - 1);
+                    this.scrollToPage(activePage - 1);
                 }
             }
         }
 
         nextPage() {
-            if (this.pdf && this.currentPage < this.pdf.numPages) {
+            const activePage = this.pendingNavigationPage || this.currentPage;
+            if (this.pdf && activePage < this.pdf.numPages) {
                 if (this.useSinglePageMode) {
-                    this.renderPage(this.currentPage + 1);
+                    this.renderPage(activePage + 1);
                 } else {
-                    this.scrollToPage(this.currentPage + 1);
+                    this.scrollToPage(activePage + 1);
                 }
             }
         }
@@ -992,6 +1050,29 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
          */
         getViewportForPage(pageNum) {
             return this.pageViewports.get(pageNum);
+        }
+
+        _setPendingNavigation(pageNum) {
+            this.pendingNavigationPage = pageNum;
+            this._pendingNavigationToken += 1;
+            this.navigationLockUntil = Date.now() + 900;
+            const token = this._pendingNavigationToken;
+            clearTimeout(this._pendingNavigationTimer);
+            this._pendingNavigationTimer = window.setTimeout(() => {
+                if (this.pendingNavigationPage === pageNum && this._pendingNavigationToken === token) {
+                    this._clearPendingNavigation(pageNum);
+                }
+            }, 900);
+        }
+
+        _clearPendingNavigation(pageNum) {
+            if (pageNum !== undefined && this.pendingNavigationPage !== pageNum) {
+                return;
+            }
+            this.pendingNavigationPage = null;
+            this.navigationLockUntil = Math.max(this.navigationLockUntil, Date.now() + 450);
+            clearTimeout(this._pendingNavigationTimer);
+            this._pendingNavigationTimer = null;
         }
     }
 

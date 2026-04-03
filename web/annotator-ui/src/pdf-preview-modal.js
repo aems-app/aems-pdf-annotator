@@ -483,6 +483,9 @@
     function buildDisplayOrderByPagePosition(pageAnnotations) {
         const ordered = (pageAnnotations || [])
             .filter((ann) => {
+                if (isMarkupAnnotation(ann)) {
+                    return false;
+                }
                 const isPlaceholder = isPlaceholderAnnotation(ann);
                 const hasBeenEdited = ann?._hasBeenEdited === true || ann?._priorityChanged === true;
                 return !isPlaceholder || ann?._isTemporary || hasBeenEdited;
@@ -1722,6 +1725,40 @@
         };
     }
 
+    function buildNamedLabelPosition(
+        name,
+        markerLeft,
+        markerTop,
+        markerWidth,
+        markerHeight,
+        labelWidth,
+        labelHeight,
+        gap,
+    ) {
+        const centerOffsetX = (markerWidth - labelWidth) / 2;
+        const centerOffsetY = (markerHeight - labelHeight) / 2;
+        switch (name) {
+            case 'right-center':
+                return buildLabelPosition(name, markerLeft, markerTop, markerWidth + gap, centerOffsetY);
+            case 'left-center':
+                return buildLabelPosition(name, markerLeft, markerTop, -(labelWidth + gap), centerOffsetY);
+            case 'bottom-right':
+                return buildLabelPosition(name, markerLeft, markerTop, markerWidth + gap, markerHeight + gap);
+            case 'top-right':
+                return buildLabelPosition(name, markerLeft, markerTop, markerWidth + gap, -(labelHeight + gap));
+            case 'bottom-left':
+                return buildLabelPosition(name, markerLeft, markerTop, -(labelWidth + gap), markerHeight + gap);
+            case 'top-left':
+                return buildLabelPosition(name, markerLeft, markerTop, -(labelWidth + gap), -(labelHeight + gap));
+            case 'top-center':
+                return buildLabelPosition(name, markerLeft, markerTop, centerOffsetX, -(labelHeight + gap));
+            case 'bottom-center':
+                return buildLabelPosition(name, markerLeft, markerTop, centerOffsetX, markerHeight + gap);
+            default:
+                return null;
+        }
+    }
+
     function getRectOverlapArea(rect1, rect2, gap = 0) {
         const xOverlap = Math.max(
             0,
@@ -2373,15 +2410,24 @@
 
         const syncLabelBounds = () => {
             if (!label.isConnected || !marker.isConnected || !overlay.isConnected) return;
-            const restrictToViewport =
+            const preserveCompactAnchor =
                 label.classList.contains('label-expanded') ||
                 label.classList.contains('label-editing');
+            const preferredPosition = preserveCompactAnchor
+                ? (label.dataset.compactPosition || label.dataset.position || '')
+                : '';
             positionLabelOptimally(marker, label, overlay, undefined, {
-                respectViewport: restrictToViewport,
+                respectViewport: preserveCompactAnchor,
+                preferredPosition,
+                preservePreferredPosition: preserveCompactAnchor && !!preferredPosition,
             });
-            clampLabelToOverlayBounds(label, overlay, {
-                respectViewport: restrictToViewport,
-            });
+            if (preserveCompactAnchor) {
+                clampLabelToOverlayBounds(label, overlay, {
+                    respectViewport: true,
+                });
+            } else {
+                resetStoredLabelOffset(label);
+            }
         };
 
         requestAnimationFrame(() => {
@@ -2987,6 +3033,9 @@
             // Don't record undo operations while we're undoing
             return;
         }
+        if (operation && !operation.undoTimestamp) {
+            operation.undoTimestamp = Date.now();
+        }
 
         undoStack.push(operation);
 
@@ -2995,6 +3044,45 @@
             undoStack.shift();
         }
 
+    }
+
+    function getNextUndoOperation() {
+        const localOperation = undoStack.length > 0 ? undoStack[undoStack.length - 1] : null;
+        const controllerOperation = _currentAnnotationCtrl && !_annotationCtrlDelegating &&
+            _currentAnnotationCtrl.peekUndoOperation
+            ? _currentAnnotationCtrl.peekUndoOperation()
+            : null;
+
+        const isSameUndoOperation = (left, right) => (
+            !!left &&
+            !!right &&
+            left.type === right.type &&
+            left.undoTimestamp === right.undoTimestamp &&
+            normalizeAnnotationIdentifierValue(left.identifier || left.requestId || left.annotation?.id || left.annotation?.stable_id)
+                === normalizeAnnotationIdentifierValue(right.identifier || right.requestId || right.annotation?.id || right.annotation?.stable_id) &&
+            Number(left.pageIdx ?? left.oldPageIdx ?? -1) === Number(right.pageIdx ?? right.oldPageIdx ?? -1)
+        );
+
+        if (!localOperation && !controllerOperation) {
+            return null;
+        }
+
+        const localTimestamp = Number(localOperation?.undoTimestamp || 0);
+        const controllerTimestamp = Number(controllerOperation?.undoTimestamp || 0);
+
+        if (controllerOperation && controllerTimestamp >= localTimestamp) {
+            if (localOperation && isSameUndoOperation(localOperation, controllerOperation)) {
+                undoStack.pop();
+            }
+            return _currentAnnotationCtrl.popUndoOperation
+                ? _currentAnnotationCtrl.popUndoOperation()
+                : controllerOperation;
+        }
+
+        if (controllerOperation && isSameUndoOperation(localOperation, controllerOperation) && _currentAnnotationCtrl.popUndoOperation) {
+            _currentAnnotationCtrl.popUndoOperation();
+        }
+        return undoStack.pop();
     }
 
     function buildAnnotationVisibilityKey(pageIdx, params) {
@@ -3356,22 +3444,38 @@
     })();
 
     async function performUndo() {
-        if (undoStack.length === 0) {
+        const operation = getNextUndoOperation();
+        if (!operation) {
             // No operations to undo; silently ignore to keep flow smooth
             return;
         }
-
-        const operation = undoStack.pop();
 
         isUndoing = true;
 
         try {
             if (operation.type === 'delete') {
+                let apiRect = operation.annotation.rect;
+                const viewer = window.__pdfGradedViewer;
+                if (Array.isArray(apiRect) && apiRect.length === 4 && viewer?.pdf) {
+                    try {
+                        const pg = await viewer.pdf.getPage(operation.pageIdx + 1);
+                        const pageHeight = pg.view[3] - pg.view[1];
+                        apiRect = [
+                            apiRect[0],
+                            pageHeight - apiRect[3],
+                            apiRect[2],
+                            pageHeight - apiRect[1],
+                        ];
+                    } catch (_error) {
+                        // Fall back to the original rect if page metadata is unavailable.
+                    }
+                }
+
                 // Recreate the deleted annotation
                 const annotationData = {
                     content: operation.annotation.content || '',
-                    kind: (operation.annotation.type || 'text').toLowerCase(),  // Backend expects 'kind' in lowercase
-                    rect: operation.annotation.rect,
+                    type: operation.annotation.type || 'Text',
+                    rect: apiRect,
                     color: operation.annotation.priority || 'amber',  // Use priority string, not color dict
                     page_index: operation.pageIdx,
                     source: operation.annotation.source || 'HUMAN',  // Preserve original source
@@ -3391,9 +3495,15 @@
                         annotationsData[responsePageIdx].push(newAnn);
                     }
 
-                    // Only re-render the affected page, don't reload all annotations
-                    renderAnnotationsList();
+                    // Re-render the page first so visibility-tracked sidebars see
+                    // the recreated marker before they re-evaluate display rules.
                     renderAnnotationsForPage(operation.pageIdx + 1, true);
+                    try {
+                        syncVisibleAnnotationMarkersFromDom();
+                    } catch (_error) {
+                        // Visibility sync is best-effort; the observer will catch up.
+                    }
+                    renderAnnotationsList();
                     markLocalAnnotationChange(); // Prevent polling from reloading
                 } catch (undoErr) {
                     console.error('Failed to recreate annotation:', undoErr);
@@ -4365,68 +4475,37 @@
             };
         }
 
-        const centerOffsetX = (markerWidth - labelWidth) / 2;
-        const centerOffsetY = (markerHeight - labelHeight) / 2;
-
         // Define all possible positions
-        const positions = [
-            buildLabelPosition(
-                'right-center',
-                markerLeft,
-                markerTop,
-                markerWidth + gap,
-                centerOffsetY,
-            ),
-            buildLabelPosition(
-                'left-center',
-                markerLeft,
-                markerTop,
-                -(labelWidth + gap),
-                centerOffsetY,
-            ),
-            buildLabelPosition(
-                'bottom-right',
-                markerLeft,
-                markerTop,
-                markerWidth + gap,
-                markerHeight + gap,
-            ),
-            buildLabelPosition(
-                'top-right',
-                markerLeft,
-                markerTop,
-                markerWidth + gap,
-                -(labelHeight + gap),
-            ),
-            buildLabelPosition(
-                'bottom-left',
-                markerLeft,
-                markerTop,
-                -(labelWidth + gap),
-                markerHeight + gap,
-            ),
-            buildLabelPosition(
-                'top-left',
-                markerLeft,
-                markerTop,
-                -(labelWidth + gap),
-                -(labelHeight + gap),
-            ),
-            buildLabelPosition(
-                'top-center',
-                markerLeft,
-                markerTop,
-                centerOffsetX,
-                -(labelHeight + gap),
-            ),
-            buildLabelPosition(
-                'bottom-center',
-                markerLeft,
-                markerTop,
-                centerOffsetX,
-                markerHeight + gap,
-            ),
+        const compactPositionNames = [
+            'bottom-right',
+            'top-right',
+            'bottom-left',
+            'top-left',
         ];
+        const expandedPositionNames = [
+            'right-center',
+            'left-center',
+            'bottom-right',
+            'top-right',
+            'bottom-left',
+            'top-left',
+            'top-center',
+            'bottom-center',
+        ];
+        const positionNames = isExpandedLabel ? expandedPositionNames : compactPositionNames;
+        const positions = positionNames.map((name) => buildNamedLabelPosition(
+            name,
+            markerLeft,
+            markerTop,
+            markerWidth,
+            markerHeight,
+            labelWidth,
+            labelHeight,
+            gap,
+        )).filter(Boolean);
+        const preferredPositionName = options.preferredPosition || '';
+        const preservePreferredPosition = options.preservePreferredPosition === true;
+        const stabilizeCompactPosition = options.stabilizeCompactPosition === true;
 
         // Score each position
         let bestPosition = positions[0];
@@ -4451,6 +4530,49 @@
         const nearUpperRightCorner =
             spaceRight <= labelWidth + 28 &&
             spaceAbove <= labelHeight + 28;
+        const shouldKeepStableCompactPosition = () => {
+            if (isExpandedLabel || !stabilizeCompactPosition || !preferredPositionName) {
+                return false;
+            }
+            const preferredPosition = positions.find((position) => position.name === preferredPositionName);
+            if (!preferredPosition) {
+                return false;
+            }
+            const boundsOverflow = getBoundsOverflow(
+                preferredPosition.left,
+                preferredPosition.top,
+                labelWidth,
+                labelHeight,
+                placementBounds,
+            );
+            const pageOverflow = getBoundsOverflow(
+                preferredPosition.left,
+                preferredPosition.top,
+                labelWidth,
+                labelHeight,
+                pageBounds,
+            );
+            if (boundsOverflow > 0 || pageOverflow > 0) {
+                return false;
+            }
+
+            const horizontalHysteresis = Math.min(64, Math.max(48, Math.round(labelWidth * 0.45)));
+            const verticalHysteresis = Math.min(28, Math.max(18, Math.round(labelHeight * 0.5)));
+
+            if (preferredPositionName.includes('left') && spaceLeft < Math.max(0, labelWidth + gap - horizontalHysteresis)) {
+                return false;
+            }
+            if (preferredPositionName.includes('right') && spaceRight < Math.max(0, labelWidth + gap - horizontalHysteresis)) {
+                return false;
+            }
+            if (preferredPositionName.startsWith('top') && spaceAbove < Math.max(0, labelHeight + gap - verticalHysteresis)) {
+                return false;
+            }
+            if (preferredPositionName.startsWith('bottom') && spaceBelow < Math.max(0, labelHeight + gap - verticalHysteresis)) {
+                return false;
+            }
+            return true;
+        };
         const positionMetrics = positions.map(pos => {
             const boundsOverflow = getBoundsOverflow(
                 pos.left,
@@ -4629,6 +4751,13 @@
             }
         }
 
+        if ((preservePreferredPosition || shouldKeepStableCompactPosition()) && preferredPositionName) {
+            const preferredPosition = positions.find((position) => position.name === preferredPositionName);
+            if (preferredPosition) {
+                bestPosition = preferredPosition;
+            }
+        }
+
         // Apply the best position
         label.style.top = bestPosition.css.top;
         label.style.left = bestPosition.css.left;
@@ -4642,6 +4771,10 @@
         delete label.dataset.residualDx;
         delete label.dataset.residualDy;
         label.dataset.position = bestPosition.name;  // e.g., 'bottom-right', 'top-left'
+        if (!isExpandedLabel) {
+            label.dataset.compactPosition = bestPosition.name;
+            label.dataset.compactAnchorTransform = bestPosition.css.transform;
+        }
     }
 
     /**
@@ -4778,7 +4911,19 @@
         const overlay = marker.closest('.pdf-annotation-overlay');
         if (overlay) {
             requestAnimationFrame(function () {
-                repositionAllLabels(overlay);
+                const label = marker.querySelector('.annotation-label');
+                const priorityIdentifier = marker.dataset.identifier ||
+                    marker.dataset.annotationRequestId ||
+                    marker.dataset.annotationXref ||
+                    marker.dataset.annotationIdentifier;
+                if (label) {
+                    const preferredPosition = label.dataset.compactPosition || label.dataset.position || '';
+                    positionLabelOptimally(marker, label, overlay, undefined, {
+                        preferredPosition,
+                        stabilizeCompactPosition: true,
+                    });
+                }
+                repositionAllLabels(overlay, priorityIdentifier);
             });
         }
     }
@@ -5807,39 +5952,39 @@
         if (pageInput && !pageInput.dataset.bound) {
             pageInput.dataset.bound = 'true';
 
+            const navigateFromPageInput = (updateValue) => {
+                const targetPage = parseInt(pageInput.value, 10) || 1;
+                if (window.__pdfGradedViewer) {
+                    const maxPage = window.__pdfGradedViewer.pdf?.numPages || 1;
+                    const clampedPage = Math.max(1, Math.min(targetPage, maxPage));
+                    if (updateValue) {
+                        pageInput.value = clampedPage;
+                    }
+                    window.__pdfGradedViewer.renderPage(clampedPage);
+                }
+            };
+
             // Handle Enter key to navigate
             pageInput.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') {
                     e.preventDefault();
-                    const targetPage = parseInt(pageInput.value, 10) || 1;
-                    if (window.__pdfGradedViewer) {
-                        const maxPage = window.__pdfGradedViewer.pdf?.numPages || 1;
-                        const clampedPage = Math.max(1, Math.min(targetPage, maxPage));
-                        pageInput.value = clampedPage; // Update input in case value was clamped
-                        window.__pdfGradedViewer.renderPage(clampedPage);
-                    }
+                    navigateFromPageInput(true);
                 }
             });
 
             // Handle spinner button clicks (up/down arrows change value)
             pageInput.addEventListener('input', () => {
-                const targetPage = parseInt(pageInput.value, 10) || 1;
-                if (window.__pdfGradedViewer) {
-                    const maxPage = window.__pdfGradedViewer.pdf?.numPages || 1;
-                    const clampedPage = Math.max(1, Math.min(targetPage, maxPage));
-                    window.__pdfGradedViewer.renderPage(clampedPage);
-                }
+                navigateFromPageInput(false);
+            });
+
+            // Handle programmatic/manual change dispatch consistently with Enter.
+            pageInput.addEventListener('change', () => {
+                navigateFromPageInput(true);
             });
 
             // Also handle blur to navigate when focus leaves the input
             pageInput.addEventListener('blur', () => {
-                const targetPage = parseInt(pageInput.value, 10) || 1;
-                if (window.__pdfGradedViewer) {
-                    const maxPage = window.__pdfGradedViewer.pdf?.numPages || 1;
-                    const clampedPage = Math.max(1, Math.min(targetPage, maxPage));
-                    pageInput.value = clampedPage; // Update input in case value was clamped
-                    window.__pdfGradedViewer.renderPage(clampedPage);
-                }
+                navigateFromPageInput(true);
             });
         }
     }
@@ -7109,8 +7254,13 @@
         const handleUndo = async (e) => {
             // Check for Ctrl+Z (Windows/Linux) or Cmd+Z (Mac)
             if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-                // Don't interfere if user is typing in an input or textarea
-                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                const target = e.target;
+                const isTextInput = target instanceof HTMLInputElement && target.type !== 'number';
+                const isTextarea = target instanceof HTMLTextAreaElement;
+                const isEditableNode = !!target?.isContentEditable;
+                // Keep native undo inside real text editors, but still allow
+                // modal-wide undo when focus is on the page-number navigator.
+                if (isTextInput || isTextarea || isEditableNode) {
                     return;
                 }
 
@@ -7785,6 +7935,7 @@
                     scrollToAnnotationMarker: scrollToAnnotationMarker,
                     toggleAnnotationVerdict: toggleAnnotationVerdict,
                     updateAnnotationPriority: updateAnnotationPriority,
+                    pushUndoOperation: pushUndoOperation,
                     collapseInlineLabel: collapseInlineLabel,
                     expandInlineLabelEdit: expandInlineLabelEdit,
                     setupTextareaAutoResize: setupTextareaAutoResize,
@@ -8027,6 +8178,7 @@
     window.PdfPreviewModal.__test = {
         buildTaskPlacementBands,
         compareTaskPlacementEntries,
+        buildDisplayOrderByPagePosition,
         deriveMarkerTaskGroupKey,
         isSummaryPlacementEntry,
         collapseInlineLabel,
@@ -8037,6 +8189,12 @@
         setupLabelTooltipEvents,
         shouldIgnoreDetachedInlineBlur,
         focusElementWithoutScroll,
+        getUndoStacks: () => ({
+            local: undoStack.slice(),
+            controller: _currentAnnotationCtrl && _currentAnnotationCtrl.getUndoStack
+                ? _currentAnnotationCtrl.getUndoStack().slice()
+                : [],
+        }),
     };
 
     window.AEMSPdfAnnotator = window.AEMSPdfAnnotator || {};
