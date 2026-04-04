@@ -4035,6 +4035,7 @@
     function projectTextboxAnnotationsForDom() {
         const projected = [];
         const viewer = window.__pdfGradedViewer;
+        const RenderingModule = window.PdfPreviewModalRendering || {};
         if (!viewer) {
             return projected;
         }
