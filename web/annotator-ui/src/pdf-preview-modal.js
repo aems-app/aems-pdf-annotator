@@ -5405,6 +5405,18 @@
             marker.style.textDecorationThickness = '2px';
         }
 
+        // Update icon badge color to match new priority
+        const iconEl = marker.querySelector('.annotation-marker-icon');
+        if (iconEl) {
+            if (priority === 'red') {
+                iconEl.style.color = '#ef4444';
+            } else if (priority === 'amber') {
+                iconEl.style.color = '#f59e0b';
+            } else {
+                iconEl.style.color = '#22c55e';
+            }
+        }
+
         const label = marker.querySelector('.annotation-label');
         if (label) {
             label.style.borderLeft = `4px solid rgba(${r}, ${g}, ${b}, 1)`;

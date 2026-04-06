@@ -286,6 +286,33 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                     marker.style.textDecorationThickness = '2px';
                 }
 
+                // Store icon type in dataset for later updates
+                var iconType = (ann.icon || '').toLowerCase();
+                marker.dataset.annotationIcon = iconType;
+
+                // Render icon badge for verdict/check annotations
+                if (iconType === 'star' || iconType === 'help' || iconType === 'check') {
+                    var iconEl = document.createElement('i');
+                    iconEl.className = 'annotation-marker-icon bi';
+                    if (iconType === 'star') {
+                        iconEl.classList.add('bi-star-fill');
+                    } else if (iconType === 'help') {
+                        iconEl.classList.add('bi-question-circle-fill');
+                    } else if (iconType === 'check') {
+                        iconEl.classList.add('bi-check-circle-fill');
+                    }
+                    var iconSize = Math.max(10, Math.round(12 * zoom));
+                    iconEl.style.fontSize = iconSize + 'px';
+                    if (priority === 'red') {
+                        iconEl.style.color = '#ef4444';
+                    } else if (priority === 'amber') {
+                        iconEl.style.color = '#f59e0b';
+                    } else {
+                        iconEl.style.color = '#22c55e';
+                    }
+                    marker.appendChild(iconEl);
+                }
+
                 // Label with comment preview
                 var label = document.createElement('div');
                 label.className = 'annotation-label';
