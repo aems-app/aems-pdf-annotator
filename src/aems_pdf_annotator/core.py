@@ -179,6 +179,7 @@ def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
         "source": None,
         "original_source": None,
         "is_verdict": False,
+        "icon": None,
         "drawing_style": None,
         "stroke_width": None,
         "stroke_opacity": None,
@@ -220,6 +221,9 @@ def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
         if token == "V":
             metadata["is_verdict"] = True
             continue
+        if token.startswith("I:"):
+            metadata["icon"] = token[2:] or None
+            continue
         if token.startswith("C:"):
             metadata["check_id"] = token[2:] or None
             continue
@@ -251,6 +255,7 @@ def _encode_subject_metadata(
     check_id: Optional[str] = None,
     original_source: Optional[str] = None,
     is_verdict: bool = False,
+    icon: Optional[str] = None,
     drawing_style: Optional[str] = None,
     stroke_width: Optional[float] = None,
     stroke_opacity: Optional[float] = None,
@@ -262,6 +267,8 @@ def _encode_subject_metadata(
     metadata_tokens: List[str] = []
     if is_verdict:
         metadata_tokens.append("V")
+    if icon:
+        metadata_tokens.append(f"I:{icon}")
     if check_id:
         metadata_tokens.append(f"C:{check_id}")
     if drawing_style:
@@ -480,6 +487,7 @@ class PDFAnnotator:
                             else None
                         ),
                         is_verdict=bool(getattr(annotation, "is_verdict", False)),
+                        icon=getattr(annotation, "icon", None),
                         drawing_style=annotation.drawing_style,
                         stroke_width=annotation.stroke_width,
                         stroke_opacity=annotation.stroke_opacity,
@@ -1937,6 +1945,25 @@ class PDFAnnotator:
                 annotation_data["task_id"] = _derive_task_id_from_check_id(
                     annotation_data.get("check_id")
                 )
+
+                # Icon: from subject metadata, or derive from verdict/color
+                annot_icon = subject_metadata.get("icon")
+                if not annot_icon:
+                    check_id_val = annotation_data.get("check_id") or ""
+                    is_summary = str(check_id_val).endswith("_SUMMARY")
+                    if is_summary:
+                        annot_icon = (
+                            "Help" if color == "red" else "Star"
+                        )
+                    elif annotation_data.get("is_verdict"):
+                        annot_icon = (
+                            "Help" if color == "red" else "Star"
+                        )
+                    elif color == "red":
+                        annot_icon = "Help"
+                    elif color == "green":
+                        annot_icon = "Check"
+                annotation_data["icon"] = annot_icon
                 # Debug: log what source is being read for this annotation
                 logger.debug(
                     "Reading annotation xref=%s, stable_id=%s: source=%s (from info keys: %s), full_info=%s",
