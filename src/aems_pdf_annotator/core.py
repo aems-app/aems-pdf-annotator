@@ -672,6 +672,7 @@ class PDFAnnotator:
                     if new_is_verdict is None
                     else bool(new_is_verdict)
                 ),
+                icon=metadata.get("icon"),
                 drawing_style=drawing_style,
                 stroke_width=stroke_width,
                 stroke_opacity=stroke_opacity,
@@ -757,6 +758,7 @@ class PDFAnnotator:
                     if new_is_verdict is None
                     else bool(new_is_verdict)
                 ),
+                icon=metadata.get("icon"),
                 textbox_color_rgb=textbox_rgb,
             )
             _safe_set_info(new_annot, "subject", subject_value)
@@ -1316,6 +1318,7 @@ class PDFAnnotator:
                         check_id=subject_metadata.get("check_id"),
                         original_source=original_source_to_store,
                         is_verdict=is_verdict_to_store,
+                        icon=subject_metadata.get("icon"),
                         drawing_style=subject_metadata.get("drawing_style"),
                         stroke_width=subject_metadata.get("stroke_width"),
                         stroke_opacity=subject_metadata.get("stroke_opacity"),
@@ -1633,6 +1636,7 @@ class PDFAnnotator:
                         if new_is_verdict is None
                         else bool(new_is_verdict)
                     ),
+                    icon=subject_metadata.get("icon"),
                     drawing_style=effective_drawing_style,
                     stroke_width=effective_stroke_width,
                     stroke_opacity=effective_stroke_opacity,
@@ -1946,9 +1950,11 @@ class PDFAnnotator:
                     annotation_data.get("check_id")
                 )
 
-                # Icon: from subject metadata, or derive from verdict/color
+                # Icon: from subject metadata, or derive from verdict/color.
+                # Only derive for Text annotations (sticky notes), not
+                # drawings, underlines, or other manual markup types.
                 annot_icon = subject_metadata.get("icon")
-                if not annot_icon:
+                if not annot_icon and annot_type_str == "Text":
                     check_id_val = annotation_data.get("check_id") or ""
                     is_summary = str(check_id_val).endswith("_SUMMARY")
                     if is_summary:
