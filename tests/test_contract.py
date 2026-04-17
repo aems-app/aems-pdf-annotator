@@ -62,7 +62,7 @@ class TestContractValidation:
 
 
 class TestFeedbackItemConversion:
-    def test_low_priority_produces_green_text_marker_with_check_icon(self):
+    def test_low_priority_produces_green_text_marker_with_comment_icon(self):
         item = {
             "stable_id": "ann-q1-01",
             "check_id": "Q1-01",
@@ -79,12 +79,12 @@ class TestFeedbackItemConversion:
         assert annot.id == "ann-q1-01"
         assert annot.kind == AnnotationType.TEXT
         assert annot.color == AnnotationColor.GREEN
-        assert annot.icon == "Check"
+        assert annot.icon == "Comment"
         assert annot.page_index == 0  # 1-based to 0-based
         assert annot.comment == "Good work"
         assert annot.check_id == "Q1-01"
 
-    def test_high_priority_produces_red_text_marker_with_help_icon(self):
+    def test_high_priority_produces_red_text_marker_with_comment_icon(self):
         item = {
             "check_id": "Q2-03",
             "page": 2,
@@ -99,7 +99,7 @@ class TestFeedbackItemConversion:
         )
         assert annot.kind == AnnotationType.TEXT
         assert annot.color == AnnotationColor.RED
-        assert annot.icon == "Help"
+        assert annot.icon == "Comment"
         assert annot.page_index == 1
 
     def test_medium_priority_produces_amber_text_marker_with_comment_icon(self):
@@ -132,7 +132,7 @@ class TestFeedbackItemConversion:
         )
         assert annot.kind == AnnotationType.TEXT
         assert annot.is_verdict is True
-        assert annot.icon == "Check"
+        assert annot.icon == "Star"
 
     def test_verdict_fail_item_uses_help_icon(self):
         item = {

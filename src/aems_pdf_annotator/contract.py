@@ -242,15 +242,14 @@ def feedback_item_to_annotation(
 
     icon = item.get("icon")
     if icon is None and kind == AnnotationType.TEXT:
-        # Assign icons based on verdict/priority:
-        #   PASS  -> Check  (green checkmark)
-        #   FAIL  -> Help   (red question mark)
-        #   other -> Comment (amber note)
+        # Non-verdict comments keep the regular comment-note icon. Color
+        # carries severity; only verdict markers get verdict glyphs.
         verdict = str(item.get("verdict", "")).upper()
-        if verdict == "PASS" or priority == "low":
-            icon = "Check"
-        elif verdict == "FAIL" or priority == "high":
-            icon = "Help"
+        if is_verdict:
+            if verdict in {"FAIL", "UNCERTAIN", "PARTIAL"} or priority == "high":
+                icon = "Help"
+            else:
+                icon = "Star"
         else:
             icon = "Comment"
 

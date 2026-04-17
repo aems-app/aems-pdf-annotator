@@ -1965,10 +1965,8 @@ class PDFAnnotator:
                         annot_icon = (
                             "Help" if color == "red" else "Star"
                         )
-                    elif color == "red":
-                        annot_icon = "Help"
-                    elif color == "green":
-                        annot_icon = "Check"
+                    else:
+                        annot_icon = "Comment"
                 annotation_data["icon"] = annot_icon
                 # Debug: log what source is being read for this annotation
                 logger.debug(
