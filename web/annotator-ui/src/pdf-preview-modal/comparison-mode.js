@@ -220,10 +220,12 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
         // Clear comparison panels
         const panelA = document.getElementById('pdfModelACommentsList');
         const panelB = document.getElementById('pdfModelBCommentsList');
-         
-        if (panelA) panelA.innerHTML = '<div class="text-muted small text-center p-3">Model A feedback</div>';
-         
-        if (panelB) panelB.innerHTML = '<div class="text-muted small text-center p-3">Model B feedback</div>';
+
+        const hideComparisonModelDetails = Boolean(window.__WIZARD_MODEL_CONFIG && window.__WIZARD_MODEL_CONFIG.hideLlmDetails);
+
+        if (panelA) panelA.innerHTML = `<div class="text-muted small text-center p-3">${hideComparisonModelDetails ? 'Review A feedback' : 'Model A feedback'}</div>`;
+
+        if (panelB) panelB.innerHTML = `<div class="text-muted small text-center p-3">${hideComparisonModelDetails ? 'Review B feedback' : 'Model B feedback'}</div>`;
 
         // Clear comparison markers from PDF overlays
         document.querySelectorAll('.annotation-marker.source-model-a, .annotation-marker.source-model-b, .annotation-marker.source-overlap')
@@ -240,12 +242,21 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
     function updateModelLabels() {
         if (!exports.comparisonData) return;
 
-        const elements = {
-            'modelALabel': exports.comparisonData.modelAName,
-            'modelBLabel': exports.comparisonData.modelBName,
-            'toggleModelALabel': exports.comparisonData.modelAName,
-            'toggleModelBLabel': exports.comparisonData.modelBName
-        };
+        const hideComparisonModelDetails = Boolean(window.__WIZARD_MODEL_CONFIG && window.__WIZARD_MODEL_CONFIG.hideLlmDetails);
+
+        const elements = hideComparisonModelDetails
+            ? {
+                'modelALabel': 'Review A',
+                'modelBLabel': 'Review B',
+                'toggleModelALabel': 'Review A',
+                'toggleModelBLabel': 'Review B'
+            }
+            : {
+                'modelALabel': exports.comparisonData.modelAName,
+                'modelBLabel': exports.comparisonData.modelBName,
+                'toggleModelALabel': exports.comparisonData.modelAName,
+                'toggleModelBLabel': exports.comparisonData.modelBName
+            };
 
         for (const [id, text] of Object.entries(elements)) {
             const el = document.getElementById(id);
