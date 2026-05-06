@@ -84,7 +84,12 @@ class TestFeedbackItemConversion:
         assert annot.comment == "Good work"
         assert annot.check_id == "Q1-01"
 
-    def test_high_priority_produces_red_text_marker_with_comment_icon(self):
+    def test_fail_body_item_uses_help_icon(self):
+        # 2026-05-06 bench audit (Hadi SE1020-2025): every body annotation
+        # across all 8 PDFs shipped with `icon=Comment`, including FAIL
+        # bodies that carried clearly-negative comments ("Saknar
+        # kompatibilitet, grovt fel!"). Body items must mirror the verdict
+        # marker's gradient: PASS body == Comment, FAIL/UNCERTAIN body == Help.
         item = {
             "check_id": "Q2-03",
             "page": 2,
@@ -99,10 +104,29 @@ class TestFeedbackItemConversion:
         )
         assert annot.kind == AnnotationType.TEXT
         assert annot.color == AnnotationColor.RED
-        assert annot.icon == "Comment"
+        assert annot.icon == "Help"
         assert annot.page_index == 1
 
-    def test_medium_priority_produces_amber_text_marker_with_comment_icon(self):
+    def test_uncertain_body_item_uses_help_icon(self):
+        item = {
+            "page": 1,
+            "x_normalized": 0.3,
+            "y_normalized": 0.4,
+            "comment": "Partially correct",
+            "priority": "medium",
+            "verdict": "UNCERTAIN",
+        }
+        annot = feedback_item_to_annotation(
+            item, page_width=612, page_height=792
+        )
+        assert annot.kind == AnnotationType.TEXT
+        assert annot.color == AnnotationColor.AMBER
+        assert annot.icon == "Help"
+
+    def test_unknown_verdict_body_item_keeps_comment_icon(self):
+        # No verdict supplied — preserve the legacy default so callers that
+        # have not started populating `verdict` on body items do not flip
+        # silently. PASS body items stay on Comment too.
         item = {
             "page": 1,
             "x_normalized": 0.3,

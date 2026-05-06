@@ -242,14 +242,22 @@ def feedback_item_to_annotation(
 
     icon = item.get("icon")
     if icon is None and kind == AnnotationType.TEXT:
-        # Non-verdict comments keep the regular comment-note icon. Color
-        # carries severity; only verdict markers get verdict glyphs.
+        # Verdict markers carry the per-task summary glyph (Star=PASS,
+        # Help=FAIL/UNCERTAIN/PARTIAL or high-priority). Body comments
+        # default to Comment, but when the LLM emitted an explicit
+        # FAIL/UNCERTAIN/PARTIAL verdict for the per-check item, lift
+        # the glyph to Help so the icon matches the comment's tone
+        # (2026-05-06 SE1020-2025 bench audit Defect 4: every body
+        # annotation across all 8 PDFs shipped with `icon=Comment`,
+        # including bodies whose rationale clearly explained a deduction).
         verdict = str(item.get("verdict", "")).upper()
         if is_verdict:
             if verdict in {"FAIL", "UNCERTAIN", "PARTIAL"} or priority == "high":
                 icon = "Help"
             else:
                 icon = "Star"
+        elif verdict in {"FAIL", "UNCERTAIN", "PARTIAL"}:
+            icon = "Help"
         else:
             icon = "Comment"
 
