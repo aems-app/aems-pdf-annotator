@@ -4,16 +4,36 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aems-pdf-annotator"
-version = "0.1.0"
-description = "Shared PDF annotation engine for AEMS"
-authors = [{name = "AEMS Team"}]
+version = "0.2.0"
+description = "Shared PDF annotation engine for AEMS: schema-driven verdict markers, page-anchored highlights, and LLM-output payload contract"
+authors = [{name = "AEMS Team", email = "contact@aems.app"}]
 requires-python = ">=3.10"
 license = {text = "AGPL-3.0-or-later"}
-
+readme = "README.md"
+keywords = ["pdf", "annotation", "grading", "education", "aems"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Education",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Text Processing",
+]
 dependencies = [
     "pydantic>=2.0.0",
     "pymupdf>=1.25.0",
 ]
+
+[project.urls]
+Homepage = "https://aems.app"
+Repository = "https://github.com/aems-app/aems-pdf-annotator"
+Issues = "https://github.com/aems-app/aems-pdf-annotator/issues"
+Changelog = "https://github.com/aems-app/aems-pdf-annotator/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
