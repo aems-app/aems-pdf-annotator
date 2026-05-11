@@ -5,5 +5,15 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+.pytest-temp/
+.mypy_cache/
+.ruff_cache/
 .eggs/
 web/annotator-ui/node_modules/
+# Tooling output (knowledge-graph extractor, leaks local workspace path)
+graphify-out/
+# IDE / OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
