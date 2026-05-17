@@ -216,24 +216,20 @@ window.PdfPreviewModalShell = window.PdfPreviewModalShell || {};
         }
 
         function toggleSplitPanel() {
-            // Split panel only works in fullscreen
-            if (!_fullscreenActive) {
-                return;
-            }
+            // Split panel works in both reduced and fullscreen modes
+            // (gate lifted 2026-05-17 server-path follow-up — see CSS rule
+            // `#pdfPreviewModal.split-panel-mode:not(.preview-fullscreen)`
+            // which sizes the reduced-mode panel widths so the 3-column
+            // layout fits inside the modal-xl dialog).
             updateSplitPanelUi(!_splitPanelActive);
         }
 
         function updateSplitPanelButtonVisibility() {
             if (!splitPanelBtn) return;
-            if (_fullscreenActive) {
-                splitPanelBtn.classList.remove('d-none');
-            } else {
-                splitPanelBtn.classList.add('d-none');
-                // Also disable split panel when exiting fullscreen
-                if (_splitPanelActive) {
-                    updateSplitPanelUi(false);
-                }
-            }
+            // Split-panel toggle is now always visible (formerly fullscreen-only).
+            // The reduced-mode split layout sizes panels at 280px each so the
+            // 3-column view fits inside the modal-xl dialog.
+            splitPanelBtn.classList.remove('d-none');
         }
 
         // -----------------------------------------------------------------

@@ -1107,13 +1107,26 @@
     color: #ea580c;
 }
 
-/* Split Panel Mode */
+/* Split Panel Mode (works in both reduced and fullscreen modes) */
 /* Ensure row does not wrap in split view (since cols sum > 12) */
-#pdfPreviewModal.preview-fullscreen.split-panel-mode #pdfGradedPane>.row {
+#pdfPreviewModal.split-panel-mode #pdfGradedPane>.row {
     flex-wrap: nowrap !important;
     height: 100%;
 }
 
+/* Reduced (non-fullscreen) split-panel: narrower panel widths so 3 columns
+   fit inside the modal-xl dialog. The 380px fullscreen widths only work
+   when the modal occupies most of the viewport. */
+#pdfPreviewModal.split-panel-mode:not(.preview-fullscreen) .comments-panel-ai,
+#pdfPreviewModal.split-panel-mode:not(.preview-fullscreen) .comments-panel-human {
+    flex: 0 0 280px !important;
+    width: 280px !important;
+    max-width: 280px !important;
+    min-width: 240px;
+    display: block !important;
+}
+
+/* Fullscreen split-panel: wider panels for the larger viewport. */
 #pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-ai,
 #pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-human {
     flex: 0 0 380px !important;
@@ -1123,20 +1136,20 @@
     display: block !important;
 }
 
-/* Panel borders, backgrounds, and ordering only in split view */
-#pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-ai {
+/* Panel borders, backgrounds, and ordering apply in any split view */
+#pdfPreviewModal.split-panel-mode .comments-panel-ai {
     order: 1;
     border-right: 2px solid #1565c0;
     background: #f8fbff;
 }
 
-#pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-human {
+#pdfPreviewModal.split-panel-mode .comments-panel-human {
     order: 3;
     border-left: 2px solid #e65100;
     background: #fffbf5;
 }
 
-#pdfPreviewModal.preview-fullscreen.split-panel-mode .pdf-center-panel {
+#pdfPreviewModal.split-panel-mode .pdf-center-panel {
     order: 2;
     flex: 1 1 0 !important;
     min-width: 0 !important;
@@ -1146,6 +1159,10 @@
 /* Ensure good contrast on hover for the split view toggle */
 /* Note: Base hover styles defined at top of file, active state overrides here */
 
+/* AI sidebar is hidden when split-panel-mode is OFF — operator can toggle it
+   via the split-panel button in both reduced and fullscreen modes (gate
+   lifted 2026-05-17 server-path follow-up). Keep this hide so the panel
+   doesn't collide with the human-comments column in reduced default mode. */
 #pdfPreviewModal:not(.split-panel-mode) .comments-panel-ai {
     display: none !important;
 }

@@ -264,6 +264,9 @@
     // Split Panel Mode for AI/Human annotations — Phase 5A: delegate to shell
     const splitPanelToggleBtn = document.getElementById('pdfPreviewSplitPanelToggle');
     let splitPanelActive = false;
+    // Gate the server-mode auto-enable to a single application per modal-open
+    // so manual toggle decisions stick. Set true after the first AI-load.
+    let _splitPanelAutoApplied = false;
 
     function updateSplitPanelUi(active) {
         if (_currentShell) {
@@ -289,7 +292,11 @@
 
     function toggleSplitPanel() {
         if (_currentShell) { _currentShell.toggleSplitPanel(); splitPanelActive = _currentShell.isSplitPanel(); return; }
-        // Split panel only works in fullscreen
+        // Split panel works in both reduced and fullscreen modes
+        // (gate lifted 2026-05-17 server-path follow-up). The legacy
+        // monolith path below is only hit when the shell module is
+        // unavailable; preserve the conservative fullscreen-only fallback
+        // there to avoid breaking older deployments without the new CSS.
         if (!previewFullscreenActive) {
             return;
         }
@@ -361,6 +368,22 @@
                     const id = deleteBtn.dataset.annotationRequestId || deleteBtn.dataset.annotationIdentifier || deleteBtn.dataset.annotationXref;
                     if (!id) { showToast('error', 'Unable to delete annotation.'); return; }
                     deleteAnnotation(parseInt(deleteBtn.dataset.annotationPage), id, deleteBtn);
+                    return;
+                }
+
+                // Revert-to-AI button (hosted Canvas server-mode only)
+                const revertBtn = e.target.closest('.revert-annotation-to-ai');
+                if (revertBtn) {
+                    const id = revertBtn.dataset.annotationStableId
+                        || revertBtn.dataset.annotationRequestId
+                        || revertBtn.dataset.annotationIdentifier
+                        || revertBtn.dataset.annotationXref;
+                    if (!id) { showToast('error', 'Unable to revert annotation.'); return; }
+                    revertAnnotationToAi(
+                        parseInt(revertBtn.dataset.annotationPage),
+                        id,
+                        revertBtn,
+                    );
                     return;
                 }
 
@@ -746,6 +769,19 @@
                                      title="Edit comment">
                                 <i class="bi bi-pencil"></i>
                             </button>
+                            ${ann.can_revert_to_ai && _hostAdvertisesCapability('revertToAi') ? `
+                            <button class="btn btn-outline-warning btn-sm revert-annotation-to-ai"
+                                    data-annotation-identifier="${displayIdentifier}"
+                                    data-annotation-request-id="${requestId}"
+                                    data-annotation-xref="${ann.xref || ''}"
+                                    data-annotation-page="${ann.pageIdx}"
+                                    data-annotation-id="${domId}"
+                                    data-annotation-stable-id="${stableId || ''}"
+                                    title="Revert to AI">
+                                <span class="spinner-border spinner-border-sm d-none" role="status"></span>
+                                <i class="bi bi-arrow-counterclockwise"></i>
+                            </button>
+                            ` : ''}
                             <button class="btn btn-outline-danger btn-sm delete-annotation"
                                     data-annotation-identifier="${displayIdentifier}"
                                     data-annotation-request-id="${requestId}"
@@ -996,6 +1032,9 @@
             if (MarkupToolbar) MarkupToolbar.destroy();
             if (MarkupSelection) MarkupSelection.destroy();
             markupModeActive = false;
+            // Reset the server-mode auto-apply guard so next modal open
+            // re-evaluates whether to default-enable split-panel-mode.
+            _splitPanelAutoApplied = false;
             var markupToggleBtn = pdfPreviewModalEl ? pdfPreviewModalEl.querySelector('.js-toggle-markup') : null;
             if (markupToggleBtn) markupToggleBtn.classList.remove('active');
         });
@@ -1266,6 +1305,41 @@
         return _requireAnnotationAdapter().deleteAnnotation(currentAssignmentId, currentSubmissionId, annotationId, {
             offline: _isOfflineMode()
         });
+    }
+
+    /**
+     * Revert a HUMAN-edited annotation back to its last AI snapshot.
+     * Hosted Canvas server-mode only — see {@link _hostAdvertisesCapability}.
+     * @param {string} annotationId - The annotation's stable_id on the server.
+     * @returns {Promise<Object>} Parsed JSON with the reverted annotation.
+     */
+    async function revertAnnotationToAiRequest(annotationId) {
+        var adapter = _requireAnnotationAdapter();
+        if (typeof adapter.revertAnnotationToAi !== 'function') {
+            throw new Error('Revert-to-AI is not supported by this host.');
+        }
+        return adapter.revertAnnotationToAi(currentAssignmentId, currentSubmissionId, annotationId);
+    }
+
+    /**
+     * Check whether the current host (mode adapter) advertises a capability.
+     * The annotator UI uses this to gate optional affordances (e.g. the
+     * Revert-to-AI button) so they only render where the backend supports them.
+     * @param {string} name - Capability name (currently: "revertToAi").
+     * @returns {boolean}
+     */
+    function _hostAdvertisesCapability(name) {
+        try {
+            var adapter = _annotationAdapter;
+            if (!adapter) return false;
+            if (name === 'revertToAi') {
+                return typeof adapter.supportsRevertToAi === 'function'
+                    && adapter.supportsRevertToAi();
+            }
+            return false;
+        } catch (e) {
+            return false;
+        }
     }
     let currentAnnotationsPage = 0;
     // Track if the browser forced exit from real fullscreen while editing; we keep the pseudo-fullscreen styling active.
@@ -6111,6 +6185,56 @@
         return _currentAnnotationCtrl.deleteAnnotation(pageIdx, identifier, sourceButton);
     }
 
+    /**
+     * Revert a HUMAN-edited annotation back to its last AI snapshot.
+     * Server-mode (hosted Canvas) only — gated by `_hostAdvertisesCapability('revertToAi')`.
+     * On success the modal refreshes annotations in place (no reopen required).
+     * @param {number} pageIdx - 0-based page index where the annotation currently lives.
+     * @param {string} identifier - Stable ID (preferred) or xref-style identifier.
+     * @param {HTMLElement|null} sourceButton - Optional button to spin-and-disable during the round-trip.
+     */
+    async function revertAnnotationToAi(pageIdx, identifier, sourceButton = null) {
+        if (!identifier) {
+            showToast('error', 'Unable to revert annotation: missing identifier.');
+            return;
+        }
+        if (!_hostAdvertisesCapability('revertToAi')) {
+            showToast('error', 'Revert to AI is not supported on this surface.');
+            return;
+        }
+
+        var spinner = sourceButton ? sourceButton.querySelector('.spinner-border') : null;
+        var icon = sourceButton ? sourceButton.querySelector('i') : null;
+        if (sourceButton) sourceButton.disabled = true;
+        if (spinner) spinner.classList.remove('d-none');
+        if (icon) icon.classList.add('d-none');
+
+        try {
+            var data = await revertAnnotationToAiRequest(identifier);
+            if (!data || data.success !== true) {
+                throw new Error((data && (data.error || data.detail)) || 'Revert failed');
+            }
+            showToast('success', 'Annotation reverted to AI.');
+
+            // Refresh annotation data from server so the marker layer + AI
+            // sidebar list update in the same open modal (no reopen).
+            try {
+                await loadAnnotations(currentSubmissionId, currentAssignmentId);
+            } catch (e) {
+                // If reload fails the toast already told the operator the
+                // revert succeeded server-side; log and fall through.
+                console.warn('Revert succeeded but annotation reload failed:', e);
+            }
+        } catch (err) {
+            console.error('Revert to AI failed:', err);
+            showToast('error', err && err.message ? err.message : 'Revert failed.');
+        } finally {
+            if (sourceButton) sourceButton.disabled = false;
+            if (spinner) spinner.classList.add('d-none');
+            if (icon) icon.classList.remove('d-none');
+        }
+    }
+
     async function updateAnnotationPosition(sourcePageIdx, targetPageIdx, identifier, marker, isOwnershipTransfer = false) {
         // Add timeout wrapper to prevent infinite hangs
         const timeoutPromise = new Promise((_, reject) =>
@@ -8072,6 +8196,35 @@
                 if (_currentVersionSync) {
                     _currentVersionSync.start();
                 }
+                // Auto-enable split-panel-mode on first load for server-mode
+                // surfaces (hosted Canvas) when at least one AI annotation
+                // exists. This makes the AI comments sidebar visible by
+                // default — previously it was hidden behind a fullscreen-only
+                // toggle (2026-05-17 server-path follow-up Part 2).
+                // The auto-enable only fires once per modal-open (gated on
+                // _splitPanelAutoApplied) so manual toggle decisions stick.
+                try {
+                    if (!_splitPanelAutoApplied) {
+                        var hostMode = state && state.options
+                            && (state.options.mode
+                                || (state.options.modeAdapter && state.options.modeAdapter.assignmentMode));
+                        if (hostMode === 'server') {
+                            var anyAi = false;
+                            for (var pageKey in annotationsData) {
+                                var pageAnns = annotationsData[pageKey] || [];
+                                for (var i = 0; i < pageAnns.length; i++) {
+                                    var src = (pageAnns[i] && (pageAnns[i].source || pageAnns[i].original_source)) || '';
+                                    if (src === 'AI') { anyAi = true; break; }
+                                }
+                                if (anyAi) break;
+                            }
+                            if (anyAi && !splitPanelActive) {
+                                updateSplitPanelUi(true);
+                            }
+                        }
+                        _splitPanelAutoApplied = true;
+                    }
+                } catch (e) { /* non-fatal */ }
             });
 
             _currentAnnotationCtrl.onRenderListNeeded(function () {
