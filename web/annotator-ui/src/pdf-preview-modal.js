@@ -3274,6 +3274,34 @@
                 }
 
                 if (annotationId) {
+                    // Snapshot the entry BEFORE deleting so undo can recreate it.
+                    // pushUndoOperation previously only saved annotationId, which
+                    // gave performUndo nothing to recreate from.
+                    var snapshot = item && item.entry ? {
+                        content: item.entry.content,
+                        color: item.entry.color && item.entry.color.name ? item.entry.color.name : (typeof item.entry.color === 'string' ? item.entry.color : 'amber'),
+                        stroke_color_rgb: item.entry.color && item.entry.color.rgb ? item.entry.color.rgb : null,
+                        type: item.type === 'textbox' ? 'textbox' : 'stroke',
+                        rect: (function () {
+                            if (item.type !== 'textbox' || !TextboxModule || typeof TextboxModule.getTextboxCanvasRect !== 'function') return null;
+                            var wrappers = document.querySelectorAll('#pdfGradedContainer .pdf-page-wrapper');
+                            var pw = wrappers[item.pageIdx];
+                            if (!pw) return null;
+                            var canvasRect = TextboxModule.getTextboxCanvasRect(item.entry, pw);
+                            var viewer = window.__pdfGradedViewer;
+                            var vp = viewer && viewer.getViewportForPage && viewer.getViewportForPage(item.pageIdx + 1);
+                            if (!canvasRect || !vp || typeof vp.convertToPdfPoint !== 'function') return null;
+                            var tl = vp.convertToPdfPoint(canvasRect[0], canvasRect[1]);
+                            var br = vp.convertToPdfPoint(canvasRect[2], canvasRect[3]);
+                            return [
+                                Math.min(tl[0], br[0]),
+                                Math.min(tl[1], br[1]),
+                                Math.max(tl[0], br[0]),
+                                Math.max(tl[1], br[1])
+                            ];
+                        })(),
+                        points: item.type === 'stroke' ? item.entry.points : null
+                    } : null;
                     deleteAnnotationRequest(buildApiAnnotationIdentifier({ identifier: annotationId }) || annotationId)
                     .then(function () {
                         removeAnnotationEntryLocal(item.pageIdx, annotationId);
@@ -3282,7 +3310,8 @@
                             type: 'delete-markup',
                             markupType: item.type,
                             pageIdx: item.pageIdx,
-                            annotationId: annotationId
+                            annotationId: annotationId,
+                            snapshot: snapshot
                         });
                     })
                     .catch(function (err) {
@@ -3742,6 +3771,42 @@
                 } catch (undoErr) {
                     console.error('Failed to undo priority:', undoErr);
                     showToast('error', 'Failed to undo priority change');
+                    undoStack.push(operation);
+                }
+            } else if (operation.type === 'delete-markup') {
+                // Recreate a HUMAN markup (textbox or stroke) that was deleted via
+                // the Delete-key gesture on the selection overlay. The snapshot
+                // payload was captured at delete time before the entry was
+                // discarded.
+                const snap = operation.snapshot || {};
+                if (!snap || (!snap.rect && !snap.points)) {
+                    console.warn('delete-markup undo: no snapshot data to recreate from');
+                    return;
+                }
+                const body = {
+                    page_index: operation.pageIdx,
+                    content: snap.content || '',
+                    type: snap.type || 'textbox',
+                    color: snap.color || 'amber',
+                    source: 'HUMAN',
+                };
+                if (snap.stroke_color_rgb) body.stroke_color_rgb = snap.stroke_color_rgb;
+                if (snap.rect) body.rect = snap.rect;
+                if (snap.points) body.points = snap.points;
+                try {
+                    const data = await createAnnotationRequest(body);
+                    if (data.success && data.annotation) {
+                        const respPg = data.annotation.page_index;
+                        if (!annotationsData[respPg]) annotationsData[respPg] = [];
+                        const newAnn = enhanceAnnotationEntry(data.annotation);
+                        annotationsData[respPg].push(newAnn);
+                        renderAnnotationsForPage(respPg + 1, true);
+                        renderAnnotationsList();
+                        markLocalAnnotationChange();
+                    }
+                } catch (undoErr) {
+                    console.error('Failed to undo delete-markup:', undoErr);
+                    showToast('error', 'Failed to undo deletion');
                     undoStack.push(operation);
                 }
             }
