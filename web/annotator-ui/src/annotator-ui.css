@@ -1126,13 +1126,18 @@
     display: block !important;
 }
 
-/* Fullscreen split-panel: wider panels for the larger viewport. */
+/* Fullscreen split-panel: wider panels when the modal actually fills the
+   viewport, but clamp by available width so a fullscreen toggle that
+   fell back to pseudo-fullscreen (no requestFullscreen permission)
+   doesn't squeeze the PDF center to zero width. The flex-basis below
+   tracks the smaller of (380px, 22% of the row) and never drops below
+   240px — the same minimum we apply in reduced-mode split. */
 #pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-ai,
 #pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-human {
-    flex: 0 0 380px !important;
-    width: 380px !important;
+    flex: 0 1 clamp(240px, 22%, 380px) !important;
+    width: clamp(240px, 22%, 380px) !important;
     max-width: 380px !important;
-    min-width: 300px;
+    min-width: 240px;
     display: block !important;
 }
 
