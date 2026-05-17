@@ -3267,6 +3267,39 @@
 
                 var annotationId = item.entry.annotationId;
 
+                // Snapshot the entry BEFORE removeTextbox detaches the live DOM
+                // element. If snapshot capture runs after removeTextbox, the
+                // entry's element.isConnected is false AND the entry has been
+                // pulled from page entries, so getTextboxCanvasRect cannot
+                // re-resolve the live offsets and falls back to [0, 0, 0, 0],
+                // which becomes a degenerate [0, page_h, 0, page_h] PDF rect
+                // that the agent rejects with HTTP 400 on the Ctrl-Z recreate.
+                var snapshot = item && item.entry ? {
+                    content: item.entry.content,
+                    color: item.entry.color && item.entry.color.name ? item.entry.color.name : (typeof item.entry.color === 'string' ? item.entry.color : 'amber'),
+                    stroke_color_rgb: item.entry.color && item.entry.color.rgb ? item.entry.color.rgb : null,
+                    type: item.type === 'textbox' ? 'textbox' : 'stroke',
+                    rect: (function () {
+                        if (item.type !== 'textbox' || !TextboxModule || typeof TextboxModule.getTextboxCanvasRect !== 'function') return null;
+                        var wrappers = document.querySelectorAll('#pdfGradedContainer .pdf-page-wrapper');
+                        var pw = wrappers[item.pageIdx];
+                        if (!pw) return null;
+                        var canvasRect = TextboxModule.getTextboxCanvasRect(item.entry, pw);
+                        var viewer = window.__pdfGradedViewer;
+                        var vp = viewer && viewer.getViewportForPage && viewer.getViewportForPage(item.pageIdx + 1);
+                        if (!canvasRect || !vp || typeof vp.convertToPdfPoint !== 'function') return null;
+                        var tl = vp.convertToPdfPoint(canvasRect[0], canvasRect[1]);
+                        var br = vp.convertToPdfPoint(canvasRect[2], canvasRect[3]);
+                        return [
+                            Math.min(tl[0], br[0]),
+                            Math.min(tl[1], br[1]),
+                            Math.max(tl[0], br[0]),
+                            Math.max(tl[1], br[1])
+                        ];
+                    })(),
+                    points: item.type === 'stroke' ? item.entry.points : null
+                } : null;
+
                 if (item.type === 'stroke' && DrawingCanvas) {
                     DrawingCanvas.removeStroke(item.pageIdx, annotationId);
                 } else if (item.type === 'textbox' && TextboxModule) {
@@ -3274,34 +3307,6 @@
                 }
 
                 if (annotationId) {
-                    // Snapshot the entry BEFORE deleting so undo can recreate it.
-                    // pushUndoOperation previously only saved annotationId, which
-                    // gave performUndo nothing to recreate from.
-                    var snapshot = item && item.entry ? {
-                        content: item.entry.content,
-                        color: item.entry.color && item.entry.color.name ? item.entry.color.name : (typeof item.entry.color === 'string' ? item.entry.color : 'amber'),
-                        stroke_color_rgb: item.entry.color && item.entry.color.rgb ? item.entry.color.rgb : null,
-                        type: item.type === 'textbox' ? 'textbox' : 'stroke',
-                        rect: (function () {
-                            if (item.type !== 'textbox' || !TextboxModule || typeof TextboxModule.getTextboxCanvasRect !== 'function') return null;
-                            var wrappers = document.querySelectorAll('#pdfGradedContainer .pdf-page-wrapper');
-                            var pw = wrappers[item.pageIdx];
-                            if (!pw) return null;
-                            var canvasRect = TextboxModule.getTextboxCanvasRect(item.entry, pw);
-                            var viewer = window.__pdfGradedViewer;
-                            var vp = viewer && viewer.getViewportForPage && viewer.getViewportForPage(item.pageIdx + 1);
-                            if (!canvasRect || !vp || typeof vp.convertToPdfPoint !== 'function') return null;
-                            var tl = vp.convertToPdfPoint(canvasRect[0], canvasRect[1]);
-                            var br = vp.convertToPdfPoint(canvasRect[2], canvasRect[3]);
-                            return [
-                                Math.min(tl[0], br[0]),
-                                Math.min(tl[1], br[1]),
-                                Math.max(tl[0], br[0]),
-                                Math.max(tl[1], br[1])
-                            ];
-                        })(),
-                        points: item.type === 'stroke' ? item.entry.points : null
-                    } : null;
                     deleteAnnotationRequest(buildApiAnnotationIdentifier({ identifier: annotationId }) || annotationId)
                     .then(function () {
                         removeAnnotationEntryLocal(item.pageIdx, annotationId);
