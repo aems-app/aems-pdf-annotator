@@ -3408,8 +3408,16 @@
                 if (TextboxModule) {
                     var hitTextbox = TextboxModule.hitTestTextbox(pageIdx2, e.clientX, e.clientY);
                     if (hitTextbox) {
-                        if (MarkupSelection && MarkupSelection.getSelected() &&
-                            MarkupSelection.getSelected().entry === hitTextbox) {
+                        // Identity check by annotationId, not object reference, because
+                        // refreshMarkupFromAnnotations recreates the entry after every
+                        // CRUD round-trip and the stale reference in MarkupSelection no
+                        // longer === the fresh entry returned by hitTestTextbox.
+                        var prevSel = MarkupSelection && MarkupSelection.getSelected();
+                        var prevId = prevSel && prevSel.entry && prevSel.entry.annotationId;
+                        var hitId = hitTextbox.annotationId;
+                        if (MarkupSelection && prevSel &&
+                            (prevSel.entry === hitTextbox ||
+                             (prevId && hitId && prevId === hitId))) {
                             TextboxModule.editTextbox(hitTextbox);
                         } else if (MarkupSelection) {
                             MarkupSelection.select('textbox', hitTextbox, pageIdx2, pageWrapper2);
