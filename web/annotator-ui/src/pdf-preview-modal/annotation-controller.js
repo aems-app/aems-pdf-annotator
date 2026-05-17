@@ -1035,6 +1035,16 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                                     '<button class="btn btn-outline-primary btn-sm edit-annotation" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-page="' + ann.pageIdx + '" data-annotation-id="' + domId + '" title="Edit comment">' +
                                         '<i class="bi bi-pencil"></i>' +
                                     '</button>' +
+                                    (
+                                        ann.can_revert_to_ai
+                                        && _h.hostAdvertisesCapability
+                                        && _h.hostAdvertisesCapability('revertToAi')
+                                            ? '<button class="btn btn-outline-warning btn-sm revert-annotation-to-ai" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + (ann.xref || '') + '" data-annotation-page="' + ann.pageIdx + '" data-annotation-id="' + domId + '" data-annotation-stable-id="' + (stableId || '') + '" title="Revert to AI">' +
+                                                '<span class="spinner-border spinner-border-sm d-none" role="status"></span>' +
+                                                '<i class="bi bi-arrow-counterclockwise"></i>' +
+                                            '</button>'
+                                            : ''
+                                    ) +
                                     '<button class="btn btn-outline-danger btn-sm delete-annotation" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + (ann.xref || '') + '" data-annotation-page="' + ann.pageIdx + '" data-annotation-id="' + domId + '" title="Delete comment">' +
                                         '<span class="spinner-border spinner-border-sm d-none" role="status"></span>' +
                                         '<i class="bi bi-trash"></i>' +
@@ -1076,6 +1086,22 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         return;
                     }
                     handle.deleteAnnotation(parseInt(deleteBtn.dataset.annotationPage || '-1', 10), deleteIdentifier, deleteBtn);
+                    return;
+                }
+
+                var revertBtn = event.target.closest('.revert-annotation-to-ai');
+                if (revertBtn) {
+                    var revertIdentifier = revertBtn.dataset.annotationStableId
+                        || revertBtn.dataset.annotationRequestId
+                        || revertBtn.dataset.annotationIdentifier
+                        || revertBtn.dataset.annotationXref;
+                    if (!revertIdentifier) {
+                        if (_h.showToast) {
+                            _h.showToast('error', 'Unable to determine which annotation to revert.');
+                        }
+                        return;
+                    }
+                    handle.revertAnnotationToAi(parseInt(revertBtn.dataset.annotationPage || '-1', 10), revertIdentifier, revertBtn);
                     return;
                 }
 
@@ -2155,6 +2181,49 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             return Promise.resolve();
         }
 
+        async function _revertAnnotationToAi(pageIdx, identifier, sourceButton) {
+            // Hosted Canvas server-mode only — gated by host capability
+            // advertised through `_h.hostAdvertisesCapability('revertToAi')`.
+            // Posts to the revert-to-ai endpoint, reloads annotations so
+            // marker layer + sidebar lists update in place (no modal reopen).
+            if (!identifier) {
+                if (_h.showToast) _h.showToast('error', 'Unable to revert annotation: missing identifier.');
+                return;
+            }
+            if (!_h.hostAdvertisesCapability || !_h.hostAdvertisesCapability('revertToAi')) {
+                if (_h.showToast) _h.showToast('error', 'Revert to AI is not supported on this surface.');
+                return;
+            }
+            if (typeof _h.revertAnnotationToAiRequest !== 'function') {
+                if (_h.showToast) _h.showToast('error', 'Revert to AI request helper is unavailable.');
+                return;
+            }
+            var spinner = sourceButton ? sourceButton.querySelector('.spinner-border') : null;
+            var iconEl = sourceButton ? sourceButton.querySelector('i') : null;
+            if (sourceButton) sourceButton.disabled = true;
+            if (spinner) spinner.classList.remove('d-none');
+            if (iconEl) iconEl.classList.add('d-none');
+            try {
+                var stable = _h.normalizeAnnotationIdentifierValue
+                    ? _h.normalizeAnnotationIdentifierValue(identifier)
+                    : identifier;
+                var data = await _h.revertAnnotationToAiRequest(stable || identifier);
+                if (!data || data.success !== true) {
+                    throw new Error((data && (data.error || data.detail)) || 'Revert failed');
+                }
+                if (_h.showToast) _h.showToast('success', 'Annotation reverted to AI.');
+                if (typeof _h.loadAnnotations === 'function') {
+                    try { await _h.loadAnnotations(); } catch (e) { /* non-fatal */ }
+                }
+            } catch (err) {
+                if (_h.showToast) _h.showToast('error', err && err.message ? err.message : 'Revert failed.');
+            } finally {
+                if (sourceButton) sourceButton.disabled = false;
+                if (spinner) spinner.classList.add('d-none');
+                if (iconEl) iconEl.classList.remove('d-none');
+            }
+        }
+
         async function deleteAnnotation(pageIdx, identifier, sourceButton) {
             if (sourceButton && !sourceButton.dataset.confirmed) {
                 var btnGroup = sourceButton.closest('.btn-group');
@@ -2493,6 +2562,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             saveAnnotationEdit: saveAnnotationEdit,
             deleteAnnotation: deleteAnnotation,
             deleteAnnotationSilently: deleteAnnotationSilently,
+            revertAnnotationToAi: function (pageIdx, identifier, sourceButton) {
+                if (_destroyed) return Promise.resolve();
+                return _revertAnnotationToAi(pageIdx, identifier, sourceButton);
+            },
 
             // --- State accessors ---
             getSavingAnnotationId: getSavingAnnotationId,
