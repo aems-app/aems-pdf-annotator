@@ -3802,9 +3802,16 @@
                     const data = await createAnnotationRequest(body);
                     if (data.success && data.annotation) {
                         const respPg = data.annotation.page_index;
-                        if (!annotationsData[respPg]) annotationsData[respPg] = [];
-                        const newAnn = enhanceAnnotationEntry(data.annotation);
-                        annotationsData[respPg].push(newAnn);
+                        // upsert (not push) so re-runs of an undo can't double-insert
+                        upsertAnnotationEntryLocal(data.annotation, respPg);
+                        // Refresh the markup layer so the recreated textbox/stroke
+                        // becomes visible in the open modal immediately. The create
+                        // and update paths already call this; the prior undo path
+                        // only re-rendered the overlay (renderAnnotationsForPage)
+                        // and sidebar (renderAnnotationsList), leaving the
+                        // TextboxModule/DrawingCanvas DOM out of sync until the
+                        // modal was reopened.
+                        refreshMarkupFromAnnotations();
                         renderAnnotationsForPage(respPg + 1, true);
                         renderAnnotationsList();
                         markLocalAnnotationChange();
