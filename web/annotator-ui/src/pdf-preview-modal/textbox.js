@@ -502,8 +502,27 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
     exports.getTextboxCanvasRect = function getTextboxCanvasRect(entry, pageWrapper) {
         if (!entry || !entry.element) return [0, 0, 0, 0];
 
-        var scale = getCanvasScale(pageWrapper);
         var el = entry.element;
+        // Defense against stale entries: refreshMarkupFromAnnotations()
+        // recreates textbox entries after every CRUD round-trip. Callers
+        // (MarkupSelection.onMoveCompleted, drag-drop, etc.) may hold the
+        // old entry whose element is detached from the DOM. A detached
+        // element's offset* properties all return 0, producing a degenerate
+        // [0, 0, 0, 0] canvas rect which then propagates to a degenerate
+        // PDF rect that the agent rejects with "rect requires x0 < x1".
+        // Recover by looking up the live entry on the same page by id.
+        if (!el.isConnected && entry.annotationId != null) {
+            var freshEntries = exports.getPageTextboxes(entry.pageIdx) || [];
+            for (var i = 0; i < freshEntries.length; i++) {
+                var candidate = freshEntries[i];
+                if (candidate && candidate.element && candidate.annotationId === entry.annotationId) {
+                    el = candidate.element;
+                    break;
+                }
+            }
+        }
+
+        var scale = getCanvasScale(pageWrapper);
         var cssLeft = el.offsetLeft;
         var cssTop = el.offsetTop;
         var cssWidth = el.offsetWidth;

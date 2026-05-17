@@ -3329,7 +3329,24 @@
                 var body = {};
 
                 if (item.type === 'textbox' && TextboxModule) {
-                    var canvasRect = TextboxModule.getTextboxCanvasRect(item.entry, pageWrapper);
+                    // Refresh the entry by annotationId before reading offsets.
+                    // refreshMarkupFromAnnotations() recreates textbox entries
+                    // after every CRUD round-trip; the entry stored in
+                    // MarkupSelection may point to a detached element whose
+                    // offsetLeft/Top/Width/Height all return 0, producing a
+                    // [0, page_h, 0, page_h] rect that the agent rejects with
+                    // "rect requires x0 < x1 and y0 < y1".
+                    var freshEntry = item.entry;
+                    if (typeof TextboxModule.getPageTextboxes === 'function' && originalAnnotationId) {
+                        var entries = TextboxModule.getPageTextboxes(targetPageIdx) || [];
+                        for (var fi = 0; fi < entries.length; fi++) {
+                            if (entries[fi] && entries[fi].annotationId === originalAnnotationId) {
+                                freshEntry = entries[fi];
+                                break;
+                            }
+                        }
+                    }
+                    var canvasRect = TextboxModule.getTextboxCanvasRect(freshEntry, pageWrapper);
                     if (canvasRect) {
                         var movedTopLeft = convertCanvasPointToPdf(canvasRect[0], canvasRect[1]);
                         var movedBottomRight = convertCanvasPointToPdf(canvasRect[2], canvasRect[3]);
