@@ -1041,6 +1041,10 @@
 
         pdfPreviewModalEl.addEventListener('show.bs.modal', () => {
             if (_currentShell) return; // Shell handles this
+            // Re-evaluate server-mode split-panel auto-enable on every modal
+            // open. Some hosted flows reuse the same modal element across
+            // surfaces without a clean hidden.bs.modal cycle in between.
+            _splitPanelAutoApplied = false;
             window.removeEventListener('resize', handleResize); // Prevent duplicates
             window.addEventListener('resize', handleResize);
             wireMarkupModuleCallbacks();
