@@ -1147,9 +1147,21 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
             listEl.dataset.annotationControllerBound = 'true';
 
+            function consumeActionEvent(event) {
+                if (!event) {
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                if (typeof event.stopImmediatePropagation === 'function') {
+                    event.stopImmediatePropagation();
+                }
+            }
+
             listEl.addEventListener('click', function (event) {
                 var editBtn = event.target.closest('.edit-annotation');
                 if (editBtn) {
+                    consumeActionEvent(event);
                     var editIdentifier = editBtn.dataset.annotationRequestId || editBtn.dataset.annotationIdentifier || editBtn.dataset.annotationXref;
                     if (!editIdentifier) {
                         if (_h.showToast) {
@@ -1163,6 +1175,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                 var deleteBtn = event.target.closest('.delete-annotation');
                 if (deleteBtn) {
+                    consumeActionEvent(event);
                     var deleteIdentifier = deleteBtn.dataset.annotationRequestId || deleteBtn.dataset.annotationIdentifier || deleteBtn.dataset.annotationXref;
                     if (!deleteIdentifier) {
                         if (_h.showToast) {
@@ -1176,6 +1189,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                 var revertBtn = event.target.closest('.revert-annotation-to-ai');
                 if (revertBtn) {
+                    consumeActionEvent(event);
                     var revertIdentifier = revertBtn.dataset.annotationStableId
                         || revertBtn.dataset.annotationRequestId
                         || revertBtn.dataset.annotationIdentifier
@@ -1192,6 +1206,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                 var saveBtn = event.target.closest('.save-annotation-btn');
                 if (saveBtn) {
+                    consumeActionEvent(event);
                     var saveIdentifier = saveBtn.dataset.annotationIdentifier || saveBtn.dataset.annotationXref;
                     if (!saveIdentifier) {
                         if (_h.showToast) {
@@ -1205,8 +1220,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                 var verdictIcon = event.target.closest('.verdict-indicator');
                 if (verdictIcon) {
-                    event.preventDefault();
-                    event.stopPropagation();
+                    consumeActionEvent(event);
                     var verdictId = verdictIcon.dataset.annotationRequestId || verdictIcon.dataset.annotationIdentifier || verdictIcon.dataset.annotationXref;
                     var verdictPage = parseInt(verdictIcon.dataset.annotationPage || '-1', 10);
                     if (verdictId && !Number.isNaN(verdictPage) && _h.toggleAnnotationVerdict) {
@@ -2281,8 +2295,47 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         }
 
         async function deleteAnnotation(pageIdx, identifier, sourceButton) {
+            var stableIdentifier = _h.normalizeAnnotationIdentifierValue
+                ? _h.normalizeAnnotationIdentifierValue(identifier)
+                : identifier;
+
             if (sourceButton && !sourceButton.dataset.confirmed) {
                 var actionRow = sourceButton.closest('.annotation-action-row, .btn-group');
+                var currentListItem = null;
+                var currentActionRow = null;
+                if (!actionRow && stableIdentifier) {
+                    var commentsList = _getCommentsListElement();
+                    if (commentsList) {
+                        var escapedIdentifier = _h.escapeCssAttribute
+                            ? _h.escapeCssAttribute(stableIdentifier)
+                            : stableIdentifier;
+                        var pageSelector = !Number.isNaN(pageIdx) && pageIdx >= 0
+                            ? '[data-annotation-page="' + pageIdx + '"]'
+                            : '';
+                        currentListItem = commentsList.querySelector(
+                            '.list-group-item' + pageSelector + '[data-annotation-request-id="' + escapedIdentifier + '"], ' +
+                            '.list-group-item' + pageSelector + '[data-annotation-identifier="' + escapedIdentifier + '"], ' +
+                            '.list-group-item' + pageSelector + '[data-annotation-xref="' + escapedIdentifier + '"], ' +
+                            '.list-group-item' + pageSelector + '[data-annotation-stable-id="' + escapedIdentifier + '"]'
+                        );
+                        currentActionRow = currentListItem
+                            ? currentListItem.querySelector('.annotation-action-row, .btn-group')
+                            : null;
+                        if (currentActionRow && currentActionRow.querySelector('.confirm-delete-yes')) {
+                            return Promise.resolve();
+                        }
+                        if (currentActionRow && sourceButton && !sourceButton.isConnected) {
+                            var currentDeleteButton = currentActionRow.querySelector('.delete-annotation');
+                            if (currentDeleteButton) {
+                                sourceButton = currentDeleteButton;
+                                actionRow = currentActionRow;
+                            }
+                        }
+                    }
+                }
+                if (!actionRow && sourceButton && !sourceButton.isConnected) {
+                    return Promise.resolve();
+                }
                 if (actionRow) {
                     var originalHtml = actionRow.innerHTML;
                     actionRow.innerHTML = '' +
@@ -2302,10 +2355,6 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     return Promise.resolve();
                 }
             }
-
-            var stableIdentifier = _h.normalizeAnnotationIdentifierValue
-                ? _h.normalizeAnnotationIdentifierValue(identifier)
-                : identifier;
             if (!stableIdentifier) {
                 if (_h.showToast) {
                     _h.showToast('error', 'Unable to determine which annotation to delete. Refresh the comments and try again.');

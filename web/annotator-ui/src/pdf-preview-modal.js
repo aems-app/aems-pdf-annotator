@@ -342,6 +342,15 @@
         if (!listEl) return;
         const { skipPriority = false, skipFocus = false } = options;
 
+        const consumeActionEvent = (event) => {
+            if (!event) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (typeof event.stopImmediatePropagation === 'function') {
+                event.stopImmediatePropagation();
+            }
+        };
+
         // Delegated click handler for buttons and list items (bound once per list).
         if (!listEl.dataset.panelClickBound) {
             listEl.dataset.panelClickBound = 'true';
@@ -349,6 +358,7 @@
                 // Edit button
                 const editBtn = e.target.closest('.edit-annotation');
                 if (editBtn) {
+                    consumeActionEvent(e);
                     const id = editBtn.dataset.annotationRequestId || editBtn.dataset.annotationIdentifier || editBtn.dataset.annotationXref;
                     if (!id) { showToast('error', 'Unable to locate annotation.'); return; }
                     editAnnotation(parseInt(editBtn.dataset.annotationPage), id, editBtn.dataset.annotationId);
@@ -358,6 +368,7 @@
                 // Delete button
                 const deleteBtn = e.target.closest('.delete-annotation');
                 if (deleteBtn) {
+                    consumeActionEvent(e);
                     const id = deleteBtn.dataset.annotationRequestId || deleteBtn.dataset.annotationIdentifier || deleteBtn.dataset.annotationXref;
                     if (!id) { showToast('error', 'Unable to delete annotation.'); return; }
                     deleteAnnotation(parseInt(deleteBtn.dataset.annotationPage), id, deleteBtn);
@@ -367,6 +378,7 @@
                 // Revert-to-AI button (hosted Canvas server-mode only)
                 const revertBtn = e.target.closest('.revert-annotation-to-ai');
                 if (revertBtn) {
+                    consumeActionEvent(e);
                     const id = revertBtn.dataset.annotationStableId
                         || revertBtn.dataset.annotationRequestId
                         || revertBtn.dataset.annotationIdentifier
@@ -383,6 +395,7 @@
                 // Save button
                 const saveBtn = e.target.closest('.save-annotation-btn');
                 if (saveBtn) {
+                    consumeActionEvent(e);
                     const id = saveBtn.dataset.annotationIdentifier || saveBtn.dataset.annotationXref;
                     if (!id) { showToast('error', 'Annotation missing.'); return; }
                     saveAnnotationEdit(id, saveBtn);
@@ -392,6 +405,7 @@
                 // Cancel button
                 const cancelBtn = e.target.closest('.cancel-edit-btn');
                 if (cancelBtn) {
+                    consumeActionEvent(e);
                     const id = cancelBtn.dataset.annotationIdentifier || cancelBtn.dataset.annotationXref;
                     const page = parseInt(cancelBtn.dataset.annotationPage, 10);
                     if (!id || Number.isNaN(page)) {
@@ -407,8 +421,7 @@
                 // Verdict indicator toggle
                 const verdictIcon = e.target.closest('.verdict-indicator');
                 if (verdictIcon) {
-                    e.preventDefault();
-                    e.stopPropagation();
+                    consumeActionEvent(e);
                     const id = verdictIcon.dataset.annotationRequestId || verdictIcon.dataset.annotationIdentifier || verdictIcon.dataset.annotationXref;
                     const page = parseInt(verdictIcon.dataset.annotationPage);
                     if (id && !Number.isNaN(page)) {

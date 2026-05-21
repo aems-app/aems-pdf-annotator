@@ -427,7 +427,12 @@ describe('annotation-controller state ownership', () => {
         deleteAnnotationRequest,
         findAnnotationEntry: (pageIdx, identifier) => {
           const pageAnnotations = currentAnnotationsData[pageIdx] || [];
-          return pageAnnotations.find((annotation) => annotation.requestIdentifier === identifier) || null;
+          return pageAnnotations.find((annotation) => (
+            String(annotation.requestIdentifier || '') === String(identifier)
+            || String(annotation.stable_id || '') === String(identifier)
+            || String(annotation.id || '') === String(identifier)
+            || String(annotation.xref || '') === String(identifier)
+          )) || null;
         },
         showToast: vi.fn(),
       },
@@ -441,6 +446,72 @@ describe('annotation-controller state ownership', () => {
     expect(deleteAnnotationRequest).not.toHaveBeenCalled();
     expect(document.querySelector('.confirm-delete-yes')).not.toBeNull();
     expect(document.querySelector('.confirm-delete-cancel')).not.toBeNull();
+  });
+
+  it('does not let a stale detached delete button bypass the inline confirmation state', async () => {
+    document.body.innerHTML = `
+      <div id="pdfGradedContainer"></div>
+      <div id="pdfGradedCommentsList"></div>
+    `;
+    window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation = () => true;
+    const mod = await loadAnnotationControllerModule();
+    const annotationsState = {};
+    let currentAnnotationsData = {};
+    const deleteAnnotationRequest = vi.fn().mockResolvedValue({ success: true });
+    const controller = mod.createAnnotationController({
+      annotationsState,
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      getCurrentSubmissionId: () => 1001,
+      getCurrentAssignmentId: () => 501,
+      helpers: {
+        listAnnotationsRequest: vi.fn().mockResolvedValue({
+          success: true,
+          annotations: {
+            0: [{
+              pageIdx: 0,
+              id: 'ann-delete-duplicate',
+              stable_id: 'ann-delete-duplicate',
+              requestIdentifier: 'ann-delete-duplicate',
+              xref: 1098,
+              content: 'Delete me later',
+              source: 'HUMAN',
+            }],
+          },
+        }),
+        normalizeAnnotationsPayload: (data) => data,
+        refreshMarkupFromAnnotations: vi.fn(),
+        normalizeAnnotationIdentifierValue: (value) => value == null ? null : String(value),
+        buildApiAnnotationIdentifier: ({ identifier, xref, requestId }) => identifier || requestId || xref || null,
+        deleteAnnotationRequest,
+        findAnnotationEntry: (pageIdx, identifier) => {
+          const pageAnnotations = currentAnnotationsData[pageIdx] || [];
+          return pageAnnotations.find((annotation) => (
+            String(annotation.requestIdentifier || '') === String(identifier)
+            || String(annotation.stable_id || '') === String(identifier)
+            || String(annotation.id || '') === String(identifier)
+            || String(annotation.xref || '') === String(identifier)
+          )) || null;
+        },
+        showToast: vi.fn(),
+      },
+    });
+
+    await controller.loadAnnotations();
+    controller.renderSidebar();
+
+    const staleDeleteButton = document.querySelector('.delete-annotation');
+    staleDeleteButton?.click();
+    await Promise.resolve();
+
+    expect(deleteAnnotationRequest).not.toHaveBeenCalled();
+    expect(document.querySelector('.confirm-delete-yes')).not.toBeNull();
+
+    staleDeleteButton?.remove();
+    await controller.deleteAnnotation(0, 'ann-delete-duplicate', staleDeleteButton);
+
+    expect(deleteAnnotationRequest).not.toHaveBeenCalled();
+    expect(document.querySelector('.confirm-delete-yes')).not.toBeNull();
   });
 
   it('keeps a new annotation editor alive when a detached pre-save textarea blurs after rerender', async () => {
