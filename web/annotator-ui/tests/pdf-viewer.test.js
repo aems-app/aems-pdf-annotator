@@ -243,4 +243,73 @@ describe('pdf-viewer page jumps', () => {
     expect(viewer.currentPage).toBe(3);
     expect(document.getElementById('pdfGradedPageInput').value).toBe('3');
   });
+
+  it('does not mark a page rendered when its canvas was detached during render (BUG-5 guard)', async () => {
+    // Repro of BUG-5 page-5-blank: a ResizeObserver-driven reRenderAllPages
+    // can call renderSkeleton() (container.innerHTML = '') while a
+    // renderSpecificPage(pageNum) is mid-await. The captured canvas becomes
+    // detached, the wrapper is replaced by a fresh blank canvas, and the
+    // render promise still resolves against the orphaned canvas. Before the
+    // fix the page was added to renderedPages anyway, so the observer would
+    // skip subsequent re-renders and the new blank canvas would stay blank.
+    await import('../src/pdf-preview-modal/pdf-viewer.js');
+
+    const viewer = window.PdfPreviewModalViewer.createViewer(
+      'pdfGradedCanvas',
+      'pdfGradedContainer',
+      'pdfGradedLoading',
+      'pdfGradedControls',
+    );
+
+    viewer.useSinglePageMode = false;
+    const container = document.getElementById('pdfGradedContainer');
+    Object.defineProperty(container, 'clientWidth', {
+      configurable: true,
+      get: () => 720,
+    });
+
+    const fakeCtx = { clearRect: vi.fn(), drawImage: vi.fn(), fillStyle: '', fillRect: vi.fn() };
+    const wrapper = document.createElement('div');
+    wrapper.className = 'pdf-page-wrapper';
+    wrapper.dataset.pageNum = '5';
+    const canvas = document.createElement('canvas');
+    canvas.className = 'pdf-page-canvas';
+    canvas.getContext = vi.fn(() => fakeCtx);
+    wrapper.appendChild(canvas);
+    container.appendChild(wrapper);
+
+    let resolveRender;
+    const renderPromise = new Promise((resolve) => { resolveRender = resolve; });
+    viewer.pdf = {
+      numPages: 6,
+      getPage: vi.fn().mockResolvedValue({
+        getViewport: () => ({ width: 600, height: 800 }),
+        render: () => ({
+          promise: renderPromise,
+          cancel: () => {},
+        }),
+      }),
+    };
+
+    const renderInFlight = viewer.renderSpecificPage(5);
+    // Mid-render, simulate reRenderAllPages: detach the wrapper + canvas and
+    // install a fresh wrapper with a fresh canvas in the same data-page-num.
+    await Promise.resolve();
+    container.innerHTML = '';
+    const freshWrapper = document.createElement('div');
+    freshWrapper.className = 'pdf-page-wrapper';
+    freshWrapper.dataset.pageNum = '5';
+    const freshCanvas = document.createElement('canvas');
+    freshCanvas.className = 'pdf-page-canvas';
+    freshCanvas.getContext = vi.fn(() => fakeCtx);
+    freshWrapper.appendChild(freshCanvas);
+    container.appendChild(freshWrapper);
+
+    // Now resolve the in-flight render task on the orphaned canvas.
+    resolveRender();
+    await renderInFlight;
+
+    expect(canvas.isConnected).toBe(false);
+    expect(viewer.renderedPages.has(5)).toBe(false);
+  });
 });

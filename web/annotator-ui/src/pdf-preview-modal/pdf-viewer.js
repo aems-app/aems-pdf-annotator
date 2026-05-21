@@ -641,6 +641,28 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                     return;
                 }
 
+                // Discard result if the canvas we rendered to is no longer in the
+                // DOM, or has been replaced in its wrapper. This happens when
+                // renderSkeleton() runs (e.g. ResizeObserver -> reRenderAllPages)
+                // between the canvas-reference capture and the render-promise
+                // resolution: the captured canvas is detached, a fresh blank
+                // canvas takes its place, and the page would otherwise be marked
+                // rendered against the orphaned canvas. Symptom (BUG-5): page
+                // appears blank in the viewer even though renderedPages reports
+                // it as rendered. Without this guard the page is "stuck blank"
+                // until the user scrolls away and back.
+                if (!canvas.isConnected) {
+                    debugLog(`[FRONTEND] Page ${pageNum} render discarded (canvas detached during reflow)`);
+                    return;
+                }
+                const currentCanvas = wrapper.isConnected
+                    ? wrapper.querySelector('.pdf-page-canvas')
+                    : null;
+                if (!currentCanvas || currentCanvas !== canvas) {
+                    debugLog(`[FRONTEND] Page ${pageNum} render discarded (canvas replaced during reflow)`);
+                    return;
+                }
+
                 this.renderedPages.add(pageNum);
                 debugLog(`[FRONTEND] Page ${pageNum} rendered successfully (${this.renderedPages.size}/${this.pdf.numPages})`);
 
