@@ -337,6 +337,112 @@ describe('annotation-controller state ownership', () => {
     expect(deleteAnnotationSilently).not.toHaveBeenCalled();
   });
 
+  it('reverts human annotations using the stable server id from the sidebar button', async () => {
+    document.body.innerHTML = `
+      <div id="pdfGradedContainer"></div>
+      <div id="pdfGradedCommentsList"></div>
+    `;
+    window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation = () => true;
+    const mod = await loadAnnotationControllerModule();
+    const annotationsState = {};
+    let currentAnnotationsData = {};
+    const revertAnnotationToAiRequest = vi.fn().mockResolvedValue({ success: true });
+    const loadAnnotations = vi.fn().mockResolvedValue(undefined);
+    const controller = mod.createAnnotationController({
+      annotationsState,
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      getCurrentSubmissionId: () => 1001,
+      getCurrentAssignmentId: () => 501,
+      helpers: {
+        listAnnotationsRequest: vi.fn().mockResolvedValue({
+          success: true,
+          annotations: {
+            4: [{
+              pageIdx: 4,
+              id: 'xref:1046|id:Q1-04',
+              stable_id: 'Q1-04',
+              requestIdentifier: 'xref:1046|id:Q1-04',
+              xref: 1046,
+              content: 'Human edit',
+              source: 'HUMAN',
+              can_revert_to_ai: true,
+            }],
+          },
+        }),
+        normalizeAnnotationsPayload: (data) => data,
+        refreshMarkupFromAnnotations: vi.fn(),
+        normalizeAnnotationIdentifierValue: (value) => value == null ? null : String(value),
+        resolveAnnotationSource: (annotation) => annotation.source || 'HUMAN',
+        hostAdvertisesCapability: (name) => name === 'revertToAi',
+        revertAnnotationToAiRequest,
+        loadAnnotations,
+      },
+    });
+
+    await controller.loadAnnotations();
+    controller.renderSidebar();
+    document.querySelector('.revert-annotation-to-ai')?.click();
+    await Promise.resolve();
+
+    expect(revertAnnotationToAiRequest).toHaveBeenCalledWith('Q1-04');
+    expect(loadAnnotations).toHaveBeenCalled();
+  });
+
+  it('requires inline confirmation before deleting a sidebar annotation', async () => {
+    document.body.innerHTML = `
+      <div id="pdfGradedContainer"></div>
+      <div id="pdfGradedCommentsList"></div>
+    `;
+    window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation = () => true;
+    const mod = await loadAnnotationControllerModule();
+    const annotationsState = {};
+    let currentAnnotationsData = {};
+    const deleteAnnotationRequest = vi.fn().mockResolvedValue({ success: true });
+    const controller = mod.createAnnotationController({
+      annotationsState,
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      getCurrentSubmissionId: () => 1001,
+      getCurrentAssignmentId: () => 501,
+      helpers: {
+        listAnnotationsRequest: vi.fn().mockResolvedValue({
+          success: true,
+          annotations: {
+            0: [{
+              pageIdx: 0,
+              id: 'ann-delete',
+              stable_id: 'ann-delete',
+              requestIdentifier: 'ann-delete',
+              xref: 88,
+              content: 'Delete me',
+              source: 'HUMAN',
+            }],
+          },
+        }),
+        normalizeAnnotationsPayload: (data) => data,
+        refreshMarkupFromAnnotations: vi.fn(),
+        normalizeAnnotationIdentifierValue: (value) => value == null ? null : String(value),
+        buildApiAnnotationIdentifier: ({ identifier, xref, requestId }) => identifier || requestId || xref || null,
+        deleteAnnotationRequest,
+        findAnnotationEntry: (pageIdx, identifier) => {
+          const pageAnnotations = currentAnnotationsData[pageIdx] || [];
+          return pageAnnotations.find((annotation) => annotation.requestIdentifier === identifier) || null;
+        },
+        showToast: vi.fn(),
+      },
+    });
+
+    await controller.loadAnnotations();
+    controller.renderSidebar();
+    document.querySelector('.delete-annotation')?.click();
+    await Promise.resolve();
+
+    expect(deleteAnnotationRequest).not.toHaveBeenCalled();
+    expect(document.querySelector('.confirm-delete-yes')).not.toBeNull();
+    expect(document.querySelector('.confirm-delete-cancel')).not.toBeNull();
+  });
+
   it('keeps a new annotation editor alive when a detached pre-save textarea blurs after rerender', async () => {
     vi.useFakeTimers();
     try {

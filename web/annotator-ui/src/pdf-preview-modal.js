@@ -685,9 +685,7 @@
             const xrefValue = normalizeAnnotationIdentifierValue(
                 typeof ann.xref === 'number' ? String(ann.xref) : ann.xref
             ) || '';
-            const stableId = normalizeAnnotationIdentifierValue(
-                ann.id || ann.identifier || ann.stable_id || ann.name || ann.title
-            ) || '';
+            const stableId = extractAnnotationStableName(ann) || '';
             const identifier = stableId || resolveAnnotationIdentifierValue(ann);
             const { xref: resolvedXref, stableId: resolvedStable } = resolveAnnotationIdParts({
                 xref: xrefValue,
@@ -6220,7 +6218,16 @@
         if (icon) icon.classList.add('d-none');
 
         try {
-            var data = await revertAnnotationToAiRequest(identifier);
+            let stable = sourceButton?.dataset?.annotationStableId || null;
+            if ((!stable || stable === identifier) && typeof resolveAnnotationIdParts === 'function') {
+                const resolvedStable = resolveAnnotationIdParts({
+                    requestId: stable || identifier,
+                    identifier: stable || identifier,
+                });
+                stable = resolvedStable?.stableId || stable;
+            }
+            stable = normalizeAnnotationIdentifierValue(stable || identifier);
+            var data = await revertAnnotationToAiRequest(stable || identifier);
             if (!data || data.success !== true) {
                 throw new Error((data && (data.error || data.detail)) || 'Revert failed');
             }
@@ -8182,6 +8189,7 @@
                     deriveAnnotationPriority: deriveAnnotationPriority,
                     resolveAnnotationSource: resolveAnnotationSource,
                     isPlaceholderAnnotation: isPlaceholderAnnotation,
+                    extractAnnotationStableName: extractAnnotationStableName,
                     enhanceAnnotationEntry: enhanceAnnotationEntry,
                     resolveAnnotationIdentifierValue: resolveAnnotationIdentifierValue,
                     findAnnotationEntry: findAnnotationEntry,

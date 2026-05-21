@@ -214,6 +214,31 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         return enhanced;
     }
 
+    function extractStableAnnotationId(annotation, helpers) {
+        if (!annotation) {
+            return null;
+        }
+        if (helpers && typeof helpers.extractAnnotationStableName === 'function') {
+            return helpers.extractAnnotationStableName(annotation);
+        }
+        var candidates = [
+            annotation.stable_id,
+            annotation.stableId,
+            annotation.id && annotation.xref != null && String(annotation.xref) === String(annotation.id) ? null : annotation.id,
+            annotation.name,
+            annotation.title,
+        ];
+        for (var i = 0; i < candidates.length; i++) {
+            var candidate = helpers && helpers.normalizeAnnotationIdentifierValue
+                ? helpers.normalizeAnnotationIdentifierValue(candidates[i])
+                : (candidates[i] == null ? null : String(candidates[i]).trim() || null);
+            if (candidate && candidate !== '0') {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
     // --- Markup Type Helpers ---
 
     function isMarkupType(type) {
@@ -955,11 +980,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         typeof ann.xref === 'number' ? String(ann.xref) : ann.xref
                     )
                     : ann.xref) || '';
-                var stableId = (_h.normalizeAnnotationIdentifierValue
-                    ? _h.normalizeAnnotationIdentifierValue(
-                        ann.id || ann.identifier || ann.stable_id || ann.name || ann.title
-                    )
-                    : (ann.id || ann.identifier || ann.stable_id || ann.name || ann.title)) || '';
+                var stableId = extractStableAnnotationId(ann, _h) || '';
                 var identifier = stableId || (_h.resolveAnnotationIdentifierValue ? _h.resolveAnnotationIdentifierValue(ann) : stableId);
                 var resolvedIds = _h.resolveAnnotationIdParts
                     ? _h.resolveAnnotationIdParts({
@@ -2227,9 +2248,21 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             if (spinner) spinner.classList.remove('d-none');
             if (iconEl) iconEl.classList.add('d-none');
             try {
-                var stable = _h.normalizeAnnotationIdentifierValue
-                    ? _h.normalizeAnnotationIdentifierValue(identifier)
-                    : identifier;
+                var stable = sourceButton && sourceButton.dataset
+                    ? (sourceButton.dataset.annotationStableId || null)
+                    : null;
+                if ((!stable || stable === identifier) && _h.resolveAnnotationIdParts) {
+                    var resolvedStable = _h.resolveAnnotationIdParts({
+                        requestId: stable || identifier,
+                        identifier: stable || identifier,
+                    });
+                    stable = resolvedStable && resolvedStable.stableId
+                        ? resolvedStable.stableId
+                        : stable;
+                }
+                stable = _h.normalizeAnnotationIdentifierValue
+                    ? _h.normalizeAnnotationIdentifierValue(stable || identifier)
+                    : (stable || identifier);
                 var data = await _h.revertAnnotationToAiRequest(stable || identifier);
                 if (!data || data.success !== true) {
                     throw new Error((data && (data.error || data.detail)) || 'Revert failed');
@@ -2249,21 +2282,21 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
         async function deleteAnnotation(pageIdx, identifier, sourceButton) {
             if (sourceButton && !sourceButton.dataset.confirmed) {
-                var btnGroup = sourceButton.closest('.btn-group');
-                if (btnGroup) {
-                    var originalHtml = btnGroup.innerHTML;
-                    btnGroup.innerHTML = '' +
+                var actionRow = sourceButton.closest('.annotation-action-row, .btn-group');
+                if (actionRow) {
+                    var originalHtml = actionRow.innerHTML;
+                    actionRow.innerHTML = '' +
                         '<button class="btn btn-danger btn-sm confirm-delete-yes text-xs-dynamic">Delete?</button>' +
                         '<button class="btn btn-outline-secondary btn-sm confirm-delete-cancel text-xs-dynamic">Cancel</button>';
-                    var yesBtn = btnGroup.querySelector('.confirm-delete-yes');
-                    var cancelBtn = btnGroup.querySelector('.confirm-delete-cancel');
+                    var yesBtn = actionRow.querySelector('.confirm-delete-yes');
+                    var cancelBtn = actionRow.querySelector('.confirm-delete-cancel');
 
                     yesBtn.addEventListener('click', async function () {
                         sourceButton.dataset.confirmed = 'true';
                         await deleteAnnotation(pageIdx, identifier, sourceButton);
                     });
                     cancelBtn.addEventListener('click', function () {
-                        btnGroup.innerHTML = originalHtml;
+                        actionRow.innerHTML = originalHtml;
                         renderSidebar();
                     });
                     return Promise.resolve();
