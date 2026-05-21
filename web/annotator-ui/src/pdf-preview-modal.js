@@ -140,6 +140,7 @@
         }
 
         if (previousState !== previewFullscreenActive && typeof renderAnnotationsList === 'function') {
+            updateSplitPanelButtonVisibility();
             renderAnnotationsList();
             if (
                 pdfPreviewModalEl &&
@@ -264,9 +265,6 @@
     // Split Panel Mode for AI/Human annotations — Phase 5A: delegate to shell
     const splitPanelToggleBtn = document.getElementById('pdfPreviewSplitPanelToggle');
     let splitPanelActive = false;
-    // Gate the server-mode auto-enable to a single application per modal-open
-    // so manual toggle decisions stick. Set true after the first AI-load.
-    let _splitPanelAutoApplied = false;
 
     function updateSplitPanelUi(active) {
         if (_currentShell) {
@@ -274,7 +272,7 @@
             splitPanelActive = _currentShell.isSplitPanel();
             return;
         }
-        splitPanelActive = !!active;
+        splitPanelActive = !!active && previewFullscreenActive;
         if (pdfPreviewModalEl) {
             pdfPreviewModalEl.classList.toggle('split-panel-mode', splitPanelActive);
         }
@@ -292,11 +290,6 @@
 
     function toggleSplitPanel() {
         if (_currentShell) { _currentShell.toggleSplitPanel(); splitPanelActive = _currentShell.isSplitPanel(); return; }
-        // Split panel works in both reduced and fullscreen modes
-        // (gate lifted 2026-05-17 server-path follow-up). The legacy
-        // monolith path below is only hit when the shell module is
-        // unavailable; preserve the conservative fullscreen-only fallback
-        // there to avoid breaking older deployments without the new CSS.
         if (!previewFullscreenActive) {
             return;
         }
@@ -393,6 +386,21 @@
                     const id = saveBtn.dataset.annotationIdentifier || saveBtn.dataset.annotationXref;
                     if (!id) { showToast('error', 'Annotation missing.'); return; }
                     saveAnnotationEdit(id, saveBtn);
+                    return;
+                }
+
+                // Cancel button
+                const cancelBtn = e.target.closest('.cancel-edit-btn');
+                if (cancelBtn) {
+                    const id = cancelBtn.dataset.annotationIdentifier || cancelBtn.dataset.annotationXref;
+                    const page = parseInt(cancelBtn.dataset.annotationPage, 10);
+                    if (!id || Number.isNaN(page)) {
+                        showToast('error', 'Unable to cancel edit.');
+                        return;
+                    }
+                    if (_currentAnnotationCtrl && _currentAnnotationCtrl.cancelAnnotationEdit) {
+                        _currentAnnotationCtrl.cancelAnnotationEdit(page, id);
+                    }
                     return;
                 }
 
@@ -733,34 +741,32 @@
             return `
                 ${separator}
                 <div class="list-group-item source-ai${verdictClass}" tabindex="0" data-annotation-id="${domId}" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-stable-id="${stableId}" data-annotation-page="${ann.pageIdx}" data-annotation-source="AI">
-                    <div class="d-flex justify-content-between align-items-start gap-2">
-                        <div class="flex-grow-1" style="min-width: 0">
-                            <div class="d-flex align-items-center gap-2 mb-1">
+                    <div class="annotation-list-card">
+                        <div class="annotation-meta-row">
                                 <span class="badge bg-${colorClass}">${commentId}</span>
                                 ${sourceBadgeHtml}
                                 ${verdictHtml}
                                 ${graderName ? `<small class="text-muted grader-name-badge" title="${escapeHtml(rawGraderName)}">${escapeHtml(graderName)}</small>` : ''}
-                                <div class="priority-dots d-flex gap-1 ms-2" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${ann.pageIdx}">
+                                <div class="priority-dots d-flex gap-1" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${ann.pageIdx}">
                                     <span class="priority-dot priority-red ${priority === 'red' ? 'active' : ''}" data-priority="red" title="High priority"></span>
                                     <span class="priority-dot priority-amber ${priority === 'amber' ? 'active' : ''}" data-priority="amber" title="Medium priority"></span>
                                     <span class="priority-dot priority-green ${priority === 'green' ? 'active' : ''}" data-priority="green" title="Low priority"></span>
                                 </div>
-                            </div>
-                            <div class="annotation-content ${editingAnnotationId === domId ? 'editing' : ''}" data-annotation-id="${domId}" data-annotation-identifier="${displayIdentifier}">
-                                ${editingAnnotationId === domId ? `
-                                    <textarea class="form-control form-control-sm mb-2 auto-resize-textarea" id="edit-annotation-text-${displayIdentifier}" rows="2" placeholder="Type your comment...">${editContent}</textarea>
-                                    <div class="btn-group btn-group-sm">
-                                        <button class="btn btn-primary btn-sm save-annotation-btn" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}">
-                                            <span class="spinner-border spinner-border-sm d-none" role="status"></span>
-                                            <span class="btn-text">Save</span>
-                                        </button>
-                                        <button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}">Cancel</button>
-                                    </div>
-                                ` : displayContent}
-                            </div>
+                        </div>
+                        <div class="annotation-content ${editingAnnotationId === domId ? 'editing' : ''}" data-annotation-id="${domId}" data-annotation-identifier="${displayIdentifier}">
+                            ${editingAnnotationId === domId ? `
+                                <textarea class="form-control form-control-sm mb-2 auto-resize-textarea" id="edit-annotation-text-${displayIdentifier}" rows="2" placeholder="Type your comment...">${editContent}</textarea>
+                                <div class="annotation-edit-actions d-flex flex-wrap gap-2">
+                                    <button class="btn btn-primary btn-sm save-annotation-btn" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}">
+                                        <span class="spinner-border spinner-border-sm d-none" role="status"></span>
+                                        <span class="btn-text">Save</span>
+                                    </button>
+                                    <button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${ann.pageIdx}">Cancel</button>
+                                </div>
+                            ` : displayContent}
                         </div>
                         ${editingAnnotationId !== domId ? `
-                        <div class="btn-group btn-group-sm flex-shrink-0">
+                        <div class="annotation-action-row d-flex flex-wrap gap-2 justify-content-end">
                              <button class="btn btn-outline-primary btn-sm edit-annotation"
                                     data-annotation-identifier="${displayIdentifier}"
                                      data-annotation-request-id="${requestId}"
@@ -1032,21 +1038,21 @@
             if (MarkupToolbar) MarkupToolbar.destroy();
             if (MarkupSelection) MarkupSelection.destroy();
             markupModeActive = false;
-            // Reset the server-mode auto-apply guard so next modal open
-            // re-evaluates whether to default-enable split-panel-mode.
-            _splitPanelAutoApplied = false;
+            if (splitPanelActive) {
+                updateSplitPanelUi(false);
+            }
             var markupToggleBtn = pdfPreviewModalEl ? pdfPreviewModalEl.querySelector('.js-toggle-markup') : null;
             if (markupToggleBtn) markupToggleBtn.classList.remove('active');
         });
 
         pdfPreviewModalEl.addEventListener('show.bs.modal', () => {
             if (_currentShell) return; // Shell handles this
-            // Re-evaluate server-mode split-panel auto-enable on every modal
-            // open. Some hosted flows reuse the same modal element across
-            // surfaces without a clean hidden.bs.modal cycle in between.
-            _splitPanelAutoApplied = false;
             window.removeEventListener('resize', handleResize); // Prevent duplicates
             window.addEventListener('resize', handleResize);
+            if (splitPanelActive) {
+                updateSplitPanelUi(false);
+            }
+            updateSplitPanelButtonVisibility();
             wireMarkupModuleCallbacks();
 
             if (DrawingCanvas && typeof DrawingCanvas.init === 'function') {
@@ -6681,17 +6687,24 @@
                                 annotationsData[responsePageIdx][annIdx] = normalizedAnn;
                             }
                         }
-                        // Update only the dragged marker's position in-place.
-                        // Suppress observer-triggered sidebar re-renders during the update
-                        // to prevent sidebar badge flash (red→blue from stale visibility data).
-                        _suppressSidebarRender = true;
-                        updateMarkerPositionInPlace(marker, normalizedAnn, responsePageIdx);
-                        markLocalAnnotationChange();
-                        setTimeout(() => { _suppressSidebarRender = false; }, 300);
+                        if (isOwnershipTransfer) {
+                            renderAnnotationsForPage(responsePageIdx + 1, true);
+                            markLocalAnnotationChange();
+                            currentAnnotationsPage = (window.__pdfGradedViewer?.currentPage || responsePageIdx + 1) - 1;
+                            renderAnnotationsList();
+                        } else {
+                            // Update only the dragged marker's position in-place.
+                            // Suppress observer-triggered sidebar re-renders during the update
+                            // to prevent sidebar badge flash (red→blue from stale visibility data).
+                            _suppressSidebarRender = true;
+                            updateMarkerPositionInPlace(marker, normalizedAnn, responsePageIdx);
+                            markLocalAnnotationChange();
+                            setTimeout(() => { _suppressSidebarRender = false; }, 300);
+                        }
                     }
 
                     // Only re-render sidebar for cross-page moves (page numbering changes).
-                    // Same-page drags only change position — sidebar content is unchanged.
+                    // Same-page ownership transfer also changes source/author state.
                     if (isCrossPageMove) {
                         const focusedPageIdx = (window.__pdfGradedViewer?.currentPage || responsePageIdx + 1) - 1;
                         currentAnnotationsPage = focusedPageIdx;
@@ -8203,35 +8216,6 @@
                 if (_currentVersionSync) {
                     _currentVersionSync.start();
                 }
-                // Auto-enable split-panel-mode on first load for server-mode
-                // surfaces (hosted Canvas) when at least one AI annotation
-                // exists. This makes the AI comments sidebar visible by
-                // default — previously it was hidden behind a fullscreen-only
-                // toggle (2026-05-17 server-path follow-up Part 2).
-                // The auto-enable only fires once per modal-open (gated on
-                // _splitPanelAutoApplied) so manual toggle decisions stick.
-                try {
-                    if (!_splitPanelAutoApplied) {
-                        var hostMode = state && state.options
-                            && (state.options.mode
-                                || (state.options.modeAdapter && state.options.modeAdapter.assignmentMode));
-                        if (hostMode === 'server') {
-                            var anyAi = false;
-                            for (var pageKey in annotationsData) {
-                                var pageAnns = annotationsData[pageKey] || [];
-                                for (var i = 0; i < pageAnns.length; i++) {
-                                    var src = (pageAnns[i] && (pageAnns[i].source || pageAnns[i].original_source)) || '';
-                                    if (src === 'AI') { anyAi = true; break; }
-                                }
-                                if (anyAi) break;
-                            }
-                            if (anyAi && !splitPanelActive) {
-                                updateSplitPanelUi(true);
-                            }
-                        }
-                        _splitPanelAutoApplied = true;
-                    }
-                } catch (e) { /* non-fatal */ }
             });
 
             _currentAnnotationCtrl.onRenderListNeeded(function () {

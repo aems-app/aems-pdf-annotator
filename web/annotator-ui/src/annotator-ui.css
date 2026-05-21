@@ -518,6 +518,37 @@
     color: #475569;
 }
 
+.annotation-list-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.annotation-meta-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.annotation-meta-row .priority-dots {
+    margin-left: auto;
+    flex: 0 0 auto;
+}
+
+.annotation-action-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.annotation-edit-actions {
+    display: flex;
+    align-items: center;
+}
+
 /* ==========================================================================
    Annotation Content Display
    Refined: Better typography and smoother expand transition
@@ -581,6 +612,12 @@
     line-clamp: unset;
     max-height: none;
     overflow: visible;
+}
+
+.annotation-content.editing .annotation-edit-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
 }
 
 /* ==========================================================================

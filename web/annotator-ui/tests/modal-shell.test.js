@@ -111,25 +111,16 @@ describe('createModalShell', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
-  it('split panel toggle works in both reduced and fullscreen modes', async () => {
-    // 2026-05-17 server-path follow-up Part 2: the fullscreen gate on
-    // toggleSplitPanel was lifted so the AI sidebar can be shown in the
-    // reduced (modal-xl) layout too. CSS rule
-    // `#pdfPreviewModal.split-panel-mode:not(.preview-fullscreen)`
-    // sizes the AI/Human panel widths at 280px each so the 3-column row
-    // fits the modal-xl dialog.
+  it('split panel toggle only works in fullscreen mode', async () => {
     const mod = await loadShellModule();
     const shell = mod.createModalShell({ fullscreen: false, splitPanelActive: false, activeToolbar: null }, {});
-
-    shell.toggleSplitPanel();
-    expect(shell.isSplitPanel()).toBe(true); // Reduced-mode toggle is now allowed
 
     shell.toggleSplitPanel();
     expect(shell.isSplitPanel()).toBe(false);
 
     shell.setFullscreen(true);
     shell.toggleSplitPanel();
-    expect(shell.isSplitPanel()).toBe(true); // Still works in fullscreen
+    expect(shell.isSplitPanel()).toBe(true);
   });
 
   it('emits onSplitPanelToggled when toggling split panel', async () => {
@@ -143,11 +134,7 @@ describe('createModalShell', () => {
     expect(handler).toHaveBeenCalledWith({ active: true });
   });
 
-  it('split panel survives a fullscreen exit (no auto-deactivate)', async () => {
-    // 2026-05-17 server-path follow-up Part 2: the auto-deactivate on
-    // fullscreen exit was removed so the AI sidebar can stay open as the
-    // operator pops between modes. The split-panel toggle button is now
-    // always visible (no d-none flip on fullscreen change).
+  it('split panel deactivates when fullscreen exits', async () => {
     const mod = await loadShellModule();
     const uiState = { fullscreen: false, splitPanelActive: false, activeToolbar: null };
     const shell = mod.createModalShell(uiState, {});
@@ -156,12 +143,9 @@ describe('createModalShell', () => {
     shell.setSplitPanel(true);
     expect(shell.isSplitPanel()).toBe(true);
 
-    // updateSplitPanelButtonVisibility is called on fullscreen change.
-    // Split-panel stays active across the transition; the operator must
-    // toggle it off explicitly if they want it gone.
     shell.setFullscreen(false);
-    shell.updateSplitPanelButtonVisibility();
-    expect(shell.isSplitPanel()).toBe(true);
+    expect(shell.isSplitPanel()).toBe(false);
+    expect(splitPanelBtn.classList.contains('d-none')).toBe(true);
   });
 
   it('toggleMarkupMode toggles markup state', async () => {

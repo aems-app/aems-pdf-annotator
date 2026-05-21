@@ -344,6 +344,32 @@ class TestPDFAnnotator:
             assert moved.rect.x0 == pytest.approx(60, abs=0.5)
             assert moved.rect.y0 == pytest.approx(60, abs=0.5)
 
+    def test_update_annotation_rect_transfers_ai_ownership_to_human(self, sample_pdf):
+        with PDFAnnotator(sample_pdf) as annotator:
+            annotator.add_annotation(PDFAnnotation(
+                id="ann-ai-move",
+                page_index=0,
+                bbox=BBox(x0=50, y0=50, x1=200, y1=80),
+                kind=AnnotationType.TEXTBOX,
+                color=AnnotationColor.GREEN,
+                comment="Move me",
+                grader_name="AI",
+                source=AnnotationSource.AI,
+                original_source=AnnotationSource.AI,
+            ))
+
+            updated = annotator.update_annotation(
+                "ann-ai-move",
+                new_rect=(60, 60, 210, 90),
+                grader_name="Reader Grader",
+            )
+
+            assert updated is True
+            ann = annotator.get_annotations_on_page(0)[0]
+            assert ann["source"] == "HUMAN"
+            assert ann["original_source"] == "AI"
+            assert ann["grader_name"] == "Reader Grader"
+
     def test_delete_annotation_refreshes_by_xref_with_load_annot(self, sample_pdf):
         """Deletion should reload by xref directly instead of scanning all annotations."""
         with PDFAnnotator(sample_pdf) as annotator:

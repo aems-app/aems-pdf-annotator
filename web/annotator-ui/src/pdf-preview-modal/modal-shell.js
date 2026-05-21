@@ -140,6 +140,7 @@ window.PdfPreviewModalShell = window.PdfPreviewModalShell || {};
             }
 
             if (previousState !== _fullscreenActive) {
+                updateSplitPanelButtonVisibility();
                 _emit('onFullscreenChanged', { active: _fullscreenActive });
             }
         }
@@ -202,7 +203,7 @@ window.PdfPreviewModalShell = window.PdfPreviewModalShell || {};
         // -----------------------------------------------------------------
 
         function updateSplitPanelUi(active) {
-            _splitPanelActive = !!active;
+            _splitPanelActive = !!active && _fullscreenActive;
             _syncUiState();
 
             if (modalEl) {
@@ -216,20 +217,22 @@ window.PdfPreviewModalShell = window.PdfPreviewModalShell || {};
         }
 
         function toggleSplitPanel() {
-            // Split panel works in both reduced and fullscreen modes
-            // (gate lifted 2026-05-17 server-path follow-up — see CSS rule
-            // `#pdfPreviewModal.split-panel-mode:not(.preview-fullscreen)`
-            // which sizes the reduced-mode panel widths so the 3-column
-            // layout fits inside the modal-xl dialog).
+            if (!_fullscreenActive) {
+                return;
+            }
             updateSplitPanelUi(!_splitPanelActive);
         }
 
         function updateSplitPanelButtonVisibility() {
             if (!splitPanelBtn) return;
-            // Split-panel toggle is now always visible (formerly fullscreen-only).
-            // The reduced-mode split layout sizes panels at 280px each so the
-            // 3-column view fits inside the modal-xl dialog.
-            splitPanelBtn.classList.remove('d-none');
+            if (_fullscreenActive) {
+                splitPanelBtn.classList.remove('d-none');
+                return;
+            }
+            splitPanelBtn.classList.add('d-none');
+            if (_splitPanelActive) {
+                updateSplitPanelUi(false);
+            }
         }
 
         // -----------------------------------------------------------------
@@ -325,6 +328,9 @@ window.PdfPreviewModalShell = window.PdfPreviewModalShell || {};
                 }
                 updatePreviewFullscreenUi(false);
             }
+            if (_splitPanelActive) {
+                updateSplitPanelUi(false);
+            }
         }
 
         function _handleModalHidden() {
@@ -353,6 +359,10 @@ window.PdfPreviewModalShell = window.PdfPreviewModalShell || {};
             if (uiState) {
                 uiState.visible = true;
             }
+            if (_splitPanelActive) {
+                updateSplitPanelUi(false);
+            }
+            updateSplitPanelButtonVisibility();
 
             if (DrawingCanvas && typeof DrawingCanvas.init === 'function') {
                 DrawingCanvas.init();

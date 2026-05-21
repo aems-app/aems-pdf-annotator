@@ -1012,34 +1012,32 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 return '' +
                     separator +
                     '<div class="list-group-item ' + sourceClass + verdictClass + '" tabindex="0" data-annotation-id="' + domId + '" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-stable-id="' + stableId + '" data-annotation-page="' + ann.pageIdx + '" data-annotation-source="' + source + '">' +
-                        '<div class="d-flex justify-content-between align-items-start gap-2">' +
-                            '<div class="flex-grow-1" style="min-width: 0">' +
-                                '<div class="d-flex align-items-center gap-2 mb-1">' +
-                                    '<span class="badge bg-' + colorClass + '">' + commentId + '</span>' +
-                                    sourceBadgeHtml +
-                                    verdictHtml +
-                                    (graderName ? '<small class="text-muted grader-name-badge" title="' + escapeHtml(rawGraderName) + '">' + escapeHtml(graderName) + '</small>' : '') +
-                                    '<div class="priority-dots d-flex gap-1 ms-2" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + ann.pageIdx + '">' +
-                                        '<span class="priority-dot priority-red ' + (priority === 'red' ? 'active' : '') + '" data-priority="red" title="High priority"></span>' +
-                                        '<span class="priority-dot priority-amber ' + (priority === 'amber' ? 'active' : '') + '" data-priority="amber" title="Medium priority"></span>' +
-                                        '<span class="priority-dot priority-green ' + (priority === 'green' ? 'active' : '') + '" data-priority="green" title="Low priority"></span>' +
-                                    '</div>' +
-                                '</div>' +
-                                '<div class="annotation-content ' + (_getEditingAnnotationId() === domId ? 'editing' : '') + '" data-annotation-id="' + domId + '" data-annotation-identifier="' + displayIdentifier + '">' +
-                                    (_getEditingAnnotationId() === domId
-                                        ? '<textarea class="form-control form-control-sm mb-2 auto-resize-textarea" id="edit-annotation-text-' + displayIdentifier + '" rows="2" placeholder="Type your comment...">' + editContent + '</textarea>' +
-                                            '<div class="btn-group btn-group-sm">' +
-                                                '<button class="btn btn-primary btn-sm save-annotation-btn" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '">' +
-                                                    '<span class="spinner-border spinner-border-sm d-none" role="status"></span>' +
-                                                    '<span class="btn-text">Save</span>' +
-                                                '</button>' +
-                                                '<button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + ann.pageIdx + '">Cancel</button>' +
-                                            '</div>'
-                                        : displayContent) +
+                        '<div class="annotation-list-card">' +
+                            '<div class="annotation-meta-row">' +
+                                '<span class="badge bg-' + colorClass + '">' + commentId + '</span>' +
+                                sourceBadgeHtml +
+                                verdictHtml +
+                                (graderName ? '<small class="text-muted grader-name-badge" title="' + escapeHtml(rawGraderName) + '">' + escapeHtml(graderName) + '</small>' : '') +
+                                '<div class="priority-dots d-flex gap-1" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + ann.pageIdx + '">' +
+                                    '<span class="priority-dot priority-red ' + (priority === 'red' ? 'active' : '') + '" data-priority="red" title="High priority"></span>' +
+                                    '<span class="priority-dot priority-amber ' + (priority === 'amber' ? 'active' : '') + '" data-priority="amber" title="Medium priority"></span>' +
+                                    '<span class="priority-dot priority-green ' + (priority === 'green' ? 'active' : '') + '" data-priority="green" title="Low priority"></span>' +
                                 '</div>' +
                             '</div>' +
+                            '<div class="annotation-content ' + (_getEditingAnnotationId() === domId ? 'editing' : '') + '" data-annotation-id="' + domId + '" data-annotation-identifier="' + displayIdentifier + '">' +
+                                (_getEditingAnnotationId() === domId
+                                    ? '<textarea class="form-control form-control-sm mb-2 auto-resize-textarea" id="edit-annotation-text-' + displayIdentifier + '" rows="2" placeholder="Type your comment...">' + editContent + '</textarea>' +
+                                        '<div class="annotation-edit-actions d-flex flex-wrap gap-2">' +
+                                            '<button class="btn btn-primary btn-sm save-annotation-btn" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '">' +
+                                                '<span class="spinner-border spinner-border-sm d-none" role="status"></span>' +
+                                                '<span class="btn-text">Save</span>' +
+                                            '</button>' +
+                                            '<button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + ann.pageIdx + '">Cancel</button>' +
+                                        '</div>'
+                                    : displayContent) +
+                            '</div>' +
                             (_getEditingAnnotationId() !== domId
-                                ? '<div class="btn-group btn-group-sm flex-shrink-0">' +
+                                ? '<div class="annotation-action-row d-flex flex-wrap gap-2 justify-content-end">' +
                                     '<button class="btn btn-outline-primary btn-sm edit-annotation" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-page="' + ann.pageIdx + '" data-annotation-id="' + domId + '" title="Edit comment">' +
                                         '<i class="bi bi-pencil"></i>' +
                                     '</button>' +
@@ -1062,6 +1060,64 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         '</div>' +
                     '</div>';
             }).join('');
+        }
+
+        async function cancelAnnotationEdit(pageIdx, identifier) {
+            if (identifier) {
+                if (pageIdx === null || Number.isNaN(pageIdx)) {
+                    if (_h.showToast) {
+                        _h.showToast('error', 'Unable to cancel edit: missing page context.');
+                    }
+                    return Promise.resolve();
+                }
+                var annotation = _h.findAnnotationEntry ? _h.findAnnotationEntry(pageIdx, identifier) : null;
+                var originalContent = (annotation && (annotation._originalContent !== undefined
+                    ? annotation._originalContent
+                    : annotation.content)) || '';
+                originalContent = String(originalContent || '').trim();
+                var textarea = document.getElementById('edit-annotation-text-' + identifier);
+                var isTemporary = annotation && annotation._isTemporary === true;
+                var originalIsPlaceholder = PLACEHOLDER_STRINGS.indexOf(originalContent) !== -1;
+                var hasOnlyPriorityChange = annotation && annotation._priorityChanged === true && !annotation._hasBeenEdited;
+
+                if (isTemporary || (originalIsPlaceholder && !hasOnlyPriorityChange)) {
+                    if (textarea && textarea._escapeHandler) {
+                        textarea.removeEventListener('keydown', textarea._escapeHandler, true);
+                    }
+                    if (textarea && textarea._blurHandler) {
+                        textarea.removeEventListener('blur', textarea._blurHandler);
+                    }
+                    if (_h.deleteAnnotationSilently) {
+                        await _h.deleteAnnotationSilently(pageIdx, (annotation && annotation.requestIdentifier) || identifier);
+                    }
+                    _setEditingAnnotationId(null);
+                    _syncAnnotationsState({ editingId: null });
+                    if (_h.collapseInlineLabel) {
+                        var inlineLabel = document.querySelector('.annotation-label.label-editing');
+                        if (inlineLabel) {
+                            _h.collapseInlineLabel(inlineLabel);
+                        }
+                    }
+                    _emit('onScheduleUpdate', {});
+                    return Promise.resolve();
+                }
+
+                if (annotation && annotation._originalContent !== undefined) {
+                    annotation.content = annotation._originalContent;
+                }
+            }
+
+            _setEditingAnnotationId(null);
+            _syncAnnotationsState({ editingId: null });
+            if (_h.collapseInlineLabel) {
+                var openInlineLabel = document.querySelector('.annotation-label.label-editing');
+                if (openInlineLabel) {
+                    _h.collapseInlineLabel(openInlineLabel);
+                }
+            }
+            renderSidebar();
+            _emit('onRenderOverlaysNeeded', { forceRender: true });
+            return Promise.resolve();
         }
 
         function _attachSidebarEventHandlers(listEl) {
@@ -1346,61 +1402,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 btn.dataset.listenersBound = 'true';
                 btn.addEventListener('click', async function () {
                     var identifier = btn.dataset.annotationIdentifier || btn.dataset.annotationXref || null;
-                    if (identifier) {
-                        var pageIdx = _parseDatasetPageIndex(btn.dataset.annotationPage);
-                        if (pageIdx === null) {
-                            if (_h.showToast) {
-                                _h.showToast('error', 'Unable to cancel edit: missing page context.');
-                            }
-                            return;
-                        }
-                        var annotation = _h.findAnnotationEntry ? _h.findAnnotationEntry(pageIdx, identifier) : null;
-                        var originalContent = (annotation && (annotation._originalContent !== undefined
-                            ? annotation._originalContent
-                            : annotation.content)) || '';
-                        originalContent = String(originalContent || '').trim();
-                        var textarea = document.getElementById('edit-annotation-text-' + identifier);
-                        var isTemporary = annotation && annotation._isTemporary === true;
-                        var originalIsPlaceholder = PLACEHOLDER_STRINGS.indexOf(originalContent) !== -1;
-                        var hasOnlyPriorityChange = annotation && annotation._priorityChanged === true && !annotation._hasBeenEdited;
-
-                        if (isTemporary || (originalIsPlaceholder && !hasOnlyPriorityChange)) {
-                            if (textarea && textarea._escapeHandler) {
-                                textarea.removeEventListener('keydown', textarea._escapeHandler, true);
-                            }
-                            if (textarea && textarea._blurHandler) {
-                                textarea.removeEventListener('blur', textarea._blurHandler);
-                            }
-                            if (_h.deleteAnnotationSilently) {
-                                await _h.deleteAnnotationSilently(pageIdx, (annotation && annotation.requestIdentifier) || identifier);
-                            }
-                            _setEditingAnnotationId(null);
-                            _syncAnnotationsState({ editingId: null });
-                            if (_h.collapseInlineLabel) {
-                                var inlineLabel = document.querySelector('.annotation-label.label-editing');
-                                if (inlineLabel) {
-                                    _h.collapseInlineLabel(inlineLabel);
-                                }
-                            }
-                            _emit('onScheduleUpdate', {});
-                            return;
-                        }
-
-                        if (annotation && annotation._originalContent !== undefined) {
-                            annotation.content = annotation._originalContent;
-                        }
-                    }
-
-                    _setEditingAnnotationId(null);
-                    _syncAnnotationsState({ editingId: null });
-                    if (_h.collapseInlineLabel) {
-                        var openInlineLabel = document.querySelector('.annotation-label.label-editing');
-                        if (openInlineLabel) {
-                            _h.collapseInlineLabel(openInlineLabel);
-                        }
-                    }
-                    renderSidebar();
-                    _emit('onRenderOverlaysNeeded', { forceRender: true });
+                    var pageIdx = _parseDatasetPageIndex(btn.dataset.annotationPage);
+                    await cancelAnnotationEdit(pageIdx, identifier);
                 });
             });
 
@@ -2578,6 +2581,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
             },
             beginEdit: beginEdit,
+            cancelAnnotationEdit: function (pageIdx, identifier) {
+                if (_destroyed) return Promise.resolve();
+                return cancelAnnotationEdit(pageIdx, identifier);
+            },
             createTemporaryAnnotation: createTemporaryAnnotation,
             saveAnnotationEdit: saveAnnotationEdit,
             deleteAnnotation: deleteAnnotation,
