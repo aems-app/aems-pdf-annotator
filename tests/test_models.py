@@ -1,5 +1,6 @@
 # tests/test_models.py
 import pytest
+from pydantic import ValidationError
 from aems_pdf_annotator.models import (
     PDFAnnotation, BBox, AnnotationBatch,
     AnnotationColor, AnnotationType, AnnotationSource,
@@ -21,6 +22,22 @@ def test_bbox_clamp_to_bounds():
     assert clamped.y0 == 0
     assert clamped.x1 == 612
     assert clamped.y1 == 792
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("x0", float("nan")),
+        ("y0", float("nan")),
+        ("x1", float("inf")),
+        ("y1", float("-inf")),
+    ],
+)
+def test_bbox_rejects_non_finite_coordinates(field, value):
+    coords = {"x0": 0.0, "y0": 0.0, "x1": 10.0, "y1": 10.0}
+    coords[field] = value
+    with pytest.raises(ValidationError):
+        BBox(**coords)
 
 
 def test_annotation_color_values():

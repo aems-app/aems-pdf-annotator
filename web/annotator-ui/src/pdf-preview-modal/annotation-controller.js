@@ -522,6 +522,14 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             return document.getElementById('pdfGradedCommentsList');
         }
 
+        function _parseDatasetPageIndex(value) {
+            if (value === null || value === undefined || value === '') {
+                return null;
+            }
+            var parsed = parseInt(value, 10);
+            return Number.isNaN(parsed) ? null : parsed;
+        }
+
         function _scheduleListRender() {
             if (_pendingListFrame !== null) {
                 return;
@@ -1339,7 +1347,13 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 btn.addEventListener('click', async function () {
                     var identifier = btn.dataset.annotationIdentifier || btn.dataset.annotationXref || null;
                     if (identifier) {
-                        var pageIdx = parseInt(btn.dataset.annotationPage || _currentAnnotationsPage || '-1', 10);
+                        var pageIdx = _parseDatasetPageIndex(btn.dataset.annotationPage);
+                        if (pageIdx === null) {
+                            if (_h.showToast) {
+                                _h.showToast('error', 'Unable to cancel edit: missing page context.');
+                            }
+                            return;
+                        }
                         var annotation = _h.findAnnotationEntry ? _h.findAnnotationEntry(pageIdx, identifier) : null;
                         var originalContent = (annotation && (annotation._originalContent !== undefined
                             ? annotation._originalContent
@@ -2059,7 +2073,13 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 )
                 : stableIdentifier;
             var listItem = saveBtn.closest('.list-group-item');
-            var pageIdx = parseInt((listItem && listItem.dataset.annotationPage) || _currentAnnotationsPage || '-1', 10);
+            var pageIdx = _parseDatasetPageIndex(listItem && listItem.dataset.annotationPage);
+            if (pageIdx === null) {
+                if (_h.showToast) {
+                    _h.showToast('error', 'Unable to save annotation: missing page context.');
+                }
+                return Promise.resolve();
+            }
             var originalAnn = _h.findAnnotationEntry
                 ? _h.findAnnotationEntry(pageIdx, requestIdentifier || stableIdentifier)
                 : null;

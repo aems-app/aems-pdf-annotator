@@ -1,6 +1,7 @@
 """Wire contract validation and feedback-item-to-annotation conversion."""
 
 import logging
+import math
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -46,6 +47,8 @@ def _require_number(
         raise ContractValidationError(f"{field_name} must be a number")
 
     numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ContractValidationError(f"{field_name} must be a finite number")
     if minimum is not None and numeric < minimum:
         raise ContractValidationError(f"{field_name} must be >= {minimum}")
     if maximum is not None and numeric > maximum:
@@ -303,7 +306,14 @@ def feedback_items_to_annotations(
             continue
 
         page_1based = item.get("page", 1)
-        page_index = max(0, min(int(page_1based) - 1, max_page - 1))
+        requested_page_index = int(page_1based) - 1
+        page_index = max(0, min(requested_page_index, max_page - 1))
+        if page_index != requested_page_index:
+            logger.warning(
+                "feedback item page %s out of range; clamped to page %s",
+                page_1based,
+                page_index + 1,
+            )
 
         width, height = page_dimensions[page_index]
         annot = feedback_item_to_annotation(

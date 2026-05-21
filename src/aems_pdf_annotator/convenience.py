@@ -5,6 +5,8 @@ Provides high-level functions for applying annotations to PDFs.
 """
 
 import logging
+import os
+import uuid
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -47,10 +49,24 @@ def apply_annotations(
 
     if output_path is None:
         output_path = pdf_path.parent / f"{pdf_path.stem}_annotated.pdf"
+    else:
+        output_path = Path(output_path)
+
+    final_output_path = output_path
+    write_output_path = output_path
+    if final_output_path == pdf_path:
+        write_output_path = final_output_path.with_name(
+            f"{final_output_path.stem}.{uuid.uuid4().hex}.tmp{final_output_path.suffix}"
+        )
 
     with PDFAnnotator(pdf_path) as annotator:
         count = annotator.add_annotations(annotations)
-        saved_path = annotator.save(output_path)
+        saved_path = annotator.save(write_output_path)
+
+    saved_path = Path(saved_path)
+    if final_output_path == pdf_path:
+        os.replace(str(saved_path), str(final_output_path))
+        saved_path = final_output_path
 
     return saved_path, count
 

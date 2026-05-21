@@ -60,6 +60,44 @@ class TestContractValidation:
                 }
             )
 
+    @pytest.mark.parametrize(
+        "bad_value",
+        [float("nan"), float("inf"), float("-inf")],
+    )
+    def test_non_finite_normalized_coords_rejected(self, bad_value):
+        with pytest.raises(ContractValidationError, match="finite"):
+            validate_contract_version(
+                {
+                    "annotation_contract_version": 1,
+                    "coordinate_space": "visual_top_left_normalized_v1",
+                    "feedback_items": [
+                        {
+                            "page": 1,
+                            "x_normalized": bad_value,
+                            "y_normalized": 0.5,
+                            "comment": "Bad coord",
+                        }
+                    ],
+                }
+            )
+
+    def test_rendered_annotations_rejects_non_finite_bbox(self):
+        payload = {
+            "annotation_contract_version": 1,
+            "coordinate_space": "visual_top_left_normalized_v1",
+            "rendered_annotations": [
+                {
+                    "id": "ann-1",
+                    "page_index": 0,
+                    "bbox": {"x0": float("nan"), "y0": 0, "x1": 10, "y1": 10},
+                    "kind": "text",
+                    "color": "green",
+                }
+            ],
+        }
+        with pytest.raises(ContractValidationError):
+            payload_to_annotations(payload, [(612, 792)])
+
 
 class TestFeedbackItemConversion:
     def test_low_priority_produces_green_text_marker_with_comment_icon(self):
@@ -259,6 +297,16 @@ class TestBatchConversion:
         annotations = feedback_items_to_annotations(items, [(612, 792), (612, 792)])
         # Should clamp to last valid page
         assert annotations[0].page_index == 1
+
+    def test_page_out_of_range_logs_warning(self, caplog):
+        items = [
+            {"page": 5, "x_normalized": 0.1, "y_normalized": 0.2, "comment": "Test", "priority": "low"},
+        ]
+        with caplog.at_level("WARNING"):
+            annotations = feedback_items_to_annotations(items, [(612, 792), (612, 792)])
+
+        assert annotations[0].page_index == 1
+        assert "out of range" in caplog.text
 
     def test_visual_top_left_coordinates_render_near_top_of_page(self, tmp_path):
         from aems_pdf_annotator._fitz import fitz

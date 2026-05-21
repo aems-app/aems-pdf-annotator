@@ -104,6 +104,13 @@ class TestMetadataEncoding:
         assert decoded["stable_id"] == "some-uuid-here"
         assert decoded["source"] is None
 
+    def test_decode_ignores_unknown_legacy_original_source_tokens(self):
+        decoded = _decode_subject_metadata("legacy-id|AI|surprise|C:Q1-1")
+        assert decoded["stable_id"] == "legacy-id"
+        assert decoded["source"] == "AI"
+        assert decoded["original_source"] is None
+        assert decoded["check_id"] == "Q1-1"
+
     def test_uuid_like_stable_id_is_not_treated_as_check_id(self):
         stable_id = "c8e2181b-151f-4d6c-bb69-5a0aaeda6314"
         assert _looks_like_check_id(stable_id) is False
@@ -223,6 +230,13 @@ class TestPDFAnnotator:
     def test_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             PDFAnnotator(tmp_path / "nonexistent.pdf")
+
+    def test_invalid_pdf_magic_raises_value_error(self, tmp_path):
+        bad_pdf = tmp_path / "not-really-a-pdf.pdf"
+        bad_pdf.write_text("plain text", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Not a PDF file"):
+            PDFAnnotator(bad_pdf)
 
     def test_add_annotations_batch(self, sample_pdf):
         annotations = [
@@ -346,3 +360,28 @@ class TestPDFAnnotator:
             assert annotator.delete_annotation("321") is True
             page.load_annot.assert_called_once_with(321)
             page.delete_annot.assert_called_once_with(loaded_annot)
+
+    def test_find_annotation_by_id_does_not_suffix_match_colon_ids(self, sample_pdf):
+        with PDFAnnotator(sample_pdf) as annotator:
+            page = MagicMock()
+            annot = MagicMock()
+            annot.info = {"subject": "uuid:1"}
+            annot.xref = None
+            page.annots.return_value = [annot]
+            annotator.doc = MagicMock()
+            annotator.doc.page_count = 1
+            annotator.doc.__getitem__.return_value = page
+
+            assert annotator.find_annotation_by_id("1") is None
+
+    def test_extract_ink_points_skips_malformed_points(self, sample_pdf):
+        with PDFAnnotator(sample_pdf) as annotator:
+            annot = MagicMock()
+            valid_point = MagicMock()
+            valid_point.x = 10
+            valid_point.y = 20
+            annot.vertices = [[valid_point, object(), (30, 40)]]
+
+            points = annotator._extract_ink_points_pdf(annot, 100)
+
+            assert points == [[10.0, 80.0], [30.0, 60.0]]

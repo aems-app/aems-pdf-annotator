@@ -170,6 +170,16 @@ def _parse_rgb_token(token: str) -> Optional[List[int]]:
     return rgb
 
 
+def _looks_like_pdf_file(path: Path) -> bool:
+    """Return True when the file header looks like a PDF."""
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(1024)
+    except OSError:
+        return False
+    return b"%PDF-" in header
+
+
 def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
     """Decode stable ID and metadata from the PDF annotation subject field."""
     subject_text = str(subject_value or "").strip()
@@ -242,7 +252,10 @@ def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
         if token.startswith("T:"):
             metadata["textbox_color_rgb"] = _parse_rgb_token(token[2:])
             continue
-        if metadata["original_source"] is None:
+        if (
+            metadata["original_source"] is None
+            and token in {"AI", "HUMAN"}
+        ):
             metadata["original_source"] = token
 
     return metadata
@@ -319,6 +332,8 @@ class PDFAnnotator:
     def _open(self) -> None:
         """Open the PDF document."""
         try:
+            if not _looks_like_pdf_file(self.pdf_path):
+                raise ValueError(f"Not a PDF file: {self.pdf_path}")
             self.doc = fitz.open(self.pdf_path)
             logger.info(f"Opened PDF: {self.pdf_path} ({self.doc.page_count} pages)")
         except Exception as e:
@@ -589,12 +604,16 @@ class PDFAnnotator:
         first_path = paths[0] if isinstance(paths[0], (list, tuple)) else paths
         points: List[List[float]] = []
         for point in first_path:
-            if hasattr(point, "x") and hasattr(point, "y"):
-                x_value = float(point.x)
-                y_value = float(point.y)
-            else:
-                x_value = float(point[0])
-                y_value = float(point[1])
+            try:
+                if hasattr(point, "x") and hasattr(point, "y"):
+                    x_value = float(point.x)
+                    y_value = float(point.y)
+                else:
+                    x_value = float(point[0])
+                    y_value = float(point[1])
+            except (IndexError, TypeError, ValueError):
+                logger.debug("Skipping malformed ink point: %r", point)
+                continue
             points.append([x_value, page_height - y_value])
         return points
 
@@ -883,9 +902,10 @@ class PDFAnnotator:
                         # Exact match
                         if candidate_str == search_id:
                             return (page_idx, annot)
-                        # Partial match (in case of "Note:1" vs just "1")
-                        if candidate_str.endswith(f":{search_id}"):
-                            return (page_idx, annot)
+                        if ":" in candidate_str:
+                            prefix, suffix = candidate_str.split(":", 1)
+                            if prefix in {"Note", "Text"} and suffix.strip() == search_id:
+                                return (page_idx, annot)
 
                 # Fallback: try matching by xref
                 if xref is not None and actual_xref == xref:
@@ -1794,18 +1814,12 @@ class PDFAnnotator:
         try:
             # Use incremental save if overwriting, or full save if new file
             if output_path == self.pdf_path:
-                # Force flush annotation metadata by accessing info dicts
-                # This ensures PyMuPDF writes the info to disk
-
-                sources_before_save = {}
+                # Touch annotation info dicts so PyMuPDF flushes pending
+                # metadata writes before the incremental save.
                 for page_num in range(self.doc.page_count):
                     page = self.doc[page_num]
                     for annot in page.annots():
-                        info = annot.info or {}
-                        xref = getattr(annot, "xref", None)
-                        if xref:
-                            sources_before_save[xref] = info.get("source")
-                        _ = annot.info  # Access to force refresh
+                        _ = annot.info
 
                 self.doc.save(
                     str(output_path),

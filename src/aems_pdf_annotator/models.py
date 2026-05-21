@@ -5,6 +5,7 @@ Defines structures for annotation types, colors, bounding boxes, and annotation 
 """
 
 from enum import Enum
+import math
 import sys
 from typing import Any, List, Tuple, Optional, Dict
 from pydantic import BaseModel, Field, field_validator
@@ -71,6 +72,13 @@ class BBox(BaseModel):
     y0: float
     x1: float
     y1: float
+
+    @field_validator("x0", "y0", "x1", "y1")
+    @classmethod
+    def _reject_non_finite(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("BBox coordinates must be finite numbers")
+        return value
 
     def to_rect(self) -> Tuple[float, float, float, float]:
         """Convert to rect tuple (x0, y0, x1, y1)."""

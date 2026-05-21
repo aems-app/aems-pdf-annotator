@@ -117,7 +117,7 @@ window.PdfPreviewModalMarkupToolbar = window.PdfPreviewModalMarkupToolbar || {};
             var raw = localStorage.getItem(STORAGE_KEY);
             if (!raw) return null;
             var pos = JSON.parse(raw);
-            if (typeof pos.left === 'number' && typeof pos.top === 'number') {
+            if (Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
                 return pos;
             }
         } catch (_) {

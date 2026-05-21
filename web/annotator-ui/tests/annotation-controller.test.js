@@ -283,6 +283,60 @@ describe('annotation-controller state ownership', () => {
     expect(deleteAnnotationSilently).toHaveBeenCalledWith(5, 'ann-5');
   });
 
+  it('does not fall back to the current page when cancel loses page context', async () => {
+    document.body.innerHTML = `
+      <div id="pdfGradedContainer"></div>
+      <div id="pdfGradedCommentsList"></div>
+    `;
+    window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation = () => true;
+    const mod = await loadAnnotationControllerModule();
+    const annotationsState = {};
+    let currentAnnotationsData = {};
+    const deleteAnnotationSilently = vi.fn().mockResolvedValue(undefined);
+    const findAnnotationEntry = vi.fn(() => null);
+    let editingId = 'ann-5-ann-5';
+    const controller = mod.createAnnotationController({
+      annotationsState,
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      getCurrentSubmissionId: () => 1001,
+      getCurrentAssignmentId: () => 501,
+      getEditingAnnotationId: () => editingId,
+      setEditingAnnotationId: (value) => { editingId = value; },
+      helpers: {
+        listAnnotationsRequest: vi.fn().mockResolvedValue({
+          success: true,
+          annotations: {
+            5: [{
+              pageIdx: 5,
+              id: 'ann-5',
+              stable_id: 'ann-5',
+              requestIdentifier: 'ann-5',
+              content: '',
+              _originalContent: '',
+              _isTemporary: true,
+            }],
+          },
+        }),
+        normalizeAnnotationsPayload: (data) => data,
+        refreshMarkupFromAnnotations: vi.fn(),
+        findAnnotationEntry,
+        deleteAnnotationSilently,
+      },
+    });
+
+    await controller.loadAnnotations();
+    controller.renderSidebar();
+    controller.setCurrentAnnotationsPage(7);
+    const cancelButton = document.querySelector('.cancel-edit-btn');
+    cancelButton.removeAttribute('data-annotation-page');
+    cancelButton.click();
+    await Promise.resolve();
+
+    expect(findAnnotationEntry).not.toHaveBeenCalledWith(7, 'ann-5');
+    expect(deleteAnnotationSilently).not.toHaveBeenCalled();
+  });
+
   it('keeps a new annotation editor alive when a detached pre-save textarea blurs after rerender', async () => {
     vi.useFakeTimers();
     try {
