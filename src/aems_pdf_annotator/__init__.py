@@ -1,6 +1,6 @@
 """AEMS PDF Annotator — shared annotation engine."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from aems_pdf_annotator.models import (
     PDFAnnotation,
