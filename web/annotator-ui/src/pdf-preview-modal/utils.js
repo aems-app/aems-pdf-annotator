@@ -94,6 +94,26 @@ window.PdfPreviewModalUtils = window.PdfPreviewModalUtils || {};
         return headers;
     };
 
+    /**
+     * Decide whether annotation requests should use offline API routes.
+     *
+     * The offline wizard page hosts both true offline review and local-agent
+     * review. Local review must still talk to the paired desktop agent even
+     * though window.__WIZARD_MODE remains "offline" at the page level.
+     *
+     * @param {string|null|undefined} assignmentMode - Effective preview mode
+     * @returns {boolean} True when annotation requests should use offline routes
+     */
+    exports.shouldUseOfflineAnnotationRoutes = function shouldUseOfflineAnnotationRoutes(assignmentMode) {
+        if (assignmentMode === 'local') {
+            return false;
+        }
+        if (assignmentMode === 'offline') {
+            return true;
+        }
+        return window.__WIZARD_MODE === 'offline';
+    };
+
     // =========================================================================
     // String Escaping
     // =========================================================================

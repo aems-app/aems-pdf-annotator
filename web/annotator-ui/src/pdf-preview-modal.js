@@ -1243,7 +1243,19 @@
 
     /** @returns {boolean} Whether the current wizard session is in offline mode */
     function _isOfflineMode() {
-        return window.__WIZARD_MODE === 'offline';
+        const resolver = window.PdfPreviewModalUtils
+            && typeof window.PdfPreviewModalUtils.shouldUseOfflineAnnotationRoutes === 'function'
+            ? window.PdfPreviewModalUtils.shouldUseOfflineAnnotationRoutes
+            : function fallbackShouldUseOfflineAnnotationRoutes(assignmentMode) {
+                if (assignmentMode === 'local') {
+                    return false;
+                }
+                if (assignmentMode === 'offline') {
+                    return true;
+                }
+                return window.__WIZARD_MODE === 'offline';
+            };
+        return resolver(_resolveAnnotationAssignmentMode());
     }
 
     function _resolveAnnotationAssignmentMode() {
@@ -3530,7 +3542,16 @@
             if (currentTool === 'text' && TextboxModule) {
                 var pageWrapper = target.closest('.pdf-page-wrapper');
                 if (!pageWrapper) return;
-                var pageIdx = parseInt(pageWrapper.dataset.pageIndex || pageWrapper.dataset.pageIdx || '0', 10);
+                // pdf-viewer.js only sets `data-page-num` (1-based) on wrappers.
+                // The legacy reads of `data-page-index` / `data-page-idx` always
+                // resolved to undefined, so pageIdx silently fell back to 0 and
+                // every Textbox click landed on page 1 regardless of which page
+                // the user clicked. Read `data-page-num` and convert to 0-based.
+                var rawPageNum = parseInt(
+                    pageWrapper.dataset.pageNum || pageWrapper.dataset.pageIndex || pageWrapper.dataset.pageIdx || '1',
+                    10
+                );
+                var pageIdx = Number.isFinite(rawPageNum) ? Math.max(0, rawPageNum - 1) : 0;
                 var pdfCanvas = pageWrapper.querySelector('canvas');
                 if (!pdfCanvas) return;
 
@@ -3548,7 +3569,14 @@
             if (currentTool === 'select') {
                 var pageWrapper2 = target.closest('.pdf-page-wrapper');
                 if (!pageWrapper2) return;
-                var pageIdx2 = parseInt(pageWrapper2.dataset.pageIndex || pageWrapper2.dataset.pageIdx || '0', 10);
+                // Same bug as the textbox path above: read 1-based data-page-num
+                // and convert to 0-based pageIdx; the old fallbacks always read
+                // undefined and pinned the select-tool to page 0.
+                var rawPageNum2 = parseInt(
+                    pageWrapper2.dataset.pageNum || pageWrapper2.dataset.pageIndex || pageWrapper2.dataset.pageIdx || '1',
+                    10
+                );
+                var pageIdx2 = Number.isFinite(rawPageNum2) ? Math.max(0, rawPageNum2 - 1) : 0;
 
                 // Check text box hit first
                 if (TextboxModule) {
@@ -5078,9 +5106,15 @@
         const canvas = wrapper.querySelector('.pdf-page-canvas');
         if (!canvas) return;
 
+        // Use getBoundingClientRect width consistently with the drag-end
+        // converter in handleMouseUp (see line ~6464). Mixing
+        // canvas.clientWidth (layout px) and canvas.getBoundingClientRect().width
+        // (post-transform px) caused the marker to settle a few pixels off the
+        // drop position whenever the page wrapper carried any CSS transform,
+        // producing the "same-page drag jumps randomly" symptom Zohar reported.
         const canvasRect = canvas.getBoundingClientRect();
-        const canvasWidth = canvas.clientWidth || canvasRect.width;
-        const canvasHeight = canvas.clientHeight || canvasRect.height;
+        const canvasWidth = canvasRect.width || canvas.clientWidth;
+        const canvasHeight = canvasRect.height || canvas.clientHeight;
         if (!canvasWidth || !canvasHeight) return;
 
         const scaleX = canvasWidth / viewport.width;
@@ -5090,7 +5124,14 @@
         if (!Array.isArray(rect) || rect.length !== 4) return;
 
         const Rendering = window.PdfPreviewModalRendering || {};
-        const convertFn = Rendering.convertTopLeftRectToViewport || function (r) { return r; };
+        // Defensive fallback: if the Rendering module is not yet loaded, apply
+        // viewport.scale ourselves so the marker isn't placed at unscaled
+        // page-space coordinates (would land near 0,0 at low zoom).
+        const convertFn = Rendering.convertTopLeftRectToViewport || function (r, vp) {
+            var sc = Number(vp && vp.scale);
+            if (!Number.isFinite(sc) || sc <= 0) sc = 1;
+            return [Number(r[0]) * sc, Number(r[1]) * sc, Number(r[2]) * sc, Number(r[3]) * sc];
+        };
         const zoom = (viewer && viewer.zoom) || 1.0;
         const MIN_SIZE = Math.round((Rendering.MIN_MARKER_SIZE || 16) * zoom);
 
