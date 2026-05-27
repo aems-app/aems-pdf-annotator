@@ -117,6 +117,18 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             var pageAnnotations = annotationsData[pageIdx] || [];
             var displayOrderByPagePosition = buildDisplayOrderByPagePosition(pageAnnotations);
 
+            var canvasRect = canvas.getBoundingClientRect();
+            var canvasWidth = canvas.clientWidth || canvasRect.width;
+            var canvasHeight = canvas.clientHeight || canvasRect.height;
+            var renderSignature = [
+                canvasWidth,
+                canvasHeight,
+                viewport.width,
+                viewport.height,
+                Number(viewport.scale) || 1,
+                (viewer && Number(viewer.zoom)) || 1,
+            ].join(':');
+
             // Optimization: check if markers already match (skip unnecessary re-creation)
             if (!forceRender) {
                 var existingMarkers = overlay.querySelectorAll('.annotation-marker');
@@ -124,7 +136,8 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                 var expectedXrefs = pageAnnotations.map(function (ann) { return String(ann.xref); }).sort();
 
                 if (existingMarkers.length === pageAnnotations.length &&
-                    JSON.stringify(existingXrefs) === JSON.stringify(expectedXrefs)) {
+                    JSON.stringify(existingXrefs) === JSON.stringify(expectedXrefs) &&
+                    overlay.dataset.annotationRenderSignature === renderSignature) {
                     // Only skip if the double-click handler is also set up
                     if (overlay._dblclickHandler) {
                         return;
@@ -135,10 +148,6 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
 
             // Clear existing annotations in this overlay
             overlay.innerHTML = '';
-
-            var canvasRect = canvas.getBoundingClientRect();
-            var canvasWidth = canvas.clientWidth || canvasRect.width;
-            var canvasHeight = canvas.clientHeight || canvasRect.height;
 
             if (!canvasWidth || !canvasHeight) {
                 overlay.style.pointerEvents = 'auto';
@@ -408,6 +417,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
 
             // Add double-click handler for creating new annotations on empty space
             _setupOverlayDoubleClickHandler(overlay, viewport, scaleX, scaleY, pageIdx);
+            overlay.dataset.annotationRenderSignature = renderSignature;
 
             // Ensure drawing canvas overlay exists for markup tools
             if (DrawingCanvas) {
@@ -604,6 +614,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                         ov.removeEventListener('dblclick', ov._dblclickHandler);
                         delete ov._dblclickHandler;
                     }
+                    delete ov.dataset.annotationRenderSignature;
                     ov.innerHTML = '';
                 }
                 _trackedOverlays = [];

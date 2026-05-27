@@ -213,6 +213,70 @@ describe('overlay-renderer', () => {
     expect(marker.style.left).toBe('30px');
   });
 
+  it('repositions existing markers after zoom changes even when the xref set is unchanged', async () => {
+    const mod = await loadOverlayRendererModule();
+    const renderer = mod.createOverlayRenderer({
+      getAnnotationsData: () => ({
+        0: [
+          {
+            id: 'stable-zoom',
+            stable_id: 'stable-zoom',
+            xref: 77,
+            type: 'Text',
+            rect: [30, 120, 70, 160],
+            content: 'Zoom-sensitive rect',
+            color: 'green',
+            source: 'AI',
+          },
+        ],
+      }),
+      getSelectedAnnotation: () => ({ pageIdx: null, identifier: null }),
+      helpers: {
+        normalizeAnnotationIdentifierValue: (value) => value || '',
+        resolveAnnotationIdParts: ({ xref, identifier }) => ({ xref, stableId: identifier }),
+        resolveAnnotationIdentifierValue: (ann) => ann.id || ann.stable_id || '',
+        deriveAnnotationPriority: (ann) => ann.color || 'amber',
+        resolveAnnotationSource: (ann) => ann.source || 'AI',
+        isPlaceholderAnnotation: () => false,
+        isMarkupType: () => false,
+        renderCompactInlineLabelContent: (label, number, text) => {
+          label.textContent = number + ' ' + text;
+        },
+        positionLabelOptimally: () => {},
+        repositionAllLabels: () => {},
+        setupLabelTooltipEvents: () => {},
+        buildDisplayOrderByPagePosition: () => ({}),
+        resolveDisplayOrderFromLookup: () => 1,
+        observeAnnotationMarker: () => {},
+        makeAnnotationDraggable: () => {},
+      },
+      capabilities: { annotationCrud: true },
+    });
+
+    renderer.renderPage(1, true);
+    vi.runAllTimers();
+
+    const canvas = document.querySelector('.pdf-page-canvas');
+    Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 300 });
+    Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 400 });
+    canvas.getBoundingClientRect = () => ({ width: 300, height: 400, left: 0, top: 0, right: 300, bottom: 400 });
+    window.__pdfGradedViewer.getViewportForPage = vi.fn().mockReturnValue({
+      width: 300,
+      height: 400,
+      scale: 0.5,
+      convertToViewportRectangle: (rect) => rect.map((value) => Number(value) * 0.5),
+      convertToPdfPoint: (x, y) => [x, y],
+    });
+
+    renderer.renderPage(1, false);
+    vi.runAllTimers();
+
+    const marker = document.querySelector('.annotation-marker');
+    expect(marker).not.toBeNull();
+    expect(marker.style.left).toBe('15px');
+    expect(marker.style.top).toBe('60px');
+  });
+
   it('cleans overlay DOM and handlers on destroy', async () => {
     const mod = await loadOverlayRendererModule();
     const renderer = mod.createOverlayRenderer({
