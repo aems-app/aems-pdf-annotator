@@ -971,10 +971,23 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         function _renderSidebarHtml(allAnnotations) {
             var lastPageIdx = null;
             var escapeHtml = _h.escapeHtml || function (value) { return String(value || ''); };
+            // Attribute-context escaper: unlike escapeHtml() it also neutralises
+            // " and ', so identifier values are safe inside double-quoted data-*
+            // attributes (prevents attribute-injection DOM XSS).
+            var escapeHtmlAttribute = _h.escapeHtmlAttribute || UtilsModule.escapeHtmlAttribute || function (value) {
+                return String(value == null ? '' : value)
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            };
             var translate = _h.translatePdfPreviewText || function (value) { return value; };
             var formatGraderDisplayName = _h.formatGraderDisplayName || function (value) { return value || ''; };
 
             return allAnnotations.map(function (ann) {
+                var pageIdx = Number(ann.pageIdx);
+                if (!Number.isFinite(pageIdx)) {
+                    pageIdx = 0;
+                }
+                pageIdx = Math.trunc(pageIdx);
                 var xrefValue = (_h.normalizeAnnotationIdentifierValue
                     ? _h.normalizeAnnotationIdentifierValue(
                         typeof ann.xref === 'number' ? String(ann.xref) : ann.xref
@@ -997,8 +1010,16 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         requestId = resolvedIds.xref || '';
                     }
                 }
-                var displayIdentifier = escapeHtml(requestId || 'idx-' + ann.indexOnPage);
-                var domId = escapeHtml('ann-' + ann.pageIdx + '-' + displayIdentifier);
+                var rawRequestId = requestId || ('idx-' + ann.indexOnPage);
+                var rawDomId = 'ann-' + pageIdx + '-' + rawRequestId;
+                // XSS hardening: attribute-escape every identifier value before it
+                // is interpolated into the data-* attributes of the markup below.
+                var displayIdentifier = escapeHtmlAttribute(rawRequestId);
+                var domId = escapeHtmlAttribute(rawDomId);
+                requestId = escapeHtmlAttribute(requestId);
+                xrefValue = escapeHtmlAttribute(xrefValue);
+                stableId = escapeHtmlAttribute(stableId);
+                var isEditing = _getEditingAnnotationId() === rawDomId;
                 var priority = _h.deriveAnnotationPriority ? _h.deriveAnnotationPriority(ann) : 'amber';
                 var colorClass = priority === 'red' ? 'danger' : priority === 'green' ? 'success' : 'warning';
                 var content = ann.content || '';
@@ -1013,66 +1034,66 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 var isAI = source === 'AI';
                 var sourceClass = isAI ? 'source-ai' : 'source-human';
                 var displayIndexOnPage = Number(ann.displayIndexOnPage || 1);
-                var commentId = (ann.pageIdx + 1) + '.' + displayIndexOnPage;
+                var commentId = (pageIdx + 1) + '.' + displayIndexOnPage;
                 var sourceBadgeHtml = isAI
                     ? '<span class="source-badge source-ai" title="AI-generated"><i class="bi bi-robot"></i></span>'
                     : '<span class="source-badge source-human" title="Human"><i class="bi bi-person-fill"></i></span>';
                 var isVerdict = !!ann.is_verdict;
                 var verdictHtml = isVerdict
-                    ? '<i class="bi bi-patch-check-fill verdict-indicator" title="Verdict comment" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + ann.pageIdx + '"></i>'
-                    : '<i class="bi bi-patch-check verdict-indicator verdict-inactive" title="Mark as verdict" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + ann.pageIdx + '"></i>';
+                    ? '<i class="bi bi-patch-check-fill verdict-indicator" title="Verdict comment" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + pageIdx + '"></i>'
+                    : '<i class="bi bi-patch-check verdict-indicator verdict-inactive" title="Mark as verdict" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + pageIdx + '"></i>';
                 var verdictClass = isVerdict ? ' is-verdict' : '';
                 var separator = '';
-                if (lastPageIdx !== null && ann.pageIdx !== lastPageIdx) {
+                if (lastPageIdx !== null && pageIdx !== lastPageIdx) {
                     separator = '<div class="page-separator"><small class="text-muted d-block text-center page-separator-label">' +
-                        translate('Page %(page)s', { page: ann.pageIdx + 1 }) +
+                        translate('Page %(page)s', { page: pageIdx + 1 }) +
                         '</small></div>';
                 }
-                lastPageIdx = ann.pageIdx;
+                lastPageIdx = pageIdx;
 
                 return '' +
                     separator +
-                    '<div class="list-group-item ' + sourceClass + verdictClass + '" tabindex="0" data-annotation-id="' + domId + '" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-stable-id="' + stableId + '" data-annotation-page="' + ann.pageIdx + '" data-annotation-source="' + source + '">' +
+                    '<div class="list-group-item ' + sourceClass + verdictClass + '" tabindex="0" data-annotation-id="' + domId + '" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-stable-id="' + stableId + '" data-annotation-page="' + pageIdx + '" data-annotation-source="' + escapeHtmlAttribute(source) + '">' +
                         '<div class="annotation-list-card">' +
                             '<div class="annotation-meta-row">' +
                                 '<span class="badge bg-' + colorClass + '">' + commentId + '</span>' +
                                 sourceBadgeHtml +
                                 verdictHtml +
-                                (graderName ? '<small class="text-muted grader-name-badge" title="' + escapeHtml(rawGraderName) + '">' + escapeHtml(graderName) + '</small>' : '') +
-                                '<div class="priority-dots d-flex gap-1" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + ann.pageIdx + '">' +
+                                (graderName ? '<small class="text-muted grader-name-badge" title="' + escapeHtmlAttribute(rawGraderName) + '">' + escapeHtml(graderName) + '</small>' : '') +
+                                '<div class="priority-dots d-flex gap-1" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + pageIdx + '">' +
                                     '<span class="priority-dot priority-red ' + (priority === 'red' ? 'active' : '') + '" data-priority="red" title="High priority"></span>' +
                                     '<span class="priority-dot priority-amber ' + (priority === 'amber' ? 'active' : '') + '" data-priority="amber" title="Medium priority"></span>' +
                                     '<span class="priority-dot priority-green ' + (priority === 'green' ? 'active' : '') + '" data-priority="green" title="Low priority"></span>' +
                                 '</div>' +
                             '</div>' +
-                            '<div class="annotation-content ' + (_getEditingAnnotationId() === domId ? 'editing' : '') + '" data-annotation-id="' + domId + '" data-annotation-identifier="' + displayIdentifier + '">' +
-                                (_getEditingAnnotationId() === domId
+                            '<div class="annotation-content ' + (isEditing ? 'editing' : '') + '" data-annotation-id="' + domId + '" data-annotation-identifier="' + displayIdentifier + '">' +
+                                (isEditing
                                     ? '<textarea class="form-control form-control-sm mb-2 auto-resize-textarea" id="edit-annotation-text-' + displayIdentifier + '" rows="2" placeholder="Type your comment...">' + editContent + '</textarea>' +
                                         '<div class="annotation-edit-actions d-flex flex-wrap gap-2">' +
                                             '<button class="btn btn-primary btn-sm save-annotation-btn" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '">' +
                                                 '<span class="spinner-border spinner-border-sm d-none" role="status"></span>' +
                                                 '<span class="btn-text">Save</span>' +
                                             '</button>' +
-                                            '<button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + ann.pageIdx + '">Cancel</button>' +
+                                            '<button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + pageIdx + '">Cancel</button>' +
                                         '</div>'
                                     : displayContent) +
                             '</div>' +
-                            (_getEditingAnnotationId() !== domId
+                            (!isEditing
                                 ? '<div class="annotation-action-row d-flex flex-wrap gap-2 justify-content-end">' +
-                                    '<button class="btn btn-outline-primary btn-sm edit-annotation" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-page="' + ann.pageIdx + '" data-annotation-id="' + domId + '" title="Edit comment">' +
+                                    '<button class="btn btn-outline-primary btn-sm edit-annotation" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-page="' + pageIdx + '" data-annotation-id="' + domId + '" title="Edit comment">' +
                                         '<i class="bi bi-pencil"></i>' +
                                     '</button>' +
                                     (
                                         ann.can_revert_to_ai
                                         && _h.hostAdvertisesCapability
                                         && _h.hostAdvertisesCapability('revertToAi')
-                                            ? '<button class="btn btn-outline-warning btn-sm revert-annotation-to-ai" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + (ann.xref || '') + '" data-annotation-page="' + ann.pageIdx + '" data-annotation-id="' + domId + '" data-annotation-stable-id="' + (stableId || '') + '" title="Revert to AI">' +
+                                            ? '<button class="btn btn-outline-warning btn-sm revert-annotation-to-ai" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + escapeHtmlAttribute(ann.xref || '') + '" data-annotation-page="' + pageIdx + '" data-annotation-id="' + domId + '" data-annotation-stable-id="' + (stableId || '') + '" title="Revert to AI">' +
                                                 '<span class="spinner-border spinner-border-sm d-none" role="status"></span>' +
                                                 '<i class="bi bi-arrow-counterclockwise"></i>' +
                                             '</button>'
                                             : ''
                                     ) +
-                                    '<button class="btn btn-outline-danger btn-sm delete-annotation" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + (ann.xref || '') + '" data-annotation-page="' + ann.pageIdx + '" data-annotation-id="' + domId + '" title="Delete comment">' +
+                                    '<button class="btn btn-outline-danger btn-sm delete-annotation" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + escapeHtmlAttribute(ann.xref || '') + '" data-annotation-page="' + pageIdx + '" data-annotation-id="' + domId + '" title="Delete comment">' +
                                         '<span class="spinner-border spinner-border-sm d-none" role="status"></span>' +
                                         '<i class="bi bi-trash"></i>' +
                                     '</button>' +

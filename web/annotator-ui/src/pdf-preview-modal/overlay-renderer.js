@@ -56,6 +56,13 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
         var resolveDisplayOrderFromLookup = _helpers.resolveDisplayOrderFromLookup || function () { return 1; };
         var observeAnnotationMarker = _helpers.observeAnnotationMarker || function () {};
         var makeAnnotationDraggable = _helpers.makeAnnotationDraggable || function () {};
+        var escapeCssAttribute = _helpers.escapeCssAttribute || UtilsModule.escapeCssAttribute || function (value) {
+            var text = String(value);
+            if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+                return CSS.escape(text);
+            }
+            return text.replace(/(["\\])/g, '\\$1');
+        };
         var DrawingCanvas = _helpers.DrawingCanvas || null;
 
         // -----------------------------------------------------------------
@@ -562,10 +569,11 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
         function scrollToAnnotationMarker(pageIdx, identifier) {
             if (_destroyed) return;
 
+            var escapedIdentifier = escapeCssAttribute(identifier);
             var marker = document.querySelector(
-                '.annotation-marker[data-annotation-page="' + pageIdx + '"][data-annotation-identifier="' + identifier + '"]'
+                '.annotation-marker[data-annotation-page="' + pageIdx + '"][data-annotation-identifier="' + escapedIdentifier + '"]'
             ) || document.querySelector(
-                '.annotation-marker[data-annotation-page="' + pageIdx + '"][data-annotation-xref="' + identifier + '"]'
+                '.annotation-marker[data-annotation-page="' + pageIdx + '"][data-annotation-xref="' + escapedIdentifier + '"]'
             );
 
             if (marker) {

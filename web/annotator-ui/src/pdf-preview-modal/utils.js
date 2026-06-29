@@ -145,8 +145,34 @@ window.PdfPreviewModalUtils = window.PdfPreviewModalUtils || {};
         if (text == null) return '';
         var div = document.createElement('div');
         div.textContent = String(text);
-        return div.innerHTML;  
+        return div.innerHTML;
     });
+
+    /**
+     * Escape a value for safe interpolation into a double-quoted HTML attribute.
+     *
+     * NOTE: escapeHtml() above (textContent -> innerHTML) only escapes &, < and >
+     * because double/single quotes are not special in element *text* content.
+     * That makes it UNSAFE for attribute context: a value containing a double
+     * quote can break out of the attribute and inject new attributes (DOM XSS).
+     * This helper additionally escapes " and ' so identifier/metadata values can
+     * be placed inside data-* (and other) attributes without breaking out. The
+     * encoded entities are transparently decoded back to the original value when
+     * read via element.dataset.* / getAttribute(), so attribute round-trips are
+     * lossless for the event-handler and CSS-selector lookups downstream.
+     *
+     * @param {*} value - Value to escape (null/undefined returns empty string)
+     * @returns {string} Attribute-safe escaped text
+     */
+    exports.escapeHtmlAttribute = function escapeHtmlAttribute(value) {
+        if (value == null) return '';
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    };
 
     // =========================================================================
     // Textarea Auto-Resize

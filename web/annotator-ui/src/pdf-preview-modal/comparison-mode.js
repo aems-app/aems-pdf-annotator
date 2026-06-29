@@ -38,6 +38,51 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
 
     var escapeHtml = getEscapeHtml();
 
+    function getEscapeCssAttribute() {
+        var UtilsModule = window.PdfPreviewModalUtils || {};
+        if (typeof UtilsModule.escapeCssAttribute === 'function') {
+            return UtilsModule.escapeCssAttribute;
+        }
+        return function escapeCssAttribute(value) {
+            var text = String(value);
+            if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+                return CSS.escape(text);
+            }
+            return text.replace(/(["\\])/g, '\\$1');
+        };
+    }
+
+    var escapeCssAttribute = getEscapeCssAttribute();
+
+    /**
+     * Attribute-context escaper. escapeHtml() (textContent -> innerHTML) does NOT
+     * escape quotes, so it is unsafe inside double-quoted attributes; this also
+     * encodes " and ' to prevent attribute-injection DOM XSS.
+     * @returns {Function}
+     */
+    function getEscapeHtmlAttribute() {
+        var UtilsModule = window.PdfPreviewModalUtils || {};
+        if (typeof UtilsModule.escapeHtmlAttribute === 'function') {
+            return UtilsModule.escapeHtmlAttribute;
+        }
+        return function escapeHtmlAttribute(value) {
+            if (value == null) return '';
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        };
+    }
+
+    var escapeHtmlAttribute = getEscapeHtmlAttribute();
+
+    function normalizePageNumber(value) {
+        var page = Number(value);
+        return Number.isFinite(page) && page >= 1 ? Math.trunc(page) : 1;
+    }
+
     // =========================================================================
     // Comparison Mode State
     // =========================================================================
@@ -430,7 +475,7 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
         // Render Model A annotations for current page
         if (exports.modelAVisible) {
             exports.comparisonData.annotationsA
-                .filter(ann => (ann.page || 1) === currentPage)
+                .filter(ann => normalizePageNumber(ann.page) === currentPage)
                 .forEach((ann, idx) => {
                     const isOverlap = overlapSet.has(ann.id);
                     createComparisonMarker(ann, 'A', isOverlap, idx);
@@ -440,7 +485,7 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
         // Render Model B annotations for current page
         if (exports.modelBVisible) {
             exports.comparisonData.annotationsB
-                .filter(ann => (ann.page || 1) === currentPage)
+                .filter(ann => normalizePageNumber(ann.page) === currentPage)
                 .forEach((ann, idx) => {
                     const isOverlap = overlapSet.has(ann.id);
                     createComparisonMarker(ann, 'B', isOverlap, idx);
@@ -459,7 +504,7 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
      * @param {number} idx - Index for positioning fallback
      */
     function createComparisonMarker(ann, model, isOverlap, idx) {
-        const page = ann.page || 1;
+        const page = normalizePageNumber(ann.page);
         const overlay = document.querySelector(`.pdf-page-wrapper[data-page="${page}"] .pdf-annotation-overlay`);
         if (!overlay) return;
 
@@ -631,7 +676,8 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
         if (!panel) return;
 
         try {
-            const item = panel.querySelector(`[data-feedback-id="${feedbackId}"]`);
+            const escapedFeedbackId = escapeCssAttribute(feedbackId);
+            const item = panel.querySelector(`[data-feedback-id="${escapedFeedbackId}"]`);
             if (item) {
                 // Remove active from all items
                 panel.querySelectorAll('.list-group-item').forEach(i => i.classList.remove('active'));
@@ -693,12 +739,14 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
             const itemClass = isOverlap ? 'source-overlap' : sourceClass;
             const comment = ann.comment || ann.content || '';
             const quote = ann.quote || '';
-            const page = ann.page || 1;
+            // Coerce to an integer so a non-numeric ann.page cannot break out of
+            // the data-page attribute / text below (attribute-injection DOM XSS).
+            const page = normalizePageNumber(ann.page);
             const feedbackId = ann.id || `ann-${model}-${idx}`;
 
             return `
                 <div class="list-group-item list-group-item-action ${itemClass} py-2"
-                     data-feedback-id="${escapeHtml(feedbackId)}"
+                     data-feedback-id="${escapeHtmlAttribute(feedbackId)}"
                      data-page="${page}"
                      tabindex="0">
                     <div class="d-flex justify-content-between align-items-start">
@@ -753,7 +801,9 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
         });
 
         // Find and highlight the target marker
-        const marker = document.querySelector(`.annotation-marker[data-feedback-id="${feedbackId}"][data-model="${model}"]`);
+        const escapedFeedbackId = escapeCssAttribute(feedbackId);
+        const escapedModel = escapeCssAttribute(model);
+        const marker = document.querySelector(`.annotation-marker[data-feedback-id="${escapedFeedbackId}"][data-model="${escapedModel}"]`);
         if (marker) {
             marker.classList.add('highlighted');
             marker.scrollIntoView({ behavior: 'smooth', block: 'center' });

@@ -106,6 +106,48 @@ describe('overlay-renderer', () => {
     expect(onMarkerClicked).toHaveBeenCalledWith({ pageIdx: 0, identifier: 'stable-1' });
   });
 
+  it('scrolls to markers with quote-bearing identifiers', async () => {
+    const payload = 'stable"quote';
+    const mod = await loadOverlayRendererModule();
+    const renderer = mod.createOverlayRenderer({
+      getAnnotationsData: () => ({
+        0: [
+          { id: payload, stable_id: payload, xref: 14, type: 'Text', rect: [10, 20, 60, 80], content: 'Quoted id', color: 'amber', source: 'AI' },
+        ],
+      }),
+      getSelectedAnnotation: () => ({ pageIdx: null, identifier: null }),
+      helpers: {
+        normalizeAnnotationIdentifierValue: (value) => value || '',
+        resolveAnnotationIdParts: ({ xref, identifier }) => ({ xref, stableId: identifier }),
+        resolveAnnotationIdentifierValue: (ann) => ann.id || ann.stable_id || '',
+        deriveAnnotationPriority: (ann) => ann.color || 'amber',
+        resolveAnnotationSource: (ann) => ann.source || 'AI',
+        isPlaceholderAnnotation: () => false,
+        isMarkupType: () => false,
+        renderCompactInlineLabelContent: (label, number, text) => {
+          label.textContent = number + ' ' + text;
+        },
+        positionLabelOptimally: () => {},
+        repositionAllLabels: () => {},
+        setupLabelTooltipEvents: () => {},
+        buildDisplayOrderByPagePosition: () => ({}),
+        resolveDisplayOrderFromLookup: () => 1,
+        observeAnnotationMarker: () => {},
+        makeAnnotationDraggable: () => {},
+      },
+      capabilities: { annotationCrud: true },
+    });
+
+    renderer.renderPage(1, true);
+    vi.runAllTimers();
+    const marker = document.querySelector('.annotation-marker');
+    marker.scrollIntoView = vi.fn();
+
+    expect(() => renderer.scrollToMarker(0, payload)).not.toThrow();
+    expect(marker.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
+    expect(marker.classList.contains('ownership-transferred')).toBe(true);
+  });
+
   it('renders compact labels as single-line preview pills', async () => {
     const mod = await loadOverlayRendererModule();
     const renderer = mod.createOverlayRenderer({

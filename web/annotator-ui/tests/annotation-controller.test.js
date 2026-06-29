@@ -2,9 +2,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const MODULE_PATH = '../src/pdf-preview-modal/annotation-controller.js';
 
+const UTILS_MODULE_PATH = '../src/pdf-preview-modal/utils.js';
+
 const loadAnnotationControllerModule = async () => {
   await import(new URL(MODULE_PATH, import.meta.url));
   return window.PdfPreviewModalAnnotationController;
+};
+
+const loadUtilsModule = async () => {
+  await import(new URL(UTILS_MODULE_PATH, import.meta.url));
+  return window.PdfPreviewModalUtils;
 };
 
 describe('annotation-controller state ownership', () => {
@@ -220,6 +227,114 @@ describe('annotation-controller state ownership', () => {
 
     const item = document.querySelector('.list-group-item');
     expect(item?.dataset.annotationRequestId).toBe('id:123');
+  });
+
+  it('attribute-escapes annotation identifiers so a quote in an id cannot inject a handler (XSS)', async () => {
+    document.body.innerHTML = `
+      <div id="pdfGradedContainer"></div>
+      <div id="pdfGradedCommentsList"></div>
+    `;
+    // Load the real utils so the canonical escapeHtmlAttribute is exercised.
+    const utils = await loadUtilsModule();
+    window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation = () => true;
+    delete window.__annXss;
+    const mod = await loadAnnotationControllerModule();
+    const payload = 'x" onmouseover="window.__annXss=1" data-z="';
+    let currentAnnotationsData = {};
+    const controller = mod.createAnnotationController({
+      annotationsState: {},
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      getCurrentSubmissionId: () => 1001,
+      getCurrentAssignmentId: () => 501,
+      helpers: {
+        escapeHtml: utils.escapeHtml,
+        escapeHtmlAttribute: utils.escapeHtmlAttribute,
+        resolveAnnotationSource: () => 'AI',
+        listAnnotationsRequest: vi.fn().mockResolvedValue({
+          success: true,
+          annotations: {
+            0: [{
+              pageIdx: 0,
+              id: payload,
+              stable_id: payload,
+              requestIdentifier: payload,
+              xref: payload,
+              grader_name: payload,
+              content: 'hello',
+            }],
+          },
+        }),
+        normalizeAnnotationsPayload: (data) => data,
+        refreshMarkupFromAnnotations: vi.fn(),
+      },
+    });
+
+    await controller.loadAnnotations();
+    controller.renderSidebar();
+
+    const listEl = document.getElementById('pdfGradedCommentsList');
+    const item = listEl.querySelector('.list-group-item');
+    expect(item).not.toBeNull();
+    // Attribute injection neutralised: no event handler / extra attribute leaked.
+    expect(listEl.querySelector('[onmouseover]')).toBeNull();
+    expect(item.getAttribute('onmouseover')).toBeNull();
+    expect(item.hasAttribute('data-z')).toBe(false);
+    // Identifiers still round-trip losslessly for downstream CRUD/selector lookups.
+    expect(item.dataset.annotationRequestId).toBe(payload);
+    expect(item.dataset.annotationStableId).toBe(payload);
+    // Firing the event the payload tried to register must not execute anything.
+    item.dispatchEvent(new window.Event('mouseover'));
+    expect(window.__annXss).toBeUndefined();
+  });
+
+  it('keeps sidebar edit mode working for quote-bearing annotation identifiers', async () => {
+    document.body.innerHTML = `
+      <div id="pdfGradedContainer"></div>
+      <div id="pdfGradedCommentsList"></div>
+    `;
+    const utils = await loadUtilsModule();
+    window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation = () => true;
+    const mod = await loadAnnotationControllerModule();
+    const payload = 'needs"quotes';
+    const rawDomId = `ann-0-${payload}`;
+    let currentAnnotationsData = {};
+    const controller = mod.createAnnotationController({
+      annotationsState: {},
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      getCurrentSubmissionId: () => 1001,
+      getCurrentAssignmentId: () => 501,
+      getEditingAnnotationId: () => rawDomId,
+      helpers: {
+        escapeHtml: utils.escapeHtml,
+        escapeHtmlAttribute: utils.escapeHtmlAttribute,
+        listAnnotationsRequest: vi.fn().mockResolvedValue({
+          success: true,
+          annotations: {
+            0: [{
+              pageIdx: 0,
+              id: payload,
+              stable_id: payload,
+              requestIdentifier: payload,
+              content: 'editable text',
+            }],
+          },
+        }),
+        normalizeAnnotationsPayload: (data) => data,
+        refreshMarkupFromAnnotations: vi.fn(),
+      },
+    });
+
+    await controller.loadAnnotations();
+    controller.renderSidebar();
+
+    const content = document.querySelector('.annotation-content');
+    const textarea = document.getElementById(`edit-annotation-text-${payload}`);
+    const saveButton = document.querySelector('.save-annotation-btn');
+    expect(content?.classList.contains('editing')).toBe(true);
+    expect(textarea).not.toBeNull();
+    expect(saveButton?.dataset.annotationIdentifier).toBe(payload);
   });
 
   it('uses the rendered button page when canceling a temporary edit', async () => {

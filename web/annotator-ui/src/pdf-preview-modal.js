@@ -695,20 +695,30 @@
         // Render annotations with page separators
         let lastPageIdx = null;
         const html = aiAnnotations.map((ann) => {
-            const xrefValue = normalizeAnnotationIdentifierValue(
+            const numericPageIdx = Number(ann.pageIdx);
+            const pageIdx = Number.isFinite(numericPageIdx) ? Math.trunc(numericPageIdx) : 0;
+            let xrefValue = normalizeAnnotationIdentifierValue(
                 typeof ann.xref === 'number' ? String(ann.xref) : ann.xref
             ) || '';
-            const stableId = extractAnnotationStableName(ann) || '';
+            let stableId = extractAnnotationStableName(ann) || '';
             const identifier = stableId || resolveAnnotationIdentifierValue(ann);
             const { xref: resolvedXref, stableId: resolvedStable } = resolveAnnotationIdParts({
                 xref: xrefValue,
                 requestId: ann.requestIdentifier,
                 identifier,
             });
-            const requestId = resolvedStable || resolvedXref || '';
-            // Escape identifiers for safe use in HTML attributes (prevent attribute injection)
-            const displayIdentifier = escapeHtml(requestId || `idx-${ann.indexOnPage}`);
-            const domId = escapeHtml(`ann-${ann.pageIdx}-${displayIdentifier}`);
+            let requestId = resolvedStable || resolvedXref || '';
+            const rawRequestId = requestId || `idx-${ann.indexOnPage}`;
+            const rawDomId = `ann-${pageIdx}-${rawRequestId}`;
+            // XSS hardening: attribute-escape identifiers before interpolating them
+            // into the data-* attributes below. escapeHtml() does NOT neutralise
+            // double quotes, so it is unsafe for attribute context.
+            const displayIdentifier = escapeHtmlAttribute(rawRequestId);
+            const domId = escapeHtmlAttribute(rawDomId);
+            requestId = escapeHtmlAttribute(requestId);
+            xrefValue = escapeHtmlAttribute(xrefValue);
+            stableId = escapeHtmlAttribute(stableId);
+            const isEditing = editingAnnotationId === rawDomId;
 
             // Determine priority from annotation data using helper function
             const priority = deriveAnnotationPriority(ann);
@@ -728,7 +738,7 @@
             const rawGraderName = ann.grader_name || ann.author_name || '';
             const graderName = formatGraderDisplayName(rawGraderName);
             const displayIndexOnPage = Number(ann.displayIndexOnPage || 1);
-            const commentId = `${ann.pageIdx + 1}.${displayIndexOnPage}`;
+            const commentId = `${pageIdx + 1}.${displayIndexOnPage}`;
 
             // Source badge HTML - Icon only
             const sourceBadgeHtml = `<span class="source-badge source-ai" title="AI-generated"><i class="bi bi-robot"></i></span>`;
@@ -736,52 +746,52 @@
             // Verdict indicator
             const isVerdict = !!ann.is_verdict;
             const verdictHtml = isVerdict
-                ? `<i class="bi bi-patch-check-fill verdict-indicator" title="Verdict comment" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${ann.pageIdx}"></i>`
-                : `<i class="bi bi-patch-check verdict-indicator verdict-inactive" title="Mark as verdict" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${ann.pageIdx}"></i>`;
+                ? `<i class="bi bi-patch-check-fill verdict-indicator" title="Verdict comment" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${pageIdx}"></i>`
+                : `<i class="bi bi-patch-check verdict-indicator verdict-inactive" title="Mark as verdict" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${pageIdx}"></i>`;
             const verdictClass = isVerdict ? ' is-verdict' : '';
 
             // Add page separator if this is a new page
             let separator = '';
-            if (lastPageIdx !== null && ann.pageIdx !== lastPageIdx) {
+            if (lastPageIdx !== null && pageIdx !== lastPageIdx) {
                 separator = `<div class="page-separator">
-                    <small class="text-muted d-block text-center page-separator-label">${translatePdfPreviewText('Page %(page)s', { page: ann.pageIdx + 1 })}</small>
+                    <small class="text-muted d-block text-center page-separator-label">${translatePdfPreviewText('Page %(page)s', { page: pageIdx + 1 })}</small>
                 </div>`;
             }
-            lastPageIdx = ann.pageIdx;
+            lastPageIdx = pageIdx;
 
             return `
                 ${separator}
-                <div class="list-group-item source-ai${verdictClass}" tabindex="0" data-annotation-id="${domId}" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-stable-id="${stableId}" data-annotation-page="${ann.pageIdx}" data-annotation-source="AI">
+                <div class="list-group-item source-ai${verdictClass}" tabindex="0" data-annotation-id="${domId}" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-stable-id="${stableId}" data-annotation-page="${pageIdx}" data-annotation-source="AI">
                     <div class="annotation-list-card">
                         <div class="annotation-meta-row">
                                 <span class="badge bg-${colorClass}">${commentId}</span>
                                 ${sourceBadgeHtml}
                                 ${verdictHtml}
-                                ${graderName ? `<small class="text-muted grader-name-badge" title="${escapeHtml(rawGraderName)}">${escapeHtml(graderName)}</small>` : ''}
-                                <div class="priority-dots d-flex gap-1" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${ann.pageIdx}">
+                                ${graderName ? `<small class="text-muted grader-name-badge" title="${escapeHtmlAttribute(rawGraderName)}">${escapeHtml(graderName)}</small>` : ''}
+                                <div class="priority-dots d-flex gap-1" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${pageIdx}">
                                     <span class="priority-dot priority-red ${priority === 'red' ? 'active' : ''}" data-priority="red" title="High priority"></span>
                                     <span class="priority-dot priority-amber ${priority === 'amber' ? 'active' : ''}" data-priority="amber" title="Medium priority"></span>
                                     <span class="priority-dot priority-green ${priority === 'green' ? 'active' : ''}" data-priority="green" title="Low priority"></span>
                                 </div>
                         </div>
-                        <div class="annotation-content ${editingAnnotationId === domId ? 'editing' : ''}" data-annotation-id="${domId}" data-annotation-identifier="${displayIdentifier}">
-                            ${editingAnnotationId === domId ? `
+                        <div class="annotation-content ${isEditing ? 'editing' : ''}" data-annotation-id="${domId}" data-annotation-identifier="${displayIdentifier}">
+                            ${isEditing ? `
                                 <textarea class="form-control form-control-sm mb-2 auto-resize-textarea" id="edit-annotation-text-${displayIdentifier}" rows="2" placeholder="Type your comment...">${editContent}</textarea>
                                 <div class="annotation-edit-actions d-flex flex-wrap gap-2">
                                     <button class="btn btn-primary btn-sm save-annotation-btn" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}">
                                         <span class="spinner-border spinner-border-sm d-none" role="status"></span>
                                         <span class="btn-text">Save</span>
                                     </button>
-                                    <button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${ann.pageIdx}">Cancel</button>
+                                    <button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${pageIdx}">Cancel</button>
                                 </div>
                             ` : displayContent}
                         </div>
-                        ${editingAnnotationId !== domId ? `
+                        ${!isEditing ? `
                         <div class="annotation-action-row d-flex flex-wrap gap-2 justify-content-end">
                              <button class="btn btn-outline-primary btn-sm edit-annotation"
                                     data-annotation-identifier="${displayIdentifier}"
                                      data-annotation-request-id="${requestId}"
-                                     data-annotation-page="${ann.pageIdx}"
+                                     data-annotation-page="${pageIdx}"
                                      data-annotation-id="${domId}"
                                      title="Edit comment">
                                 <i class="bi bi-pencil"></i>
@@ -790,8 +800,8 @@
                             <button class="btn btn-outline-warning btn-sm revert-annotation-to-ai"
                                     data-annotation-identifier="${displayIdentifier}"
                                     data-annotation-request-id="${requestId}"
-                                    data-annotation-xref="${ann.xref || ''}"
-                                    data-annotation-page="${ann.pageIdx}"
+                                    data-annotation-xref="${escapeHtmlAttribute(ann.xref || '')}"
+                                    data-annotation-page="${pageIdx}"
                                     data-annotation-id="${domId}"
                                     data-annotation-stable-id="${stableId || ''}"
                                     title="Revert to AI">
@@ -802,8 +812,8 @@
                             <button class="btn btn-outline-danger btn-sm delete-annotation"
                                     data-annotation-identifier="${displayIdentifier}"
                                     data-annotation-request-id="${requestId}"
-                                    data-annotation-xref="${ann.xref || ''}"
-                                    data-annotation-page="${ann.pageIdx}"
+                                    data-annotation-xref="${escapeHtmlAttribute(ann.xref || '')}"
+                                    data-annotation-page="${pageIdx}"
                                     data-annotation-id="${domId}"
                                     title="Delete comment">
                                 <span class="spinner-border spinner-border-sm d-none" role="status"></span>
@@ -905,10 +915,11 @@
         if (_currentOverlayRenderer) return _currentOverlayRenderer.scrollToMarker(pageIdx, identifier);
 
         // Find the marker element
+        const escapedIdentifier = escapeCssAttribute(identifier);
         const marker = document.querySelector(
-            `.annotation-marker[data-annotation-page="${pageIdx}"][data-annotation-identifier="${identifier}"]`
+            `.annotation-marker[data-annotation-page="${pageIdx}"][data-annotation-identifier="${escapedIdentifier}"]`
         ) || document.querySelector(
-            `.annotation-marker[data-annotation-page="${pageIdx}"][data-annotation-xref="${identifier}"]`
+            `.annotation-marker[data-annotation-page="${pageIdx}"][data-annotation-xref="${escapedIdentifier}"]`
         );
 
         if (marker) {
@@ -4164,6 +4175,22 @@
             return div.innerHTML;
         };
 
+    // Attribute-context escaper. escapeHtml() (textContent -> innerHTML) only
+    // escapes &, < and > -- NOT quotes -- so it is unsafe for values placed
+    // inside double-quoted HTML attributes. Prefer UtilsModule's shared
+    // implementation; fall back to a local one for standalone usage.
+    var escapeHtmlAttribute = (UtilsModule && typeof UtilsModule.escapeHtmlAttribute === 'function')
+        ? UtilsModule.escapeHtmlAttribute
+        : function (value) {
+            if (value == null) return '';
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        };
+
     /**
      * Setup auto-resize for a textarea element - delegates to module
      */
@@ -6113,7 +6140,8 @@
                         let marker = null;
                         const identifiersToTry = [lookupIdentifier, stableIdentifier];
                         for (const id of identifiersToTry) {
-                            const markerSelector = `.annotation-marker[data-annotation-page="${pageIdx}"][data-annotation-request-id="${id}"], .annotation-marker[data-annotation-page="${pageIdx}"][data-annotation-identifier="${id}"]`;
+                            const escapedId = escapeCssAttribute(id);
+                            const markerSelector = `.annotation-marker[data-annotation-page="${pageIdx}"][data-annotation-request-id="${escapedId}"], .annotation-marker[data-annotation-page="${pageIdx}"][data-annotation-identifier="${escapedId}"]`;
                             marker = document.querySelector(markerSelector);
                             if (marker) break;
                         }
@@ -8250,6 +8278,7 @@
                     findAnnotationIndex: findAnnotationIndex,
                     translatePdfPreviewText: translatePdfPreviewText,
                     escapeHtml: escapeHtml,
+                    escapeHtmlAttribute: escapeHtmlAttribute,
                     escapeCssAttribute: escapeCssAttribute,
                     formatGraderDisplayName: formatGraderDisplayName,
                     showToast: showToast,
