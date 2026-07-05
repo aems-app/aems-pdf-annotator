@@ -1634,7 +1634,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }, 50);
         }
 
-        async function createTemporaryAnnotation(rect, pageIdx) {
+        async function createTemporaryAnnotation(rect, pageIdx, options) {
             if (!_getCurrentSubmissionId()) {
                 if (_h.showToast) {
                     _h.showToast('error', 'Select a submission first.');
@@ -1653,6 +1653,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var targetPage = (typeof pageIdx === 'number' && !Number.isNaN(pageIdx))
                 ? pageIdx
                 : Math.max(0, (viewer.currentPage || 1) - 1);
+            var apiRect = options && Array.isArray(options.apiRect) ? options.apiRect : rect;
             var tempXref = '_tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
             var tempStableId = 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
             var optimisticAnnotation = _h.enhanceAnnotationEntry
@@ -1910,7 +1911,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         page_index: targetPage,
                         color: 'amber',
                         kind: 'text',
-                        rect: rect,
+                        rect: apiRect,
                         canvas_user_name: _canvasUserName || null,
                     });
 

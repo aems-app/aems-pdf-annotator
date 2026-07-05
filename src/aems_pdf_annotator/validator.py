@@ -142,6 +142,21 @@ class AnnotationValidator:
             page_width, page_height = self.page_dimensions[page_index]
 
             if not bbox.is_within_bounds(page_width, page_height):
+                clamped_bbox = bbox.clamp_to_bounds(page_width, page_height)
+                if not clamped_bbox.is_valid():
+                    issues.append(
+                        BBoxIssue(
+                            severity=BBoxIssueSeverity.ERROR,
+                            annotation_id=annotation_id,
+                            page_index=page_index,
+                            message=(
+                                f"BBox outside page bounds clamps to zero area: {bbox.to_rect()} "
+                                f"(page: {page_width}x{page_height})"
+                            ),
+                            suggestion="Move the annotation inside the page bounds",
+                        )
+                    )
+                    return issues
                 issues.append(
                     BBoxIssue(
                         severity=BBoxIssueSeverity.WARNING,
@@ -268,6 +283,8 @@ class AnnotationValidator:
             # Clamp bbox to page bounds
             if not annotation.bbox.is_within_bounds(page_width, page_height):
                 fixed_bbox = annotation.bbox.clamp_to_bounds(page_width, page_height)
+                if not fixed_bbox.is_valid():
+                    return annotation
 
                 # Create new annotation with fixed bbox
                 return PDFAnnotation(**{**annotation.model_dump(), "bbox": fixed_bbox})

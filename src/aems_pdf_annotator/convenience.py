@@ -54,7 +54,8 @@ def apply_annotations(
 
     final_output_path = output_path
     write_output_path = output_path
-    if final_output_path == pdf_path:
+    same_output = final_output_path.resolve() == pdf_path.resolve()
+    if same_output:
         write_output_path = final_output_path.with_name(
             f"{final_output_path.stem}.{uuid.uuid4().hex}.tmp{final_output_path.suffix}"
         )
@@ -64,7 +65,7 @@ def apply_annotations(
         saved_path = annotator.save(write_output_path)
 
     saved_path = Path(saved_path)
-    if final_output_path == pdf_path:
+    if same_output:
         os.replace(str(saved_path), str(final_output_path))
         saved_path = final_output_path
 

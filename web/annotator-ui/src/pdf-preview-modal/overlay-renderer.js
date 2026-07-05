@@ -49,6 +49,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
         var isPlaceholderAnnotation = _helpers.isPlaceholderAnnotation || function () { return false; };
         var isMarkupType = _helpers.isMarkupType || function () { return false; };
         var renderCompactInlineLabelContent = _helpers.renderCompactInlineLabelContent || function () {};
+        var collapseInlineLabel = _helpers.collapseInlineLabel || function () {};
         var positionLabelOptimally = _helpers.positionLabelOptimally || function () {};
         var repositionAllLabels = _helpers.repositionAllLabels || function () {};
         var setupLabelTooltipEvents = _helpers.setupLabelTooltipEvents || function () {};
@@ -56,6 +57,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
         var resolveDisplayOrderFromLookup = _helpers.resolveDisplayOrderFromLookup || function () { return 1; };
         var observeAnnotationMarker = _helpers.observeAnnotationMarker || function () {};
         var makeAnnotationDraggable = _helpers.makeAnnotationDraggable || function () {};
+        var isAnnotationDragging = _helpers.isAnnotationDragging || function () { return false; };
         var escapeCssAttribute = _helpers.escapeCssAttribute || UtilsModule.escapeCssAttribute || function (value) {
             var text = String(value);
             if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
@@ -134,6 +136,19 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                 viewport.height,
                 Number(viewport.scale) || 1,
                 (viewer && Number(viewer.zoom)) || 1,
+                pageAnnotations.map(function (ann) {
+                    return [
+                        ann.xref,
+                        ann.stable_id,
+                        ann.id,
+                        ann.content,
+                        ann.comment,
+                        ann.color,
+                        ann.priority,
+                        ann.source,
+                        ann.is_verdict,
+                    ].join('|');
+                }).join('||'),
             ].join(':');
 
             // Optimization: check if markers already match (skip unnecessary re-creation)
@@ -151,6 +166,15 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                     }
                     // Otherwise fall through to set up handler even though markers match
                 }
+            }
+
+            var editingLabel = overlay.querySelector('.annotation-label.label-editing');
+            if (editingLabel) {
+                collapseInlineLabel(editingLabel);
+            }
+
+            if (isAnnotationDragging()) {
+                return;
             }
 
             // Clear existing annotations in this overlay
@@ -532,15 +556,24 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             // Create annotation rect centered at click point
             var pdfIconWidth = TEXT_ICON_SIZE / scaleX / viewport.scale;
             var pdfIconHeight = TEXT_ICON_SIZE / scaleY / viewport.scale;
+            var viewBox = viewport.viewBox || [0, 0, viewport.width / viewport.scale, viewport.height / viewport.scale];
+            var pageHeight = Math.abs((viewBox[3] || 0) - (viewBox[1] || 0)) || (viewport.height / viewport.scale);
+            var topLeftPoint = [pdfPoint[0], pageHeight - pdfPoint[1]];
 
-            var newRect = [
+            var displayRect = [
+                topLeftPoint[0] - pdfIconWidth / 2,
+                topLeftPoint[1] - pdfIconHeight / 2,
+                topLeftPoint[0] + pdfIconWidth / 2,
+                topLeftPoint[1] + pdfIconHeight / 2
+            ];
+            var apiRect = [
                 pdfPoint[0] - pdfIconWidth / 2,
                 pdfPoint[1] - pdfIconHeight / 2,
                 pdfPoint[0] + pdfIconWidth / 2,
                 pdfPoint[1] + pdfIconHeight / 2
             ];
 
-            _emit('onOverlayDblClicked', { rect: newRect, pageIdx: pageIdx });
+            _emit('onOverlayDblClicked', { rect: displayRect, apiRect: apiRect, pageIdx: pageIdx });
         }
 
         // -----------------------------------------------------------------

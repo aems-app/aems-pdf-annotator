@@ -120,7 +120,7 @@ def _format_pdf_datetime(value: Optional[datetime] = None) -> str:
     """Format datetime to PDF date string: D:YYYYMMDDHHmmSS+HH'mm'."""
     dt = value or datetime.now(timezone.utc)
     if dt.tzinfo is None or dt.utcoffset() is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone()
 
     offset = dt.utcoffset() or timedelta(0)
     sign = "+" if offset >= timedelta(0) else "-"
@@ -154,6 +154,22 @@ def _rgb_ints_to_floats(
     if rgb is None or len(rgb) != 3:
         return None
     return (rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)
+
+
+def _color_name_from_rgb(stroke: Any) -> str:
+    """Classify PyMuPDF stroke RGB as an annotation color name."""
+    if not isinstance(stroke, (list, tuple)) or len(stroke) < 3:
+        return "amber"
+    r, g, b = float(stroke[0]), float(stroke[1]), float(stroke[2])
+    if r > 0.8 and g < 0.4:
+        return "red"
+    if r > 0.8 and g > 0.75 and b < 0.25:
+        return "yellow"
+    if r > 0.8 and g > 0.4:
+        return "amber"
+    if r < 0.4 and g > 0.5:
+        return "green"
+    return "amber"
 
 
 def _parse_rgb_token(token: str) -> Optional[List[int]]:
@@ -1105,18 +1121,7 @@ class PDFAnnotator:
                 # Determine current color name from RGB stroke
                 old_colors = annot.colors or {}
                 old_stroke = old_colors.get("stroke")
-                current_color_name = None
-                if old_stroke and len(old_stroke) >= 3:
-                    r, g, _b = old_stroke[0], old_stroke[1], old_stroke[2]
-                    # Match the same logic used in get_annotations_on_page
-                    if r > 0.8 and g < 0.4:
-                        current_color_name = "red"
-                    elif r > 0.8 and g > 0.4:
-                        current_color_name = "amber"
-                    elif r < 0.4 and g > 0.5:
-                        current_color_name = "green"
-                    else:
-                        current_color_name = "amber"  # default
+                current_color_name = _color_name_from_rgb(old_stroke)
 
                 # Check if anything ACTUALLY changed
                 content_changed = (
@@ -1136,7 +1141,26 @@ class PDFAnnotator:
                 page_changed = (
                     new_page_index is not None and new_page_index != page_index
                 )
-                points_changed = new_points is not None
+                old_points = None
+                if new_points is not None:
+                    try:
+                        old_points = self._extract_ink_points_pdf(
+                            annot,
+                            page.rect.height if page else 792.0,
+                        )
+                    except Exception:
+                        old_points = None
+                points_changed = new_points is not None and (
+                    old_points is None
+                    or [
+                        [round(float(pt[0]), 3), round(float(pt[1]), 3)]
+                        for pt in new_points
+                    ]
+                    != [
+                        [round(float(pt[0]), 3), round(float(pt[1]), 3)]
+                        for pt in old_points
+                    ]
+                )
 
                 # Transfer ownership if ANY field actually changed
                 if (
@@ -1544,7 +1568,14 @@ class PDFAnnotator:
                 new_annot = target_page.add_underline_annot(rect)
             elif is_text:
                 position = fitz.Point(rect.x0, rect.y0)
-                new_annot = target_page.add_text_annot(position, content)
+                icon = subject_metadata.get("icon") or "Note"
+                new_annot = target_page.add_text_annot(position, content, icon=icon)
+                source_opacity = getattr(annot, "opacity", None)
+                if source_opacity is not None:
+                    try:
+                        new_annot.set_opacity(float(source_opacity))
+                    except (TypeError, ValueError):
+                        pass
             elif is_freetext:
                 textbox_rgb = new_stroke_color_rgb or subject_metadata.get(
                     "textbox_color_rgb"
@@ -1812,8 +1843,10 @@ class PDFAnnotator:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
+            output_resolved = output_path.resolve()
+            source_resolved = self.pdf_path.resolve()
             # Use incremental save if overwriting, or full save if new file
-            if output_path == self.pdf_path:
+            if output_resolved == source_resolved:
                 # Touch annotation info dicts so PyMuPDF flushes pending
                 # metadata writes before the incremental save.
                 for page_num in range(self.doc.page_count):
@@ -1865,21 +1898,7 @@ class PDFAnnotator:
                 # Map color to our color names
                 colors = annot.colors or {}
                 stroke = colors.get("stroke", (0, 0, 0))
-                if isinstance(stroke, (list, tuple)) and len(stroke) >= 3:
-                    r, g, _b = stroke[0], stroke[1], stroke[2]
-                    # Red: high red, low green
-                    if r > 0.8 and g < 0.4:
-                        color = "red"
-                    # Amber: high red AND medium-high green (e.g., 1.0, 0.647, 0.0)
-                    elif r > 0.8 and g > 0.4:
-                        color = "amber"
-                    # Green: low red, high green
-                    elif r < 0.4 and g > 0.5:
-                        color = "green"
-                    else:
-                        color = "amber"  # default
-                else:
-                    color = "amber"
+                color = _color_name_from_rgb(stroke)
 
                 subject_metadata = _decode_subject_metadata(info.get("subject", ""))
                 stable_id = subject_metadata.get("stable_id")

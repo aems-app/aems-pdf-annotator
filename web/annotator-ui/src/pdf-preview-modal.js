@@ -3931,7 +3931,21 @@
                 };
                 if (snap.stroke_color_rgb) body.stroke_color_rgb = snap.stroke_color_rgb;
                 if (snap.rect) body.rect = snap.rect;
-                if (snap.points) body.points = snap.points;
+                if (snap.points) {
+                    const viewer = window.__pdfGradedViewer;
+                    const viewport = viewer && viewer.getViewportForPage
+                        ? viewer.getViewportForPage(operation.pageIdx + 1)
+                        : null;
+                    body.points = snap.points.map(function (pt) {
+                        if (Array.isArray(pt)) {
+                            return pt;
+                        }
+                        if (viewport && typeof viewport.convertToPdfPoint === 'function') {
+                            return viewport.convertToPdfPoint(pt.x, pt.y);
+                        }
+                        return [pt.x, pt.y];
+                    });
+                }
                 try {
                     const data = await createAnnotationRequest(body);
                     if (data.success && data.annotation) {
@@ -5200,11 +5214,11 @@
         throw new Error('Overlay renderer must be initialized before rendering a page overlay.');
     }
 
-    async function createTemporaryAnnotation(rect, pageIdx) {
+    async function createTemporaryAnnotation(rect, pageIdx, options) {
         if (!_currentAnnotationCtrl || !_currentAnnotationCtrl.createTemporaryAnnotation || _annotationCtrlDelegating) {
             throw new Error('Annotation controller must be initialized before creating annotations.');
         }
-        return _currentAnnotationCtrl.createTemporaryAnnotation(rect, pageIdx);
+        return _currentAnnotationCtrl.createTemporaryAnnotation(rect, pageIdx, options);
     }
 
     /**
@@ -5354,8 +5368,12 @@
         // Fix 4A: Cache page wrapper rects at drag start to avoid per-mousemove DOM queries
         let cachedPageRects = [];
 
-        // Clean up any existing handlers
-        cleanupDragHandlers();
+        // Clean up stale handlers only when no drag is in flight. Re-renders
+        // during an active drag recreate markers and must not detach the live
+        // document mousemove/mouseup listeners.
+        if (!_isDraggingAnnotation) {
+            cleanupDragHandlers();
+        }
 
         const handleMouseMove = (e) => {
             if (!isDragging) return;
@@ -8149,6 +8167,7 @@
                         return CrudRef && CrudRef.isMarkupType ? CrudRef.isMarkupType(type) : false;
                     },
                     renderCompactInlineLabelContent: renderCompactInlineLabelContent,
+                    collapseInlineLabel: collapseInlineLabel,
                     positionLabelOptimally: positionLabelOptimally,
                     repositionAllLabels: repositionAllLabels,
                     setupLabelTooltipEvents: setupLabelTooltipEvents,
@@ -8156,6 +8175,7 @@
                     resolveDisplayOrderFromLookup: resolveDisplayOrderFromLookup,
                     observeAnnotationMarker: observeAnnotationMarker,
                     makeAnnotationDraggable: makeAnnotationDraggable,
+                    isAnnotationDragging: function () { return _isDraggingAnnotation; },
                     DrawingCanvas: DrawingCanvas,
                 },
                 capabilities: state.options.capabilities,
@@ -8203,11 +8223,12 @@
             });
 
             _currentOverlayRenderer.onOverlayDblClicked(function (data) {
+                var createOptions = data.apiRect ? { apiRect: data.apiRect } : undefined;
                 if (_currentAnnotationCtrl && _currentAnnotationCtrl.createTemporaryAnnotation) {
-                    _currentAnnotationCtrl.createTemporaryAnnotation(data.rect, data.pageIdx);
+                    _currentAnnotationCtrl.createTemporaryAnnotation(data.rect, data.pageIdx, createOptions);
                     return;
                 }
-                createTemporaryAnnotation(data.rect, data.pageIdx);
+                createTemporaryAnnotation(data.rect, data.pageIdx, createOptions);
             });
 
             _currentOverlayRenderer.onOverlayReady(function (_data) {

@@ -212,6 +212,13 @@ class PDFAnnotation(BaseModel):
     stroke_opacity: Optional[float] = None  # 0.0-1.0
     stroke_color_rgb: Optional[List[int]] = None  # [r, g, b] 0-255
 
+    @field_validator("page_index")
+    @classmethod
+    def validate_page_index(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("page_index must be non-negative")
+        return v
+
     @field_validator("drawing_style")
     @classmethod
     def validate_drawing_style(cls, v: Optional[str]) -> Optional[str]:
