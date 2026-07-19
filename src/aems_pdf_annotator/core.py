@@ -11,7 +11,7 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, Union
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Type, Union
 
 try:
     from aems_pdf_annotator._fitz import fitz  # PyMuPDF
@@ -211,6 +211,7 @@ def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
         "stroke_opacity": None,
         "stroke_color_rgb": None,
         "textbox_color_rgb": None,
+        "anchor_text": None,
     }
     if not subject_text:
         return metadata
@@ -268,6 +269,16 @@ def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
         if token.startswith("T:"):
             metadata["textbox_color_rgb"] = _parse_rgb_token(token[2:])
             continue
+        if token.startswith("A:"):
+            # anchor_text is base64-encoded within its token so the verbatim
+            # phrase can contain '|', ':' or '#' without breaking tokenisation.
+            try:
+                metadata["anchor_text"] = (
+                    base64.b64decode(token[2:]).decode("utf-8") or None
+                )
+            except Exception:
+                logger.debug("Invalid anchor_text token: %s", token)
+            continue
         if (
             metadata["original_source"] is None
             and token in {"AI", "HUMAN"}
@@ -290,6 +301,7 @@ def _encode_subject_metadata(
     stroke_opacity: Optional[float] = None,
     stroke_color_rgb: Optional[Sequence[int]] = None,
     textbox_color_rgb: Optional[Sequence[int]] = None,
+    anchor_text: Optional[str] = None,
 ) -> str:
     """Encode stable ID and metadata into the PDF annotation subject field."""
     tokens = [source]
@@ -300,6 +312,10 @@ def _encode_subject_metadata(
         metadata_tokens.append(f"I:{icon}")
     if check_id:
         metadata_tokens.append(f"C:{check_id}")
+    if anchor_text:
+        # base64 the verbatim phrase so it can contain any delimiter safely.
+        encoded_anchor = base64.b64encode(anchor_text.encode("utf-8")).decode("ascii")
+        metadata_tokens.append(f"A:{encoded_anchor}")
     if drawing_style:
         stroke_w = 2.0 if stroke_width is None else stroke_width
         stroke_o = 1.0 if stroke_opacity is None else stroke_opacity
@@ -320,6 +336,50 @@ def _encode_subject_metadata(
 
     encoded_payload = base64.b64encode("|".join(tokens).encode("utf-8")).decode("ascii")
     return f"{stable_id}#{encoded_payload}"
+
+
+def _flatten_points(obj: Any) -> Iterator[Tuple[float, float]]:
+    """Yield (x, y) leaf points from an arbitrarily nested vertices structure.
+
+    PyMuPDF exposes text-markup ``QuadPoints`` as ``annot.vertices`` in a shape
+    that varies by version: a flat list of ``fitz.Point`` (4 per quad) in older
+    builds, or a list of per-quad point groups in newer ones. Flattening first
+    lets the caller chunk uniformly into 4-point quads.
+    """
+    if hasattr(obj, "x") and hasattr(obj, "y"):
+        try:
+            yield (float(obj.x), float(obj.y))
+        except (TypeError, ValueError):
+            return
+        return
+    if isinstance(obj, (list, tuple)):
+        if len(obj) == 2 and all(isinstance(v, (int, float)) for v in obj):
+            yield (float(obj[0]), float(obj[1]))
+            return
+        for sub in obj:
+            yield from _flatten_points(sub)
+
+
+def _extract_markup_quads(annot: Any) -> List[List[float]]:
+    """Extract per-line quad rects from a text-markup annotation.
+
+    Highlights (and underline/strikeout/squiggly) store one quad per text line in
+    ``QuadPoints``. Returns a list of ``[x0, y0, x1, y1]`` rects in the same
+    top-left page space as ``BBox`` — one per highlighted line, in document order.
+    Returns an empty list when no quad geometry is present.
+    """
+    vertices = getattr(annot, "vertices", None)
+    if not vertices:
+        return []
+
+    points = list(_flatten_points(vertices))
+    quads: List[List[float]] = []
+    for i in range(0, len(points) - 3, 4):
+        group = points[i : i + 4]
+        xs = [p[0] for p in group]
+        ys = [p[1] for p in group]
+        quads.append([min(xs), min(ys), max(xs), max(ys)])
+    return quads
 
 
 class PDFAnnotator:
@@ -402,8 +462,19 @@ class PDFAnnotator:
 
             # Add annotation based on type
             if annotation.kind == AnnotationType.HIGHLIGHT:
-                rect = fitz.Rect(annotation.bbox.to_rect())
-                annot = page.add_highlight_annot(rect)
+                # A phrase that wraps across lines is highlighted with one quad
+                # per line so the highlight follows the text instead of covering
+                # the whole paragraph block. ``quads`` are per-line rects in the
+                # same top-left space as ``bbox``; fall back to the single union
+                # rect when no per-line geometry was supplied.
+                highlight_quads = getattr(annotation, "quads", None)
+                if highlight_quads:
+                    quad_rects = [fitz.Rect(q.to_rect()) for q in highlight_quads]
+                    annot = page.add_highlight_annot(quad_rects)
+                else:
+                    annot = page.add_highlight_annot(
+                        fitz.Rect(annotation.bbox.to_rect())
+                    )
                 annot.set_colors(stroke=rgb)
 
             elif annotation.kind == AnnotationType.SQUIGGLY:
@@ -528,6 +599,7 @@ class PDFAnnotator:
                             if annotation.kind == AnnotationType.TEXTBOX
                             else None
                         ),
+                        anchor_text=getattr(annotation, "anchor_text", None),
                     )
                     _safe_set_info(annot, "subject", subject_value)
                     annot.update()
@@ -580,9 +652,14 @@ class PDFAnnotator:
                     date_error,
                 )
 
-            # Add comment to all annotation types (except text which has it built-in)
+            # Add comment to all annotation types (except text which has it built-in).
+            # include_check_id MUST be False: the content is student-facing and the
+            # check_id is already round-tripped via the subject metadata. This was a
+            # dormant legacy True until text-anchored HIGHLIGHTs (a non-TEXT kind)
+            # started rendering, at which point it leaked "[Q2-01]" onto every
+            # highlight (2026-07-18 live-audit defect).
             if annotation.kind != AnnotationType.TEXT:
-                formatted_comment = annotation.format_comment(include_check_id=True)
+                formatted_comment = annotation.format_comment(include_check_id=False)
                 if formatted_comment:
                     try:
                         _safe_set_info(annot, "content", formatted_comment)
@@ -731,6 +808,134 @@ class PDFAnnotator:
         except Exception as e:
             logger.error(
                 "Failed to replace drawing annotation %s: %s", annotation_identifier, e
+            )
+            return False
+
+    def _replace_highlight_annotation(
+        self,
+        page_index: int,
+        annot: Any,
+        annotation_identifier: str,
+        new_quads: Optional[List[List[float]]],
+        new_content: Optional[str],
+        new_color: Optional[str],
+        grader_name: Optional[str],
+        new_source: Optional[str],
+        new_is_verdict: Optional[bool],
+        new_anchor_text: Optional[str],
+    ) -> Union[bool, Tuple[bool, Optional[int], Optional[int]]]:
+        """Recreate a text-anchored highlight with new per-line quads.
+
+        Highlights are quad-based, so an extend/shorten edit that changes the
+        highlighted span cannot be applied with ``set_rect``; the annotation is
+        deleted and re-created with the new quad geometry while preserving its
+        stable id, check_id, comment, verdict, grader, anchor phrase and colour.
+        Returns ``(success, page_index, new_xref)`` so callers learn the
+        recreated annotation's xref (PyMuPDF reassigns it).
+        """
+        if self.doc is None:
+            return False
+
+        page = self.doc[page_index]
+        info = annot.info or {}
+        metadata = _decode_subject_metadata(info.get("subject", ""))
+
+        quad_source = new_quads if new_quads else _extract_markup_quads(annot)
+        quad_rects: List[Any] = []
+        for quad in quad_source or []:
+            if isinstance(quad, (list, tuple)) and len(quad) >= 4:
+                try:
+                    quad_rects.append(
+                        fitz.Rect(
+                            float(quad[0]),
+                            float(quad[1]),
+                            float(quad[2]),
+                            float(quad[3]),
+                        )
+                    )
+                except (TypeError, ValueError):
+                    continue
+        if not quad_rects:
+            # Never drop the annotation entirely; fall back to the union rect.
+            if annot.rect:
+                quad_rects = [fitz.Rect(annot.rect)]
+            else:
+                logger.error(
+                    "Cannot replace highlight %s without geometry",
+                    annotation_identifier,
+                )
+                return False
+
+        if new_color is not None:
+            color_map = {
+                "red": (1.0, 0.0, 0.0),
+                "amber": (1.0, 0.647, 0.0),
+                "yellow": (1.0, 0.9, 0.0),
+                "green": (0.0, 0.784, 0.0),
+            }
+            stroke_rgb = color_map.get(new_color.lower())
+        else:
+            stroke_rgb = None
+        if stroke_rgb is None:
+            old_colors = annot.colors or {}
+            stroke_rgb = old_colors.get("stroke") or (1.0, 0.647, 0.0)
+
+        try:
+            new_annot = page.add_highlight_annot(quad_rects)
+            new_annot.set_colors(stroke=stroke_rgb)
+
+            effective_grader_name = grader_name or info.get("title")
+            if effective_grader_name:
+                _safe_set_info(
+                    new_annot,
+                    "title",
+                    _normalize_pdf_author_name(str(effective_grader_name)),
+                )
+
+            effective_source = new_source or metadata.get("source") or "AI"
+            original_source_to_store = metadata.get("original_source")
+            if effective_source == "HUMAN" and not original_source_to_store:
+                original_source_to_store = metadata.get("source") or "AI"
+
+            anchor_to_store = (
+                new_anchor_text
+                if new_anchor_text is not None
+                else metadata.get("anchor_text")
+            )
+
+            subject_value = _encode_subject_metadata(
+                metadata.get("stable_id") or str(uuid.uuid4()),
+                effective_source,
+                check_id=metadata.get("check_id"),
+                original_source=original_source_to_store,
+                is_verdict=(
+                    bool(metadata.get("is_verdict"))
+                    if new_is_verdict is None
+                    else bool(new_is_verdict)
+                ),
+                icon=metadata.get("icon"),
+                anchor_text=anchor_to_store,
+            )
+            _safe_set_info(new_annot, "subject", subject_value)
+
+            creation_date = info.get("creationDate")
+            if creation_date:
+                _safe_set_info(new_annot, "creationDate", str(creation_date))
+            _safe_set_info(new_annot, "modDate", _format_pdf_datetime())
+
+            content = info.get("content") if new_content is None else new_content
+            if content:
+                _safe_set_info(new_annot, "content", str(content))
+
+            new_annot.update()
+            new_xref = new_annot.xref if hasattr(new_annot, "xref") else None
+            page.delete_annot(annot)
+            return (True, page_index, new_xref)
+        except Exception as e:
+            logger.error(
+                "Failed to replace highlight annotation %s: %s",
+                annotation_identifier,
+                e,
             )
             return False
 
@@ -1038,6 +1243,8 @@ class PDFAnnotator:
         new_is_verdict: Optional[bool] = None,
         new_points: Optional[List[List[float]]] = None,
         new_stroke_color_rgb: Optional[List[int]] = None,
+        new_quads: Optional[List[List[float]]] = None,
+        new_anchor_text: Optional[str] = None,
     ) -> Union[bool, Tuple[bool, Optional[int], Optional[int]]]:
         """
         Update an existing annotation's content, position, color, and/or page using a stable ID or xref.
@@ -1162,6 +1369,9 @@ class PDFAnnotator:
                     ]
                 )
 
+                quads_changed = new_quads is not None
+                anchor_changed = new_anchor_text is not None
+
                 # Transfer ownership if ANY field actually changed
                 if (
                     content_changed
@@ -1169,6 +1379,8 @@ class PDFAnnotator:
                     or position_changed
                     or page_changed
                     or points_changed
+                    or quads_changed
+                    or anchor_changed
                 ):
                     new_source = "HUMAN"
                     logger.info(
@@ -1181,6 +1393,28 @@ class PDFAnnotator:
                         page_changed,
                         points_changed,
                     )
+
+        # Defensive: a same-page rect update on a multi-line text-anchored
+        # highlight that does NOT supply new_quads must not collapse its per-line
+        # geometry into a single union box (the recreate branch below rebuilds a
+        # highlight from one rect). Preserve the existing quads so the highlight
+        # stays anchored line-by-line. Anchored highlights are never moved
+        # cross-page via the UI (they are tethered), so the cross-page path is
+        # left untouched.
+        _annot_type_code_pre = annot.type[0] if hasattr(annot, "type") else None
+        _is_cross_page_move = (
+            new_page_index is not None and new_page_index != page_index
+        )
+        if (
+            _annot_type_code_pre == fitz.PDF_ANNOT_HIGHLIGHT
+            and new_quads is None
+            and new_rect is not None
+            and not _is_cross_page_move
+        ):
+            _existing_quads = _extract_markup_quads(annot)
+            if len(_existing_quads) > 1:
+                new_quads = _existing_quads
+                new_rect = None
 
         # Check if moving to a different page
         if new_page_index is not None and new_page_index != page_index:
@@ -1210,6 +1444,27 @@ class PDFAnnotator:
 
         try:
             annot_type_code = annot.type[0] if hasattr(annot, "type") else None
+
+            # Extend/shorten of a text-anchored highlight ships new per-line quads
+            # (and possibly a new anchor phrase). Highlights are quad-based, so
+            # this recreates the annotation with the new geometry rather than
+            # resizing a single rect.
+            if annot_type_code == fitz.PDF_ANNOT_HIGHLIGHT and (
+                new_quads is not None or new_anchor_text is not None
+            ):
+                return self._replace_highlight_annotation(
+                    page_index,
+                    annot,
+                    annotation_identifier,
+                    new_quads,
+                    new_content,
+                    new_color,
+                    grader_name,
+                    new_source,
+                    new_is_verdict,
+                    new_anchor_text,
+                )
+
             if annot_type_code == fitz.PDF_ANNOT_INK and (
                 new_points is not None or new_stroke_color_rgb is not None
             ):
@@ -1368,6 +1623,9 @@ class PDFAnnotator:
                         stroke_opacity=subject_metadata.get("stroke_opacity"),
                         stroke_color_rgb=subject_metadata.get("stroke_color_rgb"),
                         textbox_color_rgb=subject_metadata.get("textbox_color_rgb"),
+                        # Preserve the highlight's anchor phrase across a
+                        # source-only ownership transfer / verdict toggle.
+                        anchor_text=subject_metadata.get("anchor_text"),
                     )
 
                     _safe_set_info(annot, "subject", new_subject)
@@ -1693,6 +1951,9 @@ class PDFAnnotator:
                     stroke_opacity=effective_stroke_opacity,
                     stroke_color_rgb=effective_stroke_color_rgb,
                     textbox_color_rgb=effective_textbox_color_rgb,
+                    # Preserve a highlight's anchor phrase when the annotation is
+                    # recreated (cross-page move / general update path).
+                    anchor_text=subject_metadata.get("anchor_text"),
                 )
                 _safe_set_info(new_annot, "subject", new_subject)
             except Exception as e:
@@ -1947,6 +2208,20 @@ class PDFAnnotator:
                         extra_fields["stroke_color_rgb"] = subject_metadata[
                             "textbox_color_rgb"
                         ]
+
+                # Text-anchored highlights carry per-line quad geometry (read
+                # back from native QuadPoints) plus the verbatim anchor phrase so
+                # the interactive UI can render per-line boxes and re-anchor on
+                # extend/shorten.
+                if (
+                    hasattr(annot, "type")
+                    and annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT
+                ):
+                    markup_quads = _extract_markup_quads(annot)
+                    if markup_quads:
+                        extra_fields["quads"] = markup_quads
+                if subject_metadata.get("anchor_text"):
+                    extra_fields["anchor_text"] = subject_metadata["anchor_text"]
 
                 if subject_metadata.get("drawing_style"):
                     extra_fields["drawing_style"] = subject_metadata["drawing_style"]

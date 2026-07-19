@@ -326,6 +326,39 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                     marker.style.textDecorationThickness = '2px';
                 }
 
+                // Text-anchored highlight: render one translucent box per text
+                // line so a wrapped phrase highlights line-by-line instead of the
+                // union box covering unrelated text between lines. The union
+                // marker itself stays (drag/tether/label anchor) but its own fill
+                // is removed. `annotationAnchored` tells the drag handler to
+                // tether the comment to the phrase, and `annotationAnchorText`
+                // seeds the extend/shorten module.
+                var highlightQuads = Array.isArray(ann.quads) ? ann.quads : null;
+                if (annotationType === 'highlight' && highlightQuads && highlightQuads.length) {
+                    marker.style.backgroundColor = 'transparent';
+                    marker.dataset.annotationAnchored = 'true';
+                    marker.dataset.annotationAnchorText = ann.anchor_text || '';
+                    highlightQuads.forEach(function (quad) {
+                        if (!Array.isArray(quad) || quad.length !== 4) return;
+                        var qv = convertTopLeftRectToViewport(quad, viewport);
+                        var qMinX = Math.min(qv[0], qv[2]) * scaleX;
+                        var qMaxX = Math.max(qv[0], qv[2]) * scaleX;
+                        var qMinY = Math.min(qv[1], qv[3]) * scaleY;
+                        var qMaxY = Math.max(qv[1], qv[3]) * scaleY;
+                        var line = document.createElement('div');
+                        line.className = 'annotation-highlight-quad';
+                        line.style.position = 'absolute';
+                        line.style.left = (qMinX - containerX0) + 'px';
+                        line.style.top = (qMinY - containerY0) + 'px';
+                        line.style.width = Math.max(1, qMaxX - qMinX) + 'px';
+                        line.style.height = Math.max(1, qMaxY - qMinY) + 'px';
+                        line.style.backgroundColor = 'rgba(' + r + ', ' + g + ', ' + b + ', 0.30)';
+                        line.style.borderRadius = '2px';
+                        line.style.pointerEvents = 'none';
+                        marker.appendChild(line);
+                    });
+                }
+
                 // Store icon type in dataset for later updates
                 var iconType = (ann.icon || '').toLowerCase();
                 marker.dataset.annotationIcon = iconType;

@@ -77,6 +77,7 @@
     var TextboxModule = window.PdfPreviewModalTextbox || null;
     var MarkupToolbar = window.PdfPreviewModalMarkupToolbar || null;
     var MarkupSelection = window.PdfPreviewModalMarkupSelection || null;
+    var HighlightAnchor = window.PdfPreviewModalHighlightAnchor || null;
     var markupModeActive = false;
 
     function fallbackFormatGraderDisplayName(fullName, mode) {
@@ -5319,6 +5320,159 @@
         return _currentAnnotationCtrl.deleteAnnotationSilently(pageIdx, identifier);
     }
 
+    // Text-anchored highlights are tethered to their phrase: the body may only
+    // wiggle within this radius (px) before snapping back on release. Only the
+    // extend/shorten handles change the highlighted span.
+    const HIGHLIGHT_TETHER_RADIUS_PX = 14;
+
+    // Persist an AI->HUMAN ownership transfer for a tethered highlight WITHOUT
+    // sending geometry. A rect update on a highlight recreates it from a single
+    // rect (collapsing the per-line quads), so ownership-on-touch must be a
+    // source-only update.
+    function revertAnchoredOwnership(marker) {
+        // Roll back the optimistic AI->HUMAN class flip when the source-only
+        // persist did not succeed, so the UI never shows an unsaved transfer.
+        if (!marker) return;
+        marker.classList.remove('source-human');
+        marker.classList.add('source-ai');
+        marker.dataset.annotationSource = 'AI';
+    }
+
+    async function persistAnchoredOwnershipTransfer(marker, identifier) {
+        try {
+            const apiIdentifier = buildApiAnnotationIdentifier({
+                identifier: identifier,
+                xref: marker?.dataset?.annotationXref,
+                requestId: marker?.dataset?.annotationRequestId || marker?.dataset?.annotationIdentifier,
+            });
+            if (!apiIdentifier) {
+                revertAnchoredOwnership(marker);
+                return;
+            }
+            const data = await updateAnnotationRequest(apiIdentifier, { source: 'HUMAN' });
+            if (!data || !data.success) {
+                revertAnchoredOwnership(marker);
+            }
+        } catch (err) {
+            debugLog('[TETHER] Failed to persist ownership transfer:', err);
+            revertAnchoredOwnership(marker);
+        } finally {
+            _isDraggingAnnotation = false;
+        }
+    }
+
+    // ---- Text-anchored highlight extend/shorten integration ----------------
+
+    function findHighlightMarkerElement(pageIdx, identifier) {
+        const container = document.getElementById('pdfGradedContainer');
+        if (!container) return null;
+        const wrapper = container.querySelector(`.pdf-page-wrapper[data-page-num="${pageIdx + 1}"]`);
+        if (!wrapper) return null;
+        const overlay = wrapper.querySelector('.pdf-annotation-overlay');
+        if (!overlay) return null;
+        const norm = normalizeAnnotationIdentifierValue(identifier);
+        const markers = overlay.querySelectorAll('.annotation-marker');
+        for (let i = 0; i < markers.length; i++) {
+            const m = markers[i];
+            if (normalizeAnnotationIdentifierValue(m.dataset.annotationRequestId) === norm ||
+                normalizeAnnotationIdentifierValue(m.dataset.annotationStableId) === norm ||
+                normalizeAnnotationIdentifierValue(m.dataset.annotationIdentifier) === norm ||
+                normalizeAnnotationIdentifierValue(m.dataset.annotationXref) === norm) {
+                return m;
+            }
+        }
+        return null;
+    }
+
+    function findAnnotationDataByIdentifier(pageIdx, identifier) {
+        const pageAnns = annotationsData[pageIdx] || [];
+        const norm = normalizeAnnotationIdentifierValue(identifier);
+        return pageAnns.find(function (ann) {
+            return normalizeAnnotationIdentifierValue(resolveAnnotationIdentifierValue(ann)) === norm;
+        }) || null;
+    }
+
+    let _highlightAnchorInited = false;
+    function ensureHighlightAnchorInit() {
+        if (_highlightAnchorInited || !HighlightAnchor) return;
+        HighlightAnchor.init({
+            getViewer: function () { return window.__pdfGradedViewer; },
+            onExtendCompleted: persistHighlightExtend,
+        });
+        _highlightAnchorInited = true;
+    }
+
+    function maybeSelectHighlightAnchor(pageIdx, identifier) {
+        if (!HighlightAnchor) return;
+        const marker = findHighlightMarkerElement(pageIdx, identifier);
+        if (!marker || marker.dataset.annotationAnchored !== 'true') {
+            HighlightAnchor.deselect();
+            return;
+        }
+        const ann = findAnnotationDataByIdentifier(pageIdx, identifier);
+        if (!ann) return;
+        ensureHighlightAnchorInit();
+        HighlightAnchor.select(marker, ann, pageIdx);
+    }
+
+    async function persistHighlightExtend(marker, ann, payload) {
+        try {
+            const apiIdentifier = buildApiAnnotationIdentifier({
+                identifier: resolveAnnotationIdentifierValue(ann),
+                xref: marker && marker.dataset ? marker.dataset.annotationXref : undefined,
+                requestId: marker && marker.dataset
+                    ? (marker.dataset.annotationRequestId || marker.dataset.annotationIdentifier)
+                    : undefined,
+            });
+            if (!apiIdentifier) return;
+            // Any human edit transfers ownership; send new quads + anchor phrase.
+            const data = await updateAnnotationRequest(apiIdentifier, {
+                quads: payload.quadsPdf,
+                anchor_text: payload.anchorText,
+                source: 'HUMAN',
+            });
+            if (data && data.success) {
+                marker.classList.remove('source-ai');
+                marker.classList.add('source-human');
+                marker.dataset.annotationSource = 'HUMAN';
+                // Update the local cache from the server response (top-left
+                // quads) so the re-render keeps the new span instead of
+                // reverting to the pre-edit geometry.
+                if (data.annotation && Array.isArray(data.annotation.quads)) {
+                    const pageAnns = annotationsData[payload.pageIdx] || [];
+                    const norm = normalizeAnnotationIdentifierValue(resolveAnnotationIdentifierValue(ann));
+                    const idx = pageAnns.findIndex(function (a) {
+                        return normalizeAnnotationIdentifierValue(resolveAnnotationIdentifierValue(a)) === norm;
+                    });
+                    if (idx >= 0) {
+                        pageAnns[idx] = Object.assign({}, pageAnns[idx], {
+                            quads: data.annotation.quads,
+                            anchor_text: data.annotation.anchor_text,
+                            rect: data.annotation.rect || pageAnns[idx].rect,
+                            source: 'HUMAN',
+                            xref: data.annotation.xref != null ? data.annotation.xref : pageAnns[idx].xref,
+                        });
+                    }
+                    if (_currentOverlayRenderer) _currentOverlayRenderer.renderAnnotations(true);
+                }
+                // Success but the server did not echo the annotation: the local
+                // cache still holds the pre-edit quads, so a later re-render
+                // would revert the span. Keep the live repaint (do NOT
+                // re-render) until the next full annotations fetch reconciles it.
+            } else {
+                // Persist failed server-side: discard the optimistic repaint by
+                // re-rendering from the unchanged cache.
+                if (_currentOverlayRenderer) _currentOverlayRenderer.renderAnnotations(true);
+            }
+        } catch (err) {
+            debugLog('[HIGHLIGHT-ANCHOR] Failed to persist extend/shorten:', err);
+            // Network / exception path: revert the optimistic repaint too.
+            if (_currentOverlayRenderer) _currentOverlayRenderer.renderAnnotations(true);
+        } finally {
+            if (HighlightAnchor) HighlightAnchor.deselect();
+        }
+    }
+
     function makeAnnotationDraggable(marker, identifier) {
         const stableIdentifier =
             normalizeAnnotationIdentifierValue(identifier)
@@ -5329,6 +5483,9 @@
             marker.style.cursor = 'not-allowed';
             return;
         }
+
+        // Text-anchored highlight: the comment is tethered to the phrase.
+        const isAnchored = marker.dataset.annotationAnchored === 'true';
 
         let isDragging = false;
         let hasMoved = false;
@@ -5386,6 +5543,19 @@
             // Calculate new position
             let newLeft = initialLeft + dx;
             let newTop = initialTop + dy;
+
+            // Text-anchored highlight tether: constrain the body to a small
+            // radius around the phrase and disable cross-page dragging. The
+            // highlight stays on its text; the marker snaps back on release.
+            if (isAnchored) {
+                newLeft = Math.max(initialLeft - HIGHLIGHT_TETHER_RADIUS_PX,
+                    Math.min(newLeft, initialLeft + HIGHLIGHT_TETHER_RADIUS_PX));
+                newTop = Math.max(initialTop - HIGHLIGHT_TETHER_RADIUS_PX,
+                    Math.min(newTop, initialTop + HIGHLIGHT_TETHER_RADIUS_PX));
+                marker.style.left = `${newLeft}px`;
+                marker.style.top = `${newTop}px`;
+                return;
+            }
 
             // Cross-page detection: find which page the mouse is over
             // NOTE: Do this BEFORE clamping so we can detect cross-page intent
@@ -5460,6 +5630,26 @@
 
                 // Only persist position if the marker actually moved
                 if (hasMoved) {
+                    // Text-anchored highlight: the attempt to move transfers
+                    // ownership, but the highlight snaps back onto the phrase and
+                    // its geometry is left untouched (source-only persist).
+                    if (isAnchored) {
+                        marker.style.left = `${initialLeft}px`;
+                        marker.style.top = `${initialTop}px`;
+                        const anchoredSource = marker.dataset.annotationSource;
+                        if (anchoredSource === 'AI') {
+                            marker.classList.add('ownership-transferred');
+                            setTimeout(() => marker.classList.remove('ownership-transferred'), 500);
+                            marker.classList.remove('source-ai');
+                            marker.classList.add('source-human');
+                            marker.dataset.annotationSource = 'HUMAN';
+                            persistAnchoredOwnershipTransfer(marker, stableIdentifier);
+                        } else {
+                            _isDraggingAnnotation = false;
+                        }
+                        cleanupDragHandlers();
+                        return;
+                    }
                     if (targetPageIdx !== sourcePageIdx) {
                         // Optimistic cross-page move: re-parent immediately to prevent
                         // temporary clipping/disappearance while async API update runs.
@@ -8191,6 +8381,7 @@
             if (!_annotationCtrlAvailable) {
                 _currentOverlayRenderer.onMarkerClicked(function (data) {
                     highlightAnnotationSelection(data.pageIdx, data.identifier);
+                    maybeSelectHighlightAnchor(data.pageIdx, data.identifier);
                 });
             }
 
@@ -8353,6 +8544,7 @@
             if (_currentOverlayRenderer) {
                 _currentOverlayRenderer.onMarkerClicked(function (data) {
                     _currentAnnotationCtrl.selectAnnotation(data.identifier, data.pageIdx);
+                    maybeSelectHighlightAnchor(data.pageIdx, data.identifier);
                 });
             }
         }

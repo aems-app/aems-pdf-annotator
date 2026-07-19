@@ -157,13 +157,68 @@ def _priority_to_color(priority: str) -> AnnotationColor:
     return mapping.get(priority, AnnotationColor.AMBER)
 
 
-def _priority_to_kind(priority: str, is_verdict: bool) -> AnnotationType:
+def _priority_to_kind(
+    priority: str, is_verdict: bool, has_highlight_quads: bool = False
+) -> AnnotationType:
     """Map priority + verdict flag to annotation type.
 
-    All automated annotations use TEXT (point marker / icon) rather than
-    highlight overlays so they don't obscure the student's work.
+    Body comments that resolve to a phrase on a text-layer page carry per-line
+    ``highlight_quads`` and are rendered as HIGHLIGHT overlays anchored to the
+    phrase (comment attached to the highlight). Verdict markers (right-margin
+    summary icons) and any item without resolved quads keep the TEXT point marker
+    so they never obscure student work where no phrase could be located.
     """
+    if has_highlight_quads and not is_verdict:
+        return AnnotationType.HIGHLIGHT
     return AnnotationType.TEXT
+
+
+def _normalized_quads_to_bboxes(
+    quads: Any, page_width: float, page_height: float
+) -> Optional[List[BBox]]:
+    """Convert normalized per-line highlight quads to page-point BBoxes.
+
+    Each quad is ``[x0, y0, x1, y1]`` in visual top-left normalized space (0..1).
+    Malformed or degenerate quads are dropped defensively (grading must never
+    crash on a slightly-off coordinate); returns ``None`` if none survive.
+    """
+    if not isinstance(quads, (list, tuple)) or not quads:
+        return None
+
+    result: List[BBox] = []
+    for quad in quads:
+        if not isinstance(quad, (list, tuple)) or len(quad) < 4:
+            continue
+        try:
+            xs = (float(quad[0]), float(quad[2]))
+            ys = (float(quad[1]), float(quad[3]))
+        except (TypeError, ValueError):
+            continue
+        if not all(math.isfinite(v) for v in xs + ys):
+            continue
+
+        x0 = max(0.0, min(1.0, min(xs))) * page_width
+        x1 = max(0.0, min(1.0, max(xs))) * page_width
+        y0 = max(0.0, min(1.0, min(ys))) * page_height
+        y1 = max(0.0, min(1.0, max(ys))) * page_height
+        # Guarantee a minimum visible extent at page edges.
+        if x1 - x0 < 1.0:
+            x1 = min(page_width, x0 + 1.0)
+        if y1 - y0 < 1.0:
+            y1 = min(page_height, y0 + 1.0)
+        result.append(BBox(x0=x0, y0=y0, x1=x1, y1=y1))
+
+    return result or None
+
+
+def _union_bbox(quads: List[BBox]) -> BBox:
+    """Return the bounding box that covers all per-line highlight quads."""
+    return BBox(
+        x0=min(q.x0 for q in quads),
+        y0=min(q.y0 for q in quads),
+        x1=max(q.x1 for q in quads),
+        y1=max(q.y1 for q in quads),
+    )
 
 
 def _normalized_to_bbox(
@@ -236,15 +291,36 @@ def feedback_item_to_annotation(
     is_verdict = bool(item.get("is_verdict", False))
 
     color = _priority_to_color(priority)
-    kind = _priority_to_kind(priority, is_verdict)
 
-    x_norm = float(item.get("x_normalized", 0.1))
-    y_norm = float(item.get("y_normalized", 0.5))
+    # A resolved prose quote on a text-layer page arrives with per-line
+    # ``highlight_quads`` (normalized, top-left). When present on a non-verdict
+    # item, render a HIGHLIGHT anchored to the phrase; otherwise fall back to the
+    # TEXT margin icon at the point coordinate.
+    quad_bboxes = _normalized_quads_to_bboxes(
+        item.get("highlight_quads"), page_width, page_height
+    )
+    has_quads = quad_bboxes is not None and not is_verdict
+    kind = _priority_to_kind(priority, is_verdict, has_highlight_quads=has_quads)
 
-    bbox = _normalized_to_bbox(x_norm, y_norm, page_width, page_height, kind)
+    quads: Optional[List[BBox]]
+    if kind == AnnotationType.HIGHLIGHT and quad_bboxes:
+        quads = quad_bboxes
+        bbox = _union_bbox(quad_bboxes)
+    else:
+        quads = None
+        x_norm = float(item.get("x_normalized", 0.1))
+        y_norm = float(item.get("y_normalized", 0.5))
+        bbox = _normalized_to_bbox(x_norm, y_norm, page_width, page_height, kind)
+
+    anchor_text_raw = item.get("anchor_text")
+    anchor_text = (
+        anchor_text_raw.strip() or None
+        if isinstance(anchor_text_raw, str)
+        else None
+    )
 
     icon = item.get("icon")
-    if icon is None and kind == AnnotationType.TEXT:
+    if icon is None and kind in (AnnotationType.TEXT, AnnotationType.HIGHLIGHT):
         # Verdict markers carry the per-task summary glyph (Star=PASS,
         # Help=FAIL/UNCERTAIN/PARTIAL or high-priority). Body comments
         # default to Comment, but when the LLM emitted an explicit
@@ -277,6 +353,8 @@ def feedback_item_to_annotation(
         original_source=AnnotationSource.AI,
         is_verdict=is_verdict,
         icon=icon,
+        quads=quads,
+        anchor_text=anchor_text,
     )
 
 

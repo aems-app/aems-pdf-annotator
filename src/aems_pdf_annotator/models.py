@@ -205,6 +205,17 @@ class PDFAnnotation(BaseModel):
     )
     is_verdict: bool = False  # Whether this annotation carries a final grading verdict
 
+    # Text-anchored highlight fields.
+    # ``quads`` holds one BBox per text line of a highlighted phrase (top-left
+    # origin, same space as ``bbox``). A phrase that wraps across lines needs one
+    # rect per line so the highlight follows the text instead of covering the
+    # whole paragraph block. ``bbox`` remains the union of the quads (used for
+    # hit-testing and the comment-label anchor). ``anchor_text`` is the verbatim
+    # phrase the highlight covers, kept so the highlight can be re-anchored or
+    # re-verified against the page text after an extend/shorten edit.
+    quads: Optional[List[BBox]] = None
+    anchor_text: Optional[str] = None
+
     # Drawing-specific fields
     drawing_style: Optional[str] = None  # "pen" or "highlighter"
     points: Optional[List[List[float]]] = None  # [[x,y], ...] in PDF coords
@@ -237,6 +248,15 @@ class PDFAnnotation(BaseModel):
             for pt in v:
                 if len(pt) != 2:
                     raise ValueError("Each point must be [x, y]")
+        return v
+
+    @field_validator("quads")
+    @classmethod
+    def _normalize_quads(cls, v: Optional[List[BBox]]) -> Optional[List[BBox]]:
+        # An empty list carries no highlight geometry; treat it as absent so
+        # downstream ``if annotation.quads:`` checks stay simple.
+        if not v:
+            return None
         return v
 
     @field_validator("stroke_color_rgb")
