@@ -201,10 +201,15 @@ def _normalized_quads_to_bboxes(
         x1 = max(0.0, min(1.0, max(xs))) * page_width
         y0 = max(0.0, min(1.0, min(ys))) * page_height
         y1 = max(0.0, min(1.0, max(ys))) * page_height
-        # Guarantee a minimum visible extent at page edges.
+        # Guarantee a minimum visible extent at page edges. When the quad
+        # clamps to the FAR edge (x0 == page_width), expanding x1 alone still
+        # yields a zero-width box — pull the origin back inside the page first
+        # so the box always has positive area.
         if x1 - x0 < 1.0:
+            x0 = max(0.0, min(x0, page_width - 1.0))
             x1 = min(page_width, x0 + 1.0)
         if y1 - y0 < 1.0:
+            y0 = max(0.0, min(y0, page_height - 1.0))
             y1 = min(page_height, y0 + 1.0)
         result.append(BBox(x0=x0, y0=y0, x1=x1, y1=y1))
 

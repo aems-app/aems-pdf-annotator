@@ -49,7 +49,6 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
         var isPlaceholderAnnotation = _helpers.isPlaceholderAnnotation || function () { return false; };
         var isMarkupType = _helpers.isMarkupType || function () { return false; };
         var renderCompactInlineLabelContent = _helpers.renderCompactInlineLabelContent || function () {};
-        var collapseInlineLabel = _helpers.collapseInlineLabel || function () {};
         var positionLabelOptimally = _helpers.positionLabelOptimally || function () {};
         var repositionAllLabels = _helpers.repositionAllLabels || function () {};
         var setupLabelTooltipEvents = _helpers.setupLabelTooltipEvents || function () {};
@@ -129,7 +128,10 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             var canvasRect = canvas.getBoundingClientRect();
             var canvasWidth = canvas.clientWidth || canvasRect.width;
             var canvasHeight = canvas.clientHeight || canvasRect.height;
-            var renderSignature = [
+            // JSON.stringify (not delimiter joins): content/comment may contain
+            // '|' themselves, which made distinct annotation sets collide into
+            // the same signature and skip a needed re-render.
+            var renderSignature = JSON.stringify([
                 canvasWidth,
                 canvasHeight,
                 viewport.width,
@@ -147,9 +149,9 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                         ann.priority,
                         ann.source,
                         ann.is_verdict,
-                    ].join('|');
-                }).join('||'),
-            ].join(':');
+                    ];
+                }),
+            ]);
 
             // Optimization: check if markers already match (skip unnecessary re-creation)
             if (!forceRender) {
@@ -170,7 +172,10 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
 
             var editingLabel = overlay.querySelector('.annotation-label.label-editing');
             if (editingLabel) {
-                collapseInlineLabel(editingLabel);
+                // Never re-render while an inline editor is open —
+                // collapseInlineLabel() discards the textarea's unsaved text.
+                // The editor's own save/cancel paths trigger the next render.
+                return;
             }
 
             if (isAnnotationDragging()) {
@@ -590,8 +595,14 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             var pdfIconWidth = TEXT_ICON_SIZE / scaleX / viewport.scale;
             var pdfIconHeight = TEXT_ICON_SIZE / scaleY / viewport.scale;
             var viewBox = viewport.viewBox || [0, 0, viewport.width / viewport.scale, viewport.height / viewport.scale];
-            var pageHeight = Math.abs((viewBox[3] || 0) - (viewBox[1] || 0)) || (viewport.height / viewport.scale);
-            var topLeftPoint = [pdfPoint[0], pageHeight - pdfPoint[1]];
+            // Cropped/trimmed PDFs carry a non-zero viewBox origin: the top-left
+            // page space used elsewhere measures Y down from the TOP edge
+            // (viewBox[3]) and X from viewBox[0] — using the box HEIGHT here
+            // dropped the origin offset and misplaced new annotations.
+            var topLeftPoint = [
+                pdfPoint[0] - (viewBox[0] || 0),
+                (viewBox[3] || (viewport.height / viewport.scale)) - pdfPoint[1]
+            ];
 
             var displayRect = [
                 topLeftPoint[0] - pdfIconWidth / 2,

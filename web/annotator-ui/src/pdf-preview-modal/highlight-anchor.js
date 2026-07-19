@@ -418,10 +418,18 @@ window.PdfPreviewModalHighlightAnchor = window.PdfPreviewModalHighlightAnchor ||
 
     function removeHandles() {
         if (handles) {
+            // Detach drag listeners and drop drag state: a handle removed
+            // mid-drag (e.g. marker re-render) otherwise keeps dispatching
+            // captured pointer events into leaked listeners and leaves a stale
+            // dragStartSpan behind.
+            if (handles.start) detachHandleDragListeners(handles.start);
+            if (handles.end) detachHandleDragListeners(handles.end);
             if (handles.start && handles.start.parentNode) handles.start.parentNode.removeChild(handles.start);
             if (handles.end && handles.end.parentNode) handles.end.parentNode.removeChild(handles.end);
         }
         handles = null;
+        draggingHandle = null;
+        dragStartSpan = null;
     }
 
     /**
