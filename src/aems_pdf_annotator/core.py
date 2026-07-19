@@ -1385,13 +1385,16 @@ class PDFAnnotator:
                     new_source = "HUMAN"
                     logger.info(
                         "Auto-transferring ownership to HUMAN for annotation %s "
-                        "(content=%s, color=%s, position=%s, page=%s, points=%s)",
+                        "(content=%s, color=%s, position=%s, page=%s, points=%s, "
+                        "quads=%s, anchor=%s)",
                         annotation_identifier,
                         content_changed,
                         color_changed,
                         position_changed,
                         page_changed,
                         points_changed,
+                        quads_changed,
+                        anchor_changed,
                     )
 
         # Defensive: a same-page rect update on a multi-line text-anchored

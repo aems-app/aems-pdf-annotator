@@ -117,16 +117,34 @@ window.PdfPreviewModalHighlightAnchor = window.PdfPreviewModalHighlightAnchor ||
             }
         });
 
-        words.sort(function (a, b) {
-            // Height-relative line tolerance (NOT a fixed pixel count) so line
-            // detection is zoom-independent: at low zoom a fixed 6px would merge
-            // adjacent lines and interleave their words.
-            var tol = Math.min(
-                Math.max(1, a.py1 - a.py0),
-                Math.max(1, b.py1 - b.py0)
-            ) * 0.5;
-            if (Math.abs(a.cy - b.cy) > tol) return a.cy - b.cy;
-            return a.cx - b.cx;
+        // Group into lines FIRST, then sort within each line. A pairwise
+        // comparator with a pair-dependent "same line" tolerance is not a strict
+        // weak order (A~B and B~C do not imply A~C), so Array.prototype.sort
+        // could produce engine-dependent, jumbled word orders. Sorting by cy,
+        // bucketing against each line's first word with a height-relative
+        // tolerance (NOT a fixed pixel count — zoom-independence), and sorting
+        // each bucket by cx is transitive and deterministic.
+        words.sort(function (a, b) { return a.cy - b.cy; });
+        var lines = [];
+        words.forEach(function (w) {
+            for (var i = 0; i < lines.length; i++) {
+                var baseline = lines[i][0];
+                var tol = Math.min(
+                    Math.max(1, w.py1 - w.py0),
+                    Math.max(1, baseline.py1 - baseline.py0)
+                ) * 0.5;
+                if (Math.abs(w.cy - baseline.cy) <= tol) {
+                    lines[i].push(w);
+                    return;
+                }
+            }
+            lines.push([w]);
+        });
+        lines.sort(function (a, b) { return a[0].cy - b[0].cy; });
+        words = [];
+        lines.forEach(function (line) {
+            line.sort(function (a, b) { return a.cx - b.cx; });
+            words = words.concat(line);
         });
         words.forEach(function (w, i) { w.order = i; });
         return { words: words, scaleX: scaleX, scaleY: scaleY };
