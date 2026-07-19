@@ -49,7 +49,6 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
         var isPlaceholderAnnotation = _helpers.isPlaceholderAnnotation || function () { return false; };
         var isMarkupType = _helpers.isMarkupType || function () { return false; };
         var renderCompactInlineLabelContent = _helpers.renderCompactInlineLabelContent || function () {};
-        var collapseInlineLabel = _helpers.collapseInlineLabel || function () {};
         var positionLabelOptimally = _helpers.positionLabelOptimally || function () {};
         var repositionAllLabels = _helpers.repositionAllLabels || function () {};
         var setupLabelTooltipEvents = _helpers.setupLabelTooltipEvents || function () {};
@@ -129,7 +128,10 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             var canvasRect = canvas.getBoundingClientRect();
             var canvasWidth = canvas.clientWidth || canvasRect.width;
             var canvasHeight = canvas.clientHeight || canvasRect.height;
-            var renderSignature = [
+            // JSON.stringify (not delimiter joins): content/comment may contain
+            // '|' themselves, which made distinct annotation sets collide into
+            // the same signature and skip a needed re-render.
+            var renderSignature = JSON.stringify([
                 canvasWidth,
                 canvasHeight,
                 viewport.width,
@@ -147,9 +149,9 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                         ann.priority,
                         ann.source,
                         ann.is_verdict,
-                    ].join('|');
-                }).join('||'),
-            ].join(':');
+                    ];
+                }),
+            ]);
 
             // Optimization: check if markers already match (skip unnecessary re-creation)
             if (!forceRender) {
@@ -170,7 +172,10 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
 
             var editingLabel = overlay.querySelector('.annotation-label.label-editing');
             if (editingLabel) {
-                collapseInlineLabel(editingLabel);
+                // Never re-render while an inline editor is open —
+                // collapseInlineLabel() discards the textarea's unsaved text.
+                // The editor's own save/cancel paths trigger the next render.
+                return;
             }
 
             if (isAnnotationDragging()) {
@@ -324,6 +329,39 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                     marker.style.textDecoration = 'line-through';
                     marker.style.textDecorationColor = 'rgba(' + r + ', ' + g + ', ' + b + ', 0.7)';
                     marker.style.textDecorationThickness = '2px';
+                }
+
+                // Text-anchored highlight: render one translucent box per text
+                // line so a wrapped phrase highlights line-by-line instead of the
+                // union box covering unrelated text between lines. The union
+                // marker itself stays (drag/tether/label anchor) but its own fill
+                // is removed. `annotationAnchored` tells the drag handler to
+                // tether the comment to the phrase, and `annotationAnchorText`
+                // seeds the extend/shorten module.
+                var highlightQuads = Array.isArray(ann.quads) ? ann.quads : null;
+                if (annotationType === 'highlight' && highlightQuads && highlightQuads.length) {
+                    marker.style.backgroundColor = 'transparent';
+                    marker.dataset.annotationAnchored = 'true';
+                    marker.dataset.annotationAnchorText = ann.anchor_text || '';
+                    highlightQuads.forEach(function (quad) {
+                        if (!Array.isArray(quad) || quad.length !== 4) return;
+                        var qv = convertTopLeftRectToViewport(quad, viewport);
+                        var qMinX = Math.min(qv[0], qv[2]) * scaleX;
+                        var qMaxX = Math.max(qv[0], qv[2]) * scaleX;
+                        var qMinY = Math.min(qv[1], qv[3]) * scaleY;
+                        var qMaxY = Math.max(qv[1], qv[3]) * scaleY;
+                        var line = document.createElement('div');
+                        line.className = 'annotation-highlight-quad';
+                        line.style.position = 'absolute';
+                        line.style.left = (qMinX - containerX0) + 'px';
+                        line.style.top = (qMinY - containerY0) + 'px';
+                        line.style.width = Math.max(1, qMaxX - qMinX) + 'px';
+                        line.style.height = Math.max(1, qMaxY - qMinY) + 'px';
+                        line.style.backgroundColor = 'rgba(' + r + ', ' + g + ', ' + b + ', 0.30)';
+                        line.style.borderRadius = '2px';
+                        line.style.pointerEvents = 'none';
+                        marker.appendChild(line);
+                    });
                 }
 
                 // Store icon type in dataset for later updates
@@ -557,8 +595,14 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             var pdfIconWidth = TEXT_ICON_SIZE / scaleX / viewport.scale;
             var pdfIconHeight = TEXT_ICON_SIZE / scaleY / viewport.scale;
             var viewBox = viewport.viewBox || [0, 0, viewport.width / viewport.scale, viewport.height / viewport.scale];
-            var pageHeight = Math.abs((viewBox[3] || 0) - (viewBox[1] || 0)) || (viewport.height / viewport.scale);
-            var topLeftPoint = [pdfPoint[0], pageHeight - pdfPoint[1]];
+            // Cropped/trimmed PDFs carry a non-zero viewBox origin: the top-left
+            // page space used elsewhere measures Y down from the TOP edge
+            // (viewBox[3]) and X from viewBox[0] — using the box HEIGHT here
+            // dropped the origin offset and misplaced new annotations.
+            var topLeftPoint = [
+                pdfPoint[0] - (viewBox[0] || 0),
+                (viewBox[3] || (viewport.height / viewport.scale)) - pdfPoint[1]
+            ];
 
             var displayRect = [
                 topLeftPoint[0] - pdfIconWidth / 2,

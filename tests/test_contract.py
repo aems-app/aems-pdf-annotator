@@ -389,3 +389,27 @@ class TestBatchConversion:
         }
 
         assert validate_contract_version(payload) is True
+
+
+class TestFarEdgeQuadClamp:
+    def test_far_edge_quad_yields_positive_area_box(self):
+        """A quad clamped to the far page edge (x0 == page_width) must be pulled
+        back inside the page before the minimum-extent expansion - otherwise
+        x1 = min(page_width, x0 + 1) still yields a zero-width box that fails
+        BBox validation downstream (Copilot PR#1 review)."""
+        from aems_pdf_annotator.contract import _normalized_quads_to_bboxes
+
+        boxes = _normalized_quads_to_bboxes([[1.0, 1.0, 1.0, 1.0]], 612.0, 792.0)
+        assert boxes is not None
+        box = boxes[0]
+        assert box.x1 - box.x0 >= 1.0
+        assert box.y1 - box.y0 >= 1.0
+        assert box.x1 <= 612.0 and box.y1 <= 792.0
+
+    def test_origin_edge_quad_still_expands(self):
+        from aems_pdf_annotator.contract import _normalized_quads_to_bboxes
+
+        boxes = _normalized_quads_to_bboxes([[0.0, 0.0, 0.0, 0.0]], 612.0, 792.0)
+        assert boxes is not None
+        assert boxes[0].x1 - boxes[0].x0 >= 1.0
+        assert boxes[0].y1 - boxes[0].y0 >= 1.0

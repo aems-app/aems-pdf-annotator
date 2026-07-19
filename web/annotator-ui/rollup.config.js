@@ -50,6 +50,7 @@ const orderedSources = [
     'pdf-preview-modal/textbox.js',
     'pdf-preview-modal/markup-toolbar.js',
     'pdf-preview-modal/markup-selection.js',
+    'pdf-preview-modal/highlight-anchor.js',
     'pdf-preview-modal/modal-state.js',
     'pdf-preview-modal/modal-shell.js',
     'pdf-preview-modal/document-controller.js',
