@@ -147,7 +147,175 @@ window.PdfPreviewModalHighlightAnchor = window.PdfPreviewModalHighlightAnchor ||
             words = words.concat(line);
         });
         words.forEach(function (w, i) { w.order = i; });
-        return { words: words, scaleX: scaleX, scaleY: scaleY };
+
+        // Tag every word with the COLUMN band it belongs to. On a multi-column
+        // page the line-bucketing above merges same-height words from BOTH
+        // columns into one visual "line" (their cy overlaps) and interleaves
+        // them in `order`; an extend from one left-column line to the next would
+        // then sweep in the intervening right-column words (their `order` falls
+        // inside the range). Column tagging lets the extend stay within the
+        // anchor's column. On a single-column page there is exactly ONE band, so
+        // every word gets col 0 and the constraint is a strict no-op.
+        var bands = computeColumnBands(words);
+        words.forEach(function (w) { w.col = colOfWord(w, bands); });
+        return { words: words, scaleX: scaleX, scaleY: scaleY, bands: bands };
+    }
+
+    /** Cluster words into column bands using a LINE-AWARE STRADDLE classifier.
+     * Returns a list of [x0, x1] in page-relative px, left to right.
+     *
+     * The discriminator that separates a real column gutter from an ordinary gap
+     * (codex 2026-07-20): a genuine two-column gutter has MANY rows with text on
+     * BOTH sides of it (a left-column word AND a right-column word) while almost no
+     * word crosses it. A single-column page — even one full of centered display
+     * equations or short/indented lines — produces NO such straddling rows: prose
+     * rows cross every interior x, and a centered equation only ever sits on one
+     * side. So `straddle` stays ~0 and the page yields ONE band (strict no-op on
+     * the exam corpus). A full-width heading/footer crosses the gutter on a row or
+     * two, tolerated because the straddle count still dominates. Validated on the
+     * SE2134 corpus (0 false splits) and synthetic 2-column ± heading pages. */
+    function computeColumnBands(words) {
+        if (!words.length) return [[0, Infinity]];
+        var heights = words
+            .map(function (w) { return Math.max(1, w.py1 - w.py0); })
+            .sort(function (a, b) { return a - b; });
+        var medH = heights[Math.floor(heights.length / 2)] || 10;
+
+        var minX = Infinity;
+        var maxX = -Infinity;
+        words.forEach(function (w) {
+            if (w.px0 < minX) minX = w.px0;
+            if (w.px1 > maxX) maxX = w.px1;
+        });
+        var span = Math.max(1, maxX - minX);
+
+        // Group words into visual rows by VERTICAL-EXTENT OVERLAP against a STABLE
+        // seed extent (never a growing union), so a two-column page whose columns
+        // have staggered baselines still puts a left- and right-column word into
+        // the SAME row — otherwise the straddle test never sees text flanking the
+        // gutter and the page mis-merges to one band (codex 2026-07-20). The seed
+        // is fixed (not expanded by matched words) so a row can never transitively
+        // bridge into the next line. Adjacent single-column lines have ZERO
+        // vertical overlap, so the small threshold safely unifies staggers up to
+        // ~a font height without ever merging separate lines. An extreme stagger
+        // (offset >= a full font height) degrades gracefully to a single band —
+        // an unconstrained extend, never wrong data.
+        var byCy = words.slice().sort(function (a, b) { return a.cy - b.cy; });
+        var rows = [];
+        byCy.forEach(function (w) {
+            for (var i = 0; i < rows.length; i++) {
+                var ov = Math.min(w.py1, rows[i].sy1) - Math.max(w.py0, rows[i].sy0);
+                var mh = Math.min(Math.max(1, w.py1 - w.py0), rows[i].sy1 - rows[i].sy0);
+                if (ov > 0.1 * mh) {
+                    rows[i].words.push(w);
+                    return;
+                }
+            }
+            rows.push({ sy0: w.py0, sy1: w.py1, words: [w] });
+        });
+        // Too few rows to infer a persistent gutter statistically: one band.
+        if (rows.length < 5) return [[minX, maxX]];
+
+        // Per-row x-extent + sorted intervals for the crossing test.
+        rows.forEach(function (row) {
+            var mn = Infinity;
+            var mx = -Infinity;
+            row.words.forEach(function (w) {
+                if (w.px0 < mn) mn = w.px0;
+                if (w.px1 > mx) mx = w.px1;
+            });
+            row.minX = mn;
+            row.maxX = mx;
+            row.iv = row.words
+                .map(function (w) { return [w.px0, w.px1]; })
+                .sort(function (a, b) { return a[0] - b[0]; });
+        });
+        function crossesAt(row, x) {
+            for (var i = 0; i < row.iv.length; i++) {
+                if (row.iv[i][0] <= x && x <= row.iv[i][1]) return true;
+            }
+            return false;
+        }
+
+        var nBins = Math.min(500, Math.max(40, Math.ceil(span / Math.max(2, medH * 0.4))));
+        var binW = span / nBins;
+        var straddleThresh = 0.35 * rows.length; // rows with text flanking x on both sides
+        // A full-width heading AND footer may each cross the gutter, so allow ~2
+        // crossings as an absolute floor (the straddle + share checks below still
+        // protect single-column pages, where crossing is far higher).
+        var crossCap = Math.max(2.5, 0.15 * rows.length);
+        var minGutterBins = Math.max(1, Math.ceil(medH / binW));
+
+        var isGutter = new Array(nBins);
+        for (var b = 0; b < nBins; b++) {
+            var x = minX + (b + 0.5) * binW;
+            var straddle = 0;
+            var crossing = 0;
+            for (var r = 0; r < rows.length; r++) {
+                var row = rows[r];
+                if (crossesAt(row, x)) crossing += 1;
+                else if (row.minX < x && x < row.maxX) straddle += 1;
+            }
+            isGutter[b] = straddle >= straddleThresh && crossing <= crossCap;
+        }
+
+        var bands = [];
+        var bb = 0;
+        while (bb < nBins && isGutter[bb]) bb++; // skip any leading gutter
+        var start = bb;
+        while (bb < nBins) {
+            if (isGutter[bb]) {
+                var g = bb;
+                while (g < nBins && isGutter[g]) g++;
+                if (g - bb >= minGutterBins) {
+                    bands.push([minX + start * binW, minX + bb * binW]);
+                    start = g;
+                }
+                bb = g;
+            } else {
+                bb++;
+            }
+        }
+        bands.push([minX + start * binW, maxX]);
+        bands = bands.filter(function (bd) { return bd[1] - bd[0] > medH; });
+        if (bands.length <= 1) return bands.length ? bands : [[minX, maxX]];
+
+        // A genuine column is BOTH physically wide AND holds a real share of the
+        // words. This rejects a narrow "label" column (a numbered/lettered list's
+        // "1." / "a)" markers, or a right-aligned equation-number gutter): the
+        // marker band is thin and holds ~one word per row. If any band fails,
+        // fall back to a single band — biasing toward NOT constraining the extend
+        // is safe on the single-column exam corpus (worst case: an unconstrained
+        // extend on a rare true 2-column page, the original graceful fallback).
+        var minColWidth = Math.max(medH, 0.18 * span);
+        var minColWords = Math.max(2, 0.2 * words.length);
+        function bandWordCount(bd) {
+            var n = 0;
+            words.forEach(function (w) {
+                if (w.cx >= bd[0] - 1 && w.cx <= bd[1] + 1) n += 1;
+            });
+            return n;
+        }
+        var allReal = bands.every(function (bd) {
+            return bd[1] - bd[0] >= minColWidth && bandWordCount(bd) >= minColWords;
+        });
+        return allReal ? bands : [[minX, maxX]];
+    }
+
+    /** Column-band index whose x-range contains the word center (nearest band
+     * as a fallback so every word maps somewhere). */
+    function colOfWord(w, bands) {
+        for (var i = 0; i < bands.length; i++) {
+            if (w.cx >= bands[i][0] - 1 && w.cx <= bands[i][1] + 1) return i;
+        }
+        var best = 0;
+        var bestDist = Infinity;
+        for (var j = 0; j < bands.length; j++) {
+            var mid = (bands[j][0] + bands[j][1]) / 2;
+            var d = Math.abs(w.cx - mid);
+            if (d < bestDist) { bestDist = d; best = j; }
+        }
+        return best;
     }
 
     /** Find the covered [startOrder, endOrder] whose word centers fall in the
@@ -164,7 +332,35 @@ window.PdfPreviewModalHighlightAnchor = window.PdfPreviewModalHighlightAnchor ||
             }
         });
         if (!covered.length) return null;
-        return { startOrder: Math.min.apply(null, covered), endOrder: Math.max.apply(null, covered) };
+        // `orders` are the words ACTUALLY inside the quads. The [start,end] range
+        // additionally spans interleaved neighbouring-column words on multi-column
+        // pages, so the anchor column must be inferred from `orders`, not the range
+        // (codex 2026-07-20: a wrapped left-column phrase otherwise has more
+        // right-column words in its range and picks the wrong column).
+        return {
+            startOrder: Math.min.apply(null, covered),
+            endOrder: Math.max.apply(null, covered),
+            orders: covered,
+        };
+    }
+
+    /** Most common column among a set of word `orders` (the words truly covered by
+     * a highlight). Returns 0 when unknown. */
+    function modeColumn(words, orders) {
+        var counts = {};
+        (orders || []).forEach(function (o) {
+            var wc = words[o] && words[o].col;
+            if (wc != null) counts[wc] = (counts[wc] || 0) + 1;
+        });
+        var best = 0;
+        var bestCount = -1;
+        Object.keys(counts).forEach(function (k) {
+            if (counts[k] > bestCount) {
+                bestCount = counts[k];
+                best = parseInt(k, 10);
+            }
+        });
+        return best;
     }
 
     /** Current highlight quad child boxes in page-relative px. */
@@ -187,13 +383,18 @@ window.PdfPreviewModalHighlightAnchor = window.PdfPreviewModalHighlightAnchor ||
     /** Group covered words into per-line boxes (page-relative) and PDF rects.
      * Each line is additionally split into horizontal RUNS at large gaps so a
      * single quad never spans a column gutter (mitigates multi-column extends). */
-    function coveredToQuads(words, startOrder, endOrder) {
+    function coveredToQuads(words, startOrder, endOrder, anchorCol) {
         // 1) cluster covered words into line bands by vertical overlap (mirrors
         //    the backend _group_token_rects_by_line).
         var bands = []; // { words:[...], y0, y1 }
         for (var order = startOrder; order <= endOrder; order++) {
             var w = words[order];
             if (!w) continue;
+            // Skip words outside the anchor's column: on a multi-column page the
+            // [startOrder,endOrder] range can straddle the gutter, so a plain
+            // range sweep would otherwise paint (and persist) the neighbouring
+            // column's words. No-op on single-column pages (one band).
+            if (anchorCol != null && w.col != null && w.col !== anchorCol) continue;
             var placed = false;
             for (var i = 0; i < bands.length; i++) {
                 var bnd = bands[i];
@@ -294,10 +495,13 @@ window.PdfPreviewModalHighlightAnchor = window.PdfPreviewModalHighlightAnchor ||
         }
     }
 
-    function nearestWordOrder(words, px, py) {
+    function nearestWordOrder(words, px, py, col) {
         var best = null;
         var bestDist = Infinity;
         words.forEach(function (w) {
+            // Keep the drag target inside the anchor's column so a handle dragged
+            // across a gutter cannot select a word in the neighbouring column.
+            if (col != null && w.col != null && w.col !== col) return;
             var dx = px - w.cx;
             var dy = py - w.cy;
             var dist = dx * dx + dy * dy;
@@ -347,14 +551,16 @@ window.PdfPreviewModalHighlightAnchor = window.PdfPreviewModalHighlightAnchor ||
         var oRect = overlay.getBoundingClientRect();
         var px = e.clientX - oRect.left;
         var py = e.clientY - oRect.top;
-        var target = nearestWordOrder(selected.words, px, py);
+        var target = nearestWordOrder(selected.words, px, py, selected.anchorCol);
         if (target === null) return;
         if (draggingHandle === 'start') {
             selected.startOrder = Math.min(target, selected.endOrder);
         } else {
             selected.endOrder = Math.max(target, selected.startOrder);
         }
-        var lines = coveredToQuads(selected.words, selected.startOrder, selected.endOrder);
+        var lines = coveredToQuads(
+            selected.words, selected.startOrder, selected.endOrder, selected.anchorCol
+        );
         repaintMarker(marker, lines);
         positionHandles();
     }
@@ -379,11 +585,18 @@ window.PdfPreviewModalHighlightAnchor = window.PdfPreviewModalHighlightAnchor ||
         }
 
         var words = selected.words;
-        var lines = coveredToQuads(words, selected.startOrder, selected.endOrder);
+        var lines = coveredToQuads(
+            words, selected.startOrder, selected.endOrder, selected.anchorCol
+        );
         var quadsPdf = lines.map(function (l) { return l.pdf; });
         var anchorParts = [];
         for (var order = selected.startOrder; order <= selected.endOrder; order++) {
-            if (words[order]) anchorParts.push(words[order].text);
+            var wd = words[order];
+            // Mirror the coveredToQuads column filter so anchor_text never
+            // records the neighbouring column's words on a multi-column page.
+            if (!wd) continue;
+            if (selected.anchorCol != null && wd.col != null && wd.col !== selected.anchorCol) continue;
+            anchorParts.push(wd.text);
         }
         var anchorText = anchorParts.join(' ');
 
@@ -458,6 +671,13 @@ window.PdfPreviewModalHighlightAnchor = window.PdfPreviewModalHighlightAnchor ||
         var span = spanFromQuads(index.words, quadBoxes);
         if (!span) return;
 
+        // Anchor the extend to the column the highlight already lives in: the most
+        // common column among the words ACTUALLY covered by its quads (span.orders),
+        // NOT the [start,end] range — on a multi-column page the range spans
+        // interleaved neighbouring-column words and would mis-infer the column
+        // (codex 2026-07-20). Single-column pages have one band -> always 0 -> no-op.
+        var anchorCol = modeColumn(index.words, span.orders);
+
         selected = {
             marker: marker,
             ann: ann,
@@ -467,6 +687,7 @@ window.PdfPreviewModalHighlightAnchor = window.PdfPreviewModalHighlightAnchor ||
             endOrder: span.endOrder,
             scaleX: index.scaleX,
             scaleY: index.scaleY,
+            anchorCol: anchorCol,
         };
         marker.classList.add('highlight-anchor-selected');
         createHandles(marker);
@@ -484,6 +705,16 @@ window.PdfPreviewModalHighlightAnchor = window.PdfPreviewModalHighlightAnchor ||
 
     exports.destroy = function destroy() {
         exports.deselect();
+    };
+
+    // Test-only surface for the pure column-band / quad-grouping helpers. Harmless
+    // in production (no state), exercised by the column-awareness vitest suite.
+    exports._internals = {
+        computeColumnBands: computeColumnBands,
+        colOfWord: colOfWord,
+        coveredToQuads: coveredToQuads,
+        spanFromQuads: spanFromQuads,
+        modeColumn: modeColumn,
     };
 
 })(window.PdfPreviewModalHighlightAnchor);
