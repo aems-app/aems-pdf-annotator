@@ -68,6 +68,216 @@ describe('annotation-controller state ownership', () => {
     expect(annotationsState.undoStack).toEqual([]);
   });
 
+  it('captures a full undo operation after completing a highlight extend', async () => {
+    document.body.innerHTML = `
+      <div
+        class="annotation-marker source-ai"
+        data-annotation-xref="42"
+        data-annotation-request-id="highlight-1"
+        data-annotation-source="AI"
+      ></div>
+    `;
+    const mod = await loadAnnotationControllerModule();
+    const oldQuads = [
+      [10, 20, 50, 30],
+      [10, 34, 80, 44],
+    ];
+    const newQuadsPdf = [
+      [10, 770, 90, 780],
+      [10, 756, 110, 766],
+    ];
+    const oldRect = [10, 20, 80, 44];
+    const newRect = [10, 20, 110, 44];
+    const annotation = {
+      stable_id: 'highlight-1',
+      requestIdentifier: 'highlight-1',
+      xref: 42,
+      page_index: 0,
+      type: 'Highlight',
+      quads: oldQuads,
+      anchor_text: 'previous anchored phrase',
+      rect: oldRect,
+      source: 'AI',
+      original_source: 'AI',
+    };
+    let currentAnnotationsData = { 0: [annotation] };
+    const updateAnnotationRequest = vi.fn().mockResolvedValue({
+      success: true,
+      annotation: {
+        ...annotation,
+        quads: [
+          [10, 20, 90, 30],
+          [10, 34, 110, 44],
+        ],
+        anchor_text: 'extended anchored phrase',
+        rect: newRect,
+        source: 'HUMAN',
+        original_source: 'AI',
+        can_revert_to_ai: true,
+      },
+    });
+    const controller = mod.createAnnotationController({
+      annotationsState: { undoStack: [] },
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      helpers: {
+        buildApiAnnotationIdentifier: ({ identifier }) => identifier,
+        resolveAnnotationIdentifierValue: (ann) => ann.stable_id,
+        normalizeAnnotationIdentifierValue: (value) => value == null ? null : String(value),
+        resolveAnnotationSource: (ann) => ann.source,
+        updateAnnotationRequest,
+      },
+    });
+    const marker = document.querySelector('.annotation-marker');
+
+    await controller.persistHighlightExtend(marker, annotation, {
+      quadsPdf: newQuadsPdf,
+      anchorText: 'extended anchored phrase',
+      pageIdx: 0,
+    });
+
+    expect(updateAnnotationRequest).toHaveBeenCalledWith('highlight-1', {
+      quads: newQuadsPdf,
+      anchor_text: 'extended anchored phrase',
+      source: 'HUMAN',
+    });
+    expect(controller.peekUndoOperation()).toMatchObject({
+      type: 'highlight-extend',
+      identifier: 'highlight-1',
+      xref: '42',
+      requestId: 'highlight-1',
+      pageIdx: 0,
+      oldQuads,
+      oldAnchorText: 'previous anchored phrase',
+      oldRect,
+      oldSource: 'AI',
+      newQuads: [
+        [10, 20, 90, 30],
+        [10, 34, 110, 44],
+      ],
+      newAnchorText: 'extended anchored phrase',
+      newRect,
+      newSource: 'HUMAN',
+      isOwnershipTransfer: true,
+    });
+    expect(currentAnnotationsData[0][0]).toMatchObject({
+      quads: [
+        [10, 20, 90, 30],
+        [10, 34, 110, 44],
+      ],
+      anchor_text: 'extended anchored phrase',
+      rect: newRect,
+      source: 'HUMAN',
+      original_source: 'AI',
+    });
+  });
+
+  it('restores highlight quads, anchor, rect, and AI ownership during extend undo', async () => {
+    document.body.innerHTML = `
+      <div
+        class="annotation-marker source-human"
+        data-annotation-xref="43"
+        data-annotation-request-id="highlight-1"
+        data-annotation-source="HUMAN"
+      ></div>
+    `;
+    window.__pdfGradedViewer = {
+      pdf: {
+        getPage: vi.fn().mockResolvedValue({ view: [0, 0, 600, 800] }),
+      },
+    };
+    const mod = await loadAnnotationControllerModule();
+    const oldQuads = [
+      [10, 20, 50, 30],
+      [10, 34, 80, 44],
+    ];
+    const oldRect = [10, 20, 80, 44];
+    let currentAnnotationsData = {
+      0: [{
+        stable_id: 'highlight-1',
+        requestIdentifier: 'highlight-1',
+        xref: 43,
+        page_index: 0,
+        type: 'Highlight',
+        quads: [
+          [10, 20, 90, 30],
+          [10, 34, 110, 44],
+        ],
+        anchor_text: 'extended anchored phrase',
+        rect: [10, 20, 110, 44],
+        source: 'HUMAN',
+        original_source: 'AI',
+        can_revert_to_ai: true,
+      }],
+    };
+    const restoredAnnotation = {
+      ...currentAnnotationsData[0][0],
+      quads: oldQuads,
+      anchor_text: 'previous anchored phrase',
+      rect: oldRect,
+      source: 'AI',
+      original_source: 'AI',
+      can_revert_to_ai: false,
+      xref: 44,
+    };
+    const updateAnnotationRequest = vi.fn().mockResolvedValue({
+      success: true,
+      annotation: restoredAnnotation,
+    });
+    const showToast = vi.fn();
+    const controller = mod.createAnnotationController({
+      annotationsState: { undoStack: [] },
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      helpers: {
+        buildApiAnnotationIdentifier: ({ identifier }) => identifier,
+        normalizeAnnotationIdentifierValue: (value) => value == null ? null : String(value),
+        resolveAnnotationIdentifierValue: (ann) => ann.stable_id,
+        updateAnnotationRequest,
+        showToast,
+        translatePdfPreviewText: (text) => text,
+      },
+    });
+    const operation = {
+      type: 'highlight-extend',
+      identifier: 'highlight-1',
+      xref: '43',
+      requestId: 'highlight-1',
+      pageIdx: 0,
+      oldQuads,
+      oldAnchorText: 'previous anchored phrase',
+      oldRect,
+      oldSource: 'AI',
+      newQuads: currentAnnotationsData[0][0].quads,
+      newAnchorText: 'extended anchored phrase',
+      newRect: currentAnnotationsData[0][0].rect,
+      newSource: 'HUMAN',
+      isOwnershipTransfer: true,
+    };
+
+    await controller.performHighlightExtendUndo(operation);
+
+    expect(updateAnnotationRequest).toHaveBeenCalledWith('highlight-1', {
+      quads: [
+        [10, 770, 50, 780],
+        [10, 756, 80, 766],
+      ],
+      anchor_text: 'previous anchored phrase',
+      rect: [10, 756, 80, 780],
+      source: 'AI',
+    });
+    expect(currentAnnotationsData[0][0]).toEqual(restoredAnnotation);
+    expect(currentAnnotationsData[0][0]).toMatchObject({
+      quads: oldQuads,
+      anchor_text: 'previous anchored phrase',
+      rect: oldRect,
+      source: 'AI',
+      original_source: 'AI',
+      can_revert_to_ai: false,
+    });
+    expect(showToast).toHaveBeenCalledWith('success', 'Ownership reverted to AI');
+  });
+
   it('selectAnnotation syncs selectedId and emits selection changes', async () => {
     document.body.innerHTML = `
       <div id="pdfGradedCommentsList">
