@@ -8673,6 +8673,7 @@
                     buildDisplayOrderByPagePosition: buildDisplayOrderByPagePosition,
                     resolveDisplayOrderFromLookup: resolveDisplayOrderFromLookup,
                     observeAnnotationMarker: observeAnnotationMarker,
+                    unobserveAnnotationMarker: _unobserveAnnotationMarker,
                     makeAnnotationDraggable: makeAnnotationDraggable,
                     isAnnotationDragging: function () { return _isDraggingAnnotation; },
                     DrawingCanvas: DrawingCanvas,
