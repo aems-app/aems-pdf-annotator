@@ -28,6 +28,7 @@ describe('annotation-controller state ownership', () => {
     delete window.PdfPreviewModalAnnotationHelpers;
     delete window.PdfPreviewModalCrud;
     delete window.PdfPreviewModalSidebarPanel;
+    delete window.__pdfGradedViewer;
     window.PdfPreviewModalUtils = {
       debugLog: () => {},
       PLACEHOLDER_STRINGS: ['', 'New comment...', 'New comment'],
@@ -374,8 +375,8 @@ describe('annotation-controller state ownership', () => {
     await controller.performHighlightExtendUndo(controller.popUndoOperation());
 
     expect(requestIdentifiers).toEqual([
-      'xref:42',
-      'xref:43',
+      'highlight-1',
+      'highlight-1',
       'highlight-1',
       'highlight-1',
     ]);

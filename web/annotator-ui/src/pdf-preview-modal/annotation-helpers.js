@@ -135,10 +135,8 @@ window.PdfPreviewModalAnnotationHelpers = window.PdfPreviewModalAnnotationHelper
             || parsedRequest.xref
             || parsedIdentifier.xref;
 
-        const resolvedStable = exports.normalizeAnnotationIdentifierValue(requestId)
-            || parsedRequest.stableId
-            || parsedIdentifier.stableId
-            || exports.normalizeAnnotationIdentifierValue(identifier);
+        const resolvedStable = parsedRequest.stableId
+            || parsedIdentifier.stableId;
 
         return { xref: resolvedXref, stableId: resolvedStable };
     };
@@ -172,17 +170,17 @@ window.PdfPreviewModalAnnotationHelpers = window.PdfPreviewModalAnnotationHelper
         const effectiveXref = parsedXref || null;
         const effectiveStable = parsedStable || null;
 
-        // Prefer exact xref when available
-        if (effectiveXref) {
-            return `xref:${effectiveXref}`;
-        }
-
+        // Stable IDs survive backend delete-and-recreate mutations; xrefs do not.
         if (effectiveStable) {
             // Prefix numeric IDs with id: to avoid confusion with xref
             if (/^\d+$/.test(effectiveStable)) {
                 return `id:${effectiveStable}`;
             }
             return effectiveStable;
+        }
+
+        if (effectiveXref) {
+            return `xref:${effectiveXref}`;
         }
 
         if (!normIdentifier) {
