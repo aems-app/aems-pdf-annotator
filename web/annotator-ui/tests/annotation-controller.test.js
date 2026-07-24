@@ -2,11 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const MODULE_PATH = '../src/pdf-preview-modal/annotation-controller.js';
 
+const HELPERS_MODULE_PATH = '../src/pdf-preview-modal/annotation-helpers.js';
+
 const UTILS_MODULE_PATH = '../src/pdf-preview-modal/utils.js';
 
 const loadAnnotationControllerModule = async () => {
   await import(new URL(MODULE_PATH, import.meta.url));
   return window.PdfPreviewModalAnnotationController;
+};
+
+const loadAnnotationHelpersModule = async () => {
+  await import(new URL(HELPERS_MODULE_PATH, import.meta.url));
+  return window.PdfPreviewModalAnnotationHelpers;
 };
 
 const loadUtilsModule = async () => {
@@ -18,6 +25,7 @@ describe('annotation-controller state ownership', () => {
   beforeEach(() => {
     vi.resetModules();
     delete window.PdfPreviewModalAnnotationController;
+    delete window.PdfPreviewModalAnnotationHelpers;
     delete window.PdfPreviewModalCrud;
     delete window.PdfPreviewModalSidebarPanel;
     window.PdfPreviewModalUtils = {
@@ -276,6 +284,170 @@ describe('annotation-controller state ownership', () => {
       can_revert_to_ai: false,
     });
     expect(showToast).toHaveBeenCalledWith('success', 'Ownership reverted to AI');
+  });
+
+  it('undoes two consecutive highlight extends after every PUT replaces the xref', async () => {
+    document.body.innerHTML = `
+      <div
+        class="annotation-marker source-ai"
+        data-annotation-xref="42"
+        data-annotation-request-id="highlight-1"
+        data-annotation-source="AI"
+      ></div>
+    `;
+    const mod = await loadAnnotationControllerModule();
+    const helpers = await loadAnnotationHelpersModule();
+    const initialQuads = [[10, 20, 50, 30]];
+    const firstExtendQuads = [[10, 20, 70, 30]];
+    const secondExtendQuads = [[10, 20, 90, 30]];
+    let serverAnnotation = {
+      stable_id: 'highlight-1',
+      requestIdentifier: 'highlight-1',
+      xref: 42,
+      page_index: 0,
+      type: 'Highlight',
+      quads: initialQuads,
+      anchor_text: 'initial phrase',
+      rect: [10, 20, 50, 30],
+      source: 'AI',
+      original_source: 'AI',
+    };
+    let currentAnnotationsData = { 0: [{ ...serverAnnotation }] };
+    const requestIdentifiers = [];
+    const updateAnnotationRequest = vi.fn(async (apiIdentifier, body) => {
+      requestIdentifiers.push(apiIdentifier);
+      if (
+        apiIdentifier !== serverAnnotation.stable_id
+        && apiIdentifier !== `xref:${serverAnnotation.xref}`
+      ) {
+        return {
+          success: false,
+          status: 404,
+          error: `Annotation not found: ${apiIdentifier}`,
+        };
+      }
+
+      const nextQuads = body.quads || serverAnnotation.quads;
+      serverAnnotation = {
+        ...serverAnnotation,
+        ...body,
+        quads: nextQuads,
+        rect: body.rect || [
+          nextQuads[0][0],
+          nextQuads[0][1],
+          nextQuads[nextQuads.length - 1][2],
+          nextQuads[nextQuads.length - 1][3],
+        ],
+        xref: serverAnnotation.xref + 1,
+      };
+      return {
+        success: true,
+        annotation: { ...serverAnnotation },
+      };
+    });
+    const controller = mod.createAnnotationController({
+      annotationsState: { undoStack: [] },
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      helpers: {
+        buildApiAnnotationIdentifier: helpers.buildApiAnnotationIdentifier,
+        normalizeAnnotationIdentifierValue: helpers.normalizeAnnotationIdentifierValue,
+        resolveAnnotationIdentifierValue: helpers.resolveAnnotationIdentifierValue,
+        resolveAnnotationSource: helpers.resolveAnnotationSource,
+        updateAnnotationRequest,
+      },
+    });
+    const marker = document.querySelector('.annotation-marker');
+
+    await controller.persistHighlightExtend(marker, currentAnnotationsData[0][0], {
+      quadsPdf: firstExtendQuads,
+      anchorText: 'first extended phrase',
+      pageIdx: 0,
+    });
+    await controller.persistHighlightExtend(marker, currentAnnotationsData[0][0], {
+      quadsPdf: secondExtendQuads,
+      anchorText: 'second extended phrase',
+      pageIdx: 0,
+    });
+
+    await controller.performHighlightExtendUndo(controller.popUndoOperation());
+    await controller.performHighlightExtendUndo(controller.popUndoOperation());
+
+    expect(requestIdentifiers).toEqual([
+      'xref:42',
+      'xref:43',
+      'highlight-1',
+      'highlight-1',
+    ]);
+    expect(serverAnnotation).toMatchObject({
+      stable_id: 'highlight-1',
+      xref: 46,
+      quads: initialQuads,
+      anchor_text: 'initial phrase',
+      rect: [10, 20, 50, 30],
+      source: 'AI',
+    });
+    expect(currentAnnotationsData[0][0]).toMatchObject(serverAnnotation);
+    expect(marker.dataset.annotationXref).toBe('46');
+    expect(controller.getUndoStack()).toEqual([]);
+  });
+
+  it('drops a highlight extend undo and shows an error toast when the target was deleted', async () => {
+    const mod = await loadAnnotationControllerModule();
+    const helpers = await loadAnnotationHelpersModule();
+    const annotationsState = { undoStack: [] };
+    let currentAnnotationsData = {
+      0: [{
+        stable_id: 'highlight-1',
+        requestIdentifier: 'highlight-1',
+        xref: 43,
+        page_index: 0,
+        type: 'Highlight',
+        quads: [[10, 20, 70, 30]],
+        anchor_text: 'extended phrase',
+        rect: [10, 20, 70, 30],
+        source: 'HUMAN',
+      }],
+    };
+    const missingError = Object.assign(new Error('Annotation not found'), { status: 404 });
+    const updateAnnotationRequest = vi.fn().mockRejectedValue(missingError);
+    const showToast = vi.fn();
+    const controller = mod.createAnnotationController({
+      annotationsState,
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      helpers: {
+        buildApiAnnotationIdentifier: helpers.buildApiAnnotationIdentifier,
+        normalizeAnnotationIdentifierValue: helpers.normalizeAnnotationIdentifierValue,
+        resolveAnnotationIdentifierValue: helpers.resolveAnnotationIdentifierValue,
+        updateAnnotationRequest,
+        showToast,
+        translatePdfPreviewText: (text) => text,
+      },
+    });
+    controller.pushUndoOperation({
+      type: 'highlight-extend',
+      identifier: 'highlight-1',
+      xref: '43',
+      requestId: 'highlight-1',
+      pageIdx: 0,
+      oldQuads: [[10, 20, 50, 30]],
+      oldAnchorText: 'initial phrase',
+      oldRect: [10, 20, 50, 30],
+      oldSource: 'AI',
+      newQuads: currentAnnotationsData[0][0].quads,
+      newAnchorText: 'extended phrase',
+      newRect: currentAnnotationsData[0][0].rect,
+      newSource: 'HUMAN',
+      isOwnershipTransfer: true,
+    });
+
+    const result = await controller.performHighlightExtendUndo(controller.popUndoOperation());
+
+    expect(result).toMatchObject({ success: false, missing: true });
+    expect(showToast).toHaveBeenCalledWith('error', 'Annotation no longer exists');
+    expect(controller.getUndoStack()).toEqual([]);
+    expect(annotationsState.undoStack).toEqual([]);
   });
 
   it('selectAnnotation syncs selectedId and emits selection changes', async () => {
