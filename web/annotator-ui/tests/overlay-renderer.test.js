@@ -319,6 +319,60 @@ describe('overlay-renderer', () => {
     expect(marker.style.top).toBe('60px');
   });
 
+  it('unobserves old markers before a forced overlay rebuild detaches them', async () => {
+    const mod = await loadOverlayRendererModule();
+    const observeAnnotationMarker = vi.fn();
+    const unobserveAnnotationMarker = vi.fn();
+    const renderer = mod.createOverlayRenderer({
+      getAnnotationsData: () => ({
+        0: [{
+          id: 'stable-observed',
+          stable_id: 'stable-observed',
+          xref: 81,
+          type: 'Highlight',
+          rect: [30, 120, 70, 160],
+          quads: [[30, 120, 70, 160]],
+          content: 'Observed highlight',
+          color: 'green',
+          source: 'AI',
+        }],
+      }),
+      getSelectedAnnotation: () => ({ pageIdx: null, identifier: null }),
+      helpers: {
+        normalizeAnnotationIdentifierValue: (value) => value || '',
+        resolveAnnotationIdParts: ({ xref, identifier }) => ({ xref, stableId: identifier }),
+        resolveAnnotationIdentifierValue: (ann) => ann.id || ann.stable_id || '',
+        deriveAnnotationPriority: (ann) => ann.color || 'amber',
+        resolveAnnotationSource: (ann) => ann.source || 'AI',
+        isPlaceholderAnnotation: () => false,
+        isMarkupType: () => false,
+        renderCompactInlineLabelContent: (label, number, text) => {
+          label.textContent = number + ' ' + text;
+        },
+        positionLabelOptimally: () => {},
+        repositionAllLabels: () => {},
+        setupLabelTooltipEvents: () => {},
+        buildDisplayOrderByPagePosition: () => ({}),
+        resolveDisplayOrderFromLookup: () => 1,
+        observeAnnotationMarker,
+        unobserveAnnotationMarker,
+        makeAnnotationDraggable: () => {},
+      },
+      capabilities: { annotationCrud: true },
+    });
+
+    renderer.renderPage(1, true);
+    const oldMarker = document.querySelector('.annotation-marker');
+    expect(observeAnnotationMarker).toHaveBeenCalledWith(oldMarker);
+
+    renderer.renderPage(1, true);
+
+    expect(unobserveAnnotationMarker).toHaveBeenCalledTimes(1);
+    expect(unobserveAnnotationMarker).toHaveBeenCalledWith(oldMarker);
+    expect(oldMarker.isConnected).toBe(false);
+    expect(document.querySelector('.annotation-marker')).not.toBe(oldMarker);
+  });
+
   it('cleans overlay DOM and handlers on destroy', async () => {
     const mod = await loadOverlayRendererModule();
     const renderer = mod.createOverlayRenderer({
