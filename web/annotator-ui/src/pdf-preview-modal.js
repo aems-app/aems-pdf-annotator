@@ -3225,6 +3225,7 @@
         const identifiers = [
             operation?.identifier,
             operation?.requestId,
+            operation?.xref,
         ];
         for (const identifier of identifiers) {
             if (identifier === null || identifier === undefined) continue;
@@ -3275,13 +3276,16 @@
     function resolveCurrentUndoTarget(pageIdx, operation) {
         const pageAnnotations = annotationsData[pageIdx] || [];
         const operationStableIdentifier = extractStableUndoIdentifier(null, operation);
-        if (!operationStableIdentifier) {
-            return null;
-        }
-        const annotationIdx = findAnnotationIndexByUndoOperation(pageIdx, {
-            identifier: operationStableIdentifier,
-            requestId: operationStableIdentifier,
-        });
+        const annotationIdx = findAnnotationIndexByUndoOperation(
+            pageIdx,
+            operationStableIdentifier
+                ? {
+                    identifier: operationStableIdentifier,
+                    requestId: operationStableIdentifier,
+                    xref: operation?.xref,
+                }
+                : operation
+        );
         if (annotationIdx < 0 || !pageAnnotations[annotationIdx]) {
             return null;
         }
@@ -3289,8 +3293,11 @@
         const annotation = pageAnnotations[annotationIdx];
         const stableIdentifier = extractStableUndoIdentifier(annotation, operation);
         const currentXref = normalizeAnnotationIdentifierValue(annotation.xref);
+        const namespacedStableIdentifier = stableIdentifier && /^\d+$/.test(stableIdentifier)
+            ? `id:${stableIdentifier}`
+            : stableIdentifier;
         const apiIdentifier = stableIdentifier
-            ? buildApiAnnotationIdentifier({ identifier: stableIdentifier })
+            ? buildApiAnnotationIdentifier({ identifier: namespacedStableIdentifier })
             : buildApiAnnotationIdentifier({ xref: currentXref });
         if (!apiIdentifier) {
             return null;

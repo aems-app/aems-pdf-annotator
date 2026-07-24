@@ -523,6 +523,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var identifiers = [
                 operation && operation.identifier,
                 operation && operation.requestId,
+                operation && operation.xref,
             ];
             if (_h.findAnnotationIndex) {
                 for (var helperIdx = 0; helperIdx < identifiers.length; helperIdx++) {
@@ -598,13 +599,16 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 ? annotationsData[pageIdx]
                 : [];
             var operationStableIdentifier = _extractStableIdentifier(null, operation);
-            if (!operationStableIdentifier) {
-                return null;
-            }
-            var annotationIdx = _findAnnotationIndexByOperation(pageIdx, {
-                identifier: operationStableIdentifier,
-                requestId: operationStableIdentifier,
-            });
+            var annotationIdx = _findAnnotationIndexByOperation(
+                pageIdx,
+                operationStableIdentifier
+                    ? {
+                        identifier: operationStableIdentifier,
+                        requestId: operationStableIdentifier,
+                        xref: operation && operation.xref,
+                    }
+                    : operation
+            );
             if (annotationIdx < 0 || !pageAnnotations[annotationIdx]) {
                 return null;
             }
@@ -612,8 +616,11 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var annotation = pageAnnotations[annotationIdx];
             var stableIdentifier = _extractStableIdentifier(annotation, operation);
             var currentXref = _normalizeIdentifier(annotation.xref);
+            var namespacedStableIdentifier = stableIdentifier && /^\d+$/.test(stableIdentifier)
+                ? 'id:' + stableIdentifier
+                : stableIdentifier;
             var apiIdentifier = stableIdentifier
-                ? _h.buildApiAnnotationIdentifier({ identifier: stableIdentifier })
+                ? _h.buildApiAnnotationIdentifier({ identifier: namespacedStableIdentifier })
                 : _h.buildApiAnnotationIdentifier({ xref: currentXref });
             if (!apiIdentifier) {
                 return null;
