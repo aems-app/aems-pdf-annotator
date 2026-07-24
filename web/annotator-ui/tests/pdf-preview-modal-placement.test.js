@@ -7,6 +7,97 @@ const loadPlacementHelpers = async () => {
   return window.PdfPreviewModal.__test;
 };
 
+async function createUndoHarness({
+  controllerUndoStack = [],
+  performHighlightExtendUndo = vi.fn().mockResolvedValue({ success: true }),
+  updateAnnotation = vi.fn().mockResolvedValue({ success: true }),
+} = {}) {
+  let modalHelpers;
+
+  window.PdfPreviewModalStateCore = {
+    createModalState: (options) => ({
+      options: {
+        capabilities: { annotationCrud: true },
+        ...options,
+      },
+      ui: {},
+      document: {},
+      annotations: { undoStack: [] },
+      sync: {},
+    }),
+  };
+  window.PdfPreviewModalAnnotationController = {
+    createAnnotationController: (options) => {
+      modalHelpers = options.helpers;
+      return {
+        peekUndoOperation: () => controllerUndoStack.at(-1) || null,
+        popUndoOperation: () => controllerUndoStack.pop() || null,
+        getUndoStack: () => controllerUndoStack,
+        performHighlightExtendUndo,
+        onAnnotationsChanged: () => {},
+        onAnnotationsLoaded: () => {},
+        onRenderListNeeded: () => {},
+        onRenderOverlaysNeeded: () => {},
+        onScheduleUpdate: () => {},
+        destroy: () => {},
+      };
+    },
+  };
+
+  class FakeViewer {
+    onAnnotationsPageChange() {}
+    onPageRendered() {}
+    onSliderSync() {}
+  }
+  window.PdfPreviewModalViewer = {
+    PDFViewer: FakeViewer,
+    resolvePdfjsLib: () => ({}),
+  };
+
+  const modalInstances = new WeakMap();
+  class FakeModal {
+    constructor(element) {
+      this.element = element;
+      modalInstances.set(element, this);
+    }
+
+    show() {}
+
+    hide() {
+      this.element.dispatchEvent(new window.Event('hidden.bs.modal'));
+    }
+
+    static getInstance(element) {
+      return modalInstances.get(element) || null;
+    }
+  }
+  window.bootstrap.Modal = FakeModal;
+
+  const adapter = {
+    updateAnnotation,
+  };
+  await loadPlacementHelpers();
+  const handle = window.PdfPreviewModal.createPdfPreviewModal({
+    assignmentId: 'assignment-1',
+    submissionId: 'submission-1',
+    modeAdapter: adapter,
+  });
+  await handle.open();
+
+  return {
+    handle,
+    pushLocalUndo: modalHelpers.pushUndoOperation,
+    dispatchUndo: () => {
+      document.dispatchEvent(new window.KeyboardEvent('keydown', {
+        key: 'z',
+        ctrlKey: true,
+        bubbles: true,
+      }));
+    },
+    getUndoStacks: () => window.PdfPreviewModal.__test.getUndoStacks(),
+  };
+}
+
 function createMarker({
   taskId = '',
   checkId = '',
@@ -93,9 +184,17 @@ describe('pdf-preview-modal placement helpers', () => {
     delete window.PdfPreviewModalUtils;
     delete window.PdfPreviewModalStateCore;
     delete window.PdfPreviewModalViewer;
+    delete window.PdfPreviewModalAnnotationController;
+    delete window.PdfPreviewModalDocumentController;
+    delete window.PdfPreviewModalOverlayRenderer;
+    delete window.PdfPreviewModalVersionSync;
+    delete window.PdfPreviewModalShell;
+    delete window.__pdfOriginalViewer;
+    delete window.__pdfGradedViewer;
     delete window.PDFViewer;
     document.body.innerHTML = `
       <div id="pdfPreviewModal"></div>
+      <div id="pdfPreviewStudent"></div>
       <div id="pdfOriginalPane"></div>
       <div id="pdfGradedPane"></div>
       <button id="pdfOriginalTab"></button>
@@ -861,6 +960,130 @@ describe('pdf-preview-modal placement helpers', () => {
     expect(lookup.get('ann-2')).toBe(2);
     expect(lookup.has('draw-1')).toBe(false);
     expect(lookup.has('box-1')).toBe(false);
+  });
+
+  it('discards a dead move undo so an older operation can run', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const updateAnnotation = vi.fn().mockResolvedValue({ success: true });
+    const harness = await createUndoHarness({ updateAnnotation });
+    harness.pushLocalUndo({
+      type: 'edit',
+      identifier: 'older-annotation',
+      pageIdx: 0,
+      oldContent: 'older content',
+      undoTimestamp: 100,
+    });
+    harness.pushLocalUndo({
+      type: 'move',
+      identifier: 'deleted-annotation',
+      requestId: 'deleted-annotation',
+      xref: '77',
+      oldPageIdx: 0,
+      newPageIdx: 0,
+      oldRect: [10, 20, 30, 40],
+      undoTimestamp: 200,
+    });
+
+    harness.dispatchUndo();
+    await Promise.resolve();
+
+    expect(harness.getUndoStacks().local).toEqual([
+      expect.objectContaining({ type: 'edit', identifier: 'older-annotation' }),
+    ]);
+    expect(document.querySelector('.alert-danger')?.textContent).toContain('Annotation no longer exists');
+
+    harness.dispatchUndo();
+    await Promise.resolve();
+
+    expect(updateAnnotation).toHaveBeenCalledTimes(1);
+    expect(updateAnnotation.mock.calls[0][2]).toBe('older-annotation');
+    harness.handle.destroy();
+  });
+
+  it('ignores rapid reentry and releases the undo guard after a request error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let rejectFirstRequest;
+    const updateAnnotation = vi.fn()
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => {
+        rejectFirstRequest = reject;
+      }))
+      .mockResolvedValue({ success: true });
+    const harness = await createUndoHarness({ updateAnnotation });
+    harness.pushLocalUndo({
+      type: 'edit',
+      identifier: 'older-annotation',
+      pageIdx: 0,
+      oldContent: 'older content',
+      undoTimestamp: 100,
+    });
+    harness.pushLocalUndo({
+      type: 'edit',
+      identifier: 'newer-annotation',
+      pageIdx: 0,
+      oldContent: 'newer content',
+      undoTimestamp: 200,
+    });
+
+    harness.dispatchUndo();
+    harness.dispatchUndo();
+
+    expect(updateAnnotation).toHaveBeenCalledTimes(1);
+    expect(updateAnnotation.mock.calls[0][2]).toBe('newer-annotation');
+
+    rejectFirstRequest(new Error('request failed'));
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.dispatchUndo();
+    await Promise.resolve();
+
+    expect(updateAnnotation).toHaveBeenCalledTimes(2);
+    expect(updateAnnotation.mock.calls[1][2]).toBe('newer-annotation');
+    harness.handle.destroy();
+  });
+
+  it('undoes the local move first on timestamp ties and consumes its controller duplicate once', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const timestamp = 500;
+    const controllerOperation = {
+      type: 'highlight-extend',
+      identifier: 'highlight-1',
+      requestId: 'highlight-1',
+      pageIdx: 0,
+      undoTimestamp: timestamp,
+    };
+    const controllerUndoStack = [controllerOperation];
+    const performHighlightExtendUndo = vi.fn().mockResolvedValue({ success: true });
+    const harness = await createUndoHarness({
+      controllerUndoStack,
+      performHighlightExtendUndo,
+    });
+    harness.pushLocalUndo({ ...controllerOperation });
+    harness.pushLocalUndo({
+      type: 'move',
+      identifier: 'highlight-1',
+      requestId: 'highlight-1',
+      xref: '77',
+      oldPageIdx: 0,
+      newPageIdx: 0,
+      oldRect: [10, 20, 30, 40],
+      undoTimestamp: timestamp,
+    });
+
+    harness.dispatchUndo();
+    await Promise.resolve();
+
+    expect(performHighlightExtendUndo).not.toHaveBeenCalled();
+    expect(harness.getUndoStacks()).toMatchObject({
+      local: [expect.objectContaining({ type: 'highlight-extend' })],
+      controller: [expect.objectContaining({ type: 'highlight-extend' })],
+    });
+
+    harness.dispatchUndo();
+    await Promise.resolve();
+
+    expect(performHighlightExtendUndo).toHaveBeenCalledTimes(1);
+    expect(harness.getUndoStacks()).toEqual({ local: [], controller: [] });
+    harness.handle.destroy();
   });
 
   it('waits 800ms before hover expands a compact label', async () => {
