@@ -1033,6 +1033,8 @@ describe('pdf-preview-modal placement helpers', () => {
     rejectFirstRequest(new Error('request failed'));
     await Promise.resolve();
     await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     harness.dispatchUndo();
     await Promise.resolve();
 

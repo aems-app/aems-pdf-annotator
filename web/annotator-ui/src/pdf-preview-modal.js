@@ -3206,7 +3206,7 @@
         const localTimestamp = Number(localOperation?.undoTimestamp || 0);
         const controllerTimestamp = Number(controllerOperation?.undoTimestamp || 0);
 
-        if (controllerOperation && controllerTimestamp >= localTimestamp) {
+        if (controllerOperation && (!localOperation || controllerTimestamp > localTimestamp)) {
             if (localOperation && isSameUndoOperation(localOperation, controllerOperation)) {
                 undoStack.pop();
             }
@@ -3771,6 +3771,10 @@
     })();
 
     async function performUndo() {
+        if (isUndoing) {
+            return;
+        }
+
         const operation = getNextUndoOperation();
         if (!operation) {
             // No operations to undo; silently ignore to keep flow smooth
@@ -3846,8 +3850,7 @@
 
                 if (!apiIdentifier) {
                     console.error('Unable to resolve annotation identifier for undo');
-                    showToast('error', 'Failed to undo move');
-                    undoStack.push(operation);
+                    dropMissingHighlightUndo();
                     return;
                 }
 
@@ -3939,8 +3942,12 @@
                     }
                 } catch (undoErr) {
                     console.error('Failed to undo move:', undoErr);
-                    showToast('error', 'Failed to undo move');
-                    undoStack.push(operation);
+                    if (isMissingAnnotationFailure(undoErr)) {
+                        dropMissingHighlightUndo();
+                    } else {
+                        showToast('error', 'Failed to undo move');
+                        undoStack.push(operation);
+                    }
                 }
 
             } else if (operation.type === 'highlight-extend') {
