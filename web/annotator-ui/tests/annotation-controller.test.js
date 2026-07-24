@@ -287,7 +287,77 @@ describe('annotation-controller state ownership', () => {
     expect(showToast).toHaveBeenCalledWith('success', 'Ownership reverted to AI');
   });
 
-  it('undoes two consecutive highlight extends after every PUT replaces the xref', async () => {
+  it('undoes an xref-only legacy highlight while it still exists in current state', async () => {
+    const mod = await loadAnnotationControllerModule();
+    const helpers = await loadAnnotationHelpersModule();
+    const oldQuads = [[10, 20, 50, 30]];
+    const oldRect = [10, 20, 50, 30];
+    let currentAnnotationsData = {
+      0: [{
+        xref: 77,
+        page_index: 0,
+        type: 'Highlight',
+        quads: [[10, 20, 80, 30]],
+        anchor_text: 'extended legacy phrase',
+        rect: [10, 20, 80, 30],
+        source: 'HUMAN',
+      }],
+    };
+    const restoredAnnotation = {
+      ...currentAnnotationsData[0][0],
+      xref: 78,
+      quads: oldQuads,
+      anchor_text: 'legacy phrase',
+      rect: oldRect,
+    };
+    const updateAnnotationRequest = vi.fn().mockResolvedValue({
+      success: true,
+      annotation: restoredAnnotation,
+    });
+    const showToast = vi.fn();
+    const controller = mod.createAnnotationController({
+      annotationsState: { undoStack: [] },
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      helpers: {
+        buildApiAnnotationIdentifier: helpers.buildApiAnnotationIdentifier,
+        normalizeAnnotationIdentifierValue: helpers.normalizeAnnotationIdentifierValue,
+        resolveAnnotationIdentifierValue: helpers.resolveAnnotationIdentifierValue,
+        updateAnnotationRequest,
+        showToast,
+        translatePdfPreviewText: (text) => text,
+      },
+    });
+
+    const result = await controller.performHighlightExtendUndo({
+      type: 'highlight-extend',
+      identifier: '77',
+      xref: '77',
+      requestId: '77',
+      pageIdx: 0,
+      oldQuads,
+      oldAnchorText: 'legacy phrase',
+      oldRect,
+      oldSource: 'HUMAN',
+      newQuads: currentAnnotationsData[0][0].quads,
+      newAnchorText: 'extended legacy phrase',
+      newRect: currentAnnotationsData[0][0].rect,
+      newSource: 'HUMAN',
+      isOwnershipTransfer: false,
+    });
+
+    expect(result).toMatchObject({ success: true });
+    expect(updateAnnotationRequest).toHaveBeenCalledWith('xref:77', {
+      quads: oldQuads,
+      anchor_text: 'legacy phrase',
+      rect: oldRect,
+      source: 'HUMAN',
+    });
+    expect(currentAnnotationsData[0][0]).toEqual(restoredAnnotation);
+    expect(showToast).not.toHaveBeenCalledWith('error', 'Annotation no longer exists');
+  });
+
+  it('undoes consecutive highlight extends through the refreshed live identity', async () => {
     document.body.innerHTML = `
       <div
         class="annotation-marker source-ai"
@@ -317,8 +387,11 @@ describe('annotation-controller state ownership', () => {
     const requestIdentifiers = [];
     const updateAnnotationRequest = vi.fn(async (apiIdentifier, body) => {
       requestIdentifiers.push(apiIdentifier);
+      const liveStableIdentifier = /^\d+$/.test(serverAnnotation.stable_id)
+        ? `id:${serverAnnotation.stable_id}`
+        : serverAnnotation.stable_id;
       if (
-        apiIdentifier !== serverAnnotation.stable_id
+        apiIdentifier !== liveStableIdentifier
         && apiIdentifier !== `xref:${serverAnnotation.xref}`
       ) {
         return {
@@ -371,17 +444,25 @@ describe('annotation-controller state ownership', () => {
       pageIdx: 0,
     });
 
+    serverAnnotation = {
+      ...serverAnnotation,
+      stable_id: '9001',
+      requestIdentifier: 'highlight-1',
+    };
+    currentAnnotationsData = { 0: [{ ...serverAnnotation }] };
+
     await controller.performHighlightExtendUndo(controller.popUndoOperation());
     await controller.performHighlightExtendUndo(controller.popUndoOperation());
 
     expect(requestIdentifiers).toEqual([
       'highlight-1',
       'highlight-1',
-      'highlight-1',
-      'highlight-1',
+      'id:9001',
+      'id:9001',
     ]);
     expect(serverAnnotation).toMatchObject({
-      stable_id: 'highlight-1',
+      stable_id: '9001',
+      requestIdentifier: 'highlight-1',
       xref: 46,
       quads: initialQuads,
       anchor_text: 'initial phrase',
