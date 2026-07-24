@@ -3814,6 +3814,20 @@
                     undoStack.push(operation);
                 }
 
+            } else if (operation.type === 'highlight-extend') {
+                try {
+                    if (_currentAnnotationCtrl &&
+                        typeof _currentAnnotationCtrl.performHighlightExtendUndo === 'function') {
+                        await _currentAnnotationCtrl.performHighlightExtendUndo(operation);
+                    } else {
+                        await performHighlightExtendUndoFallback(operation);
+                    }
+                } catch (undoErr) {
+                    console.error('Failed to undo highlight extend/shorten:', undoErr);
+                    showToast('error', 'Failed to undo highlight change');
+                    undoStack.push(operation);
+                }
+
             } else if (operation.type === 'edit') {
                 // Restore content AND source for edit operations
                 const apiIdentifier = buildApiAnnotationIdentifier({
@@ -5417,6 +5431,19 @@
 
     async function persistHighlightExtend(marker, ann, payload) {
         try {
+            if (_currentAnnotationCtrl &&
+                typeof _currentAnnotationCtrl.persistHighlightExtend === 'function') {
+                const controllerData = await _currentAnnotationCtrl.persistHighlightExtend(
+                    marker,
+                    ann,
+                    payload
+                );
+                if (!controllerData || !controllerData.success) {
+                    if (_currentOverlayRenderer) _currentOverlayRenderer.renderAnnotations(true);
+                }
+                return controllerData;
+            }
+
             const apiIdentifier = buildApiAnnotationIdentifier({
                 identifier: resolveAnnotationIdentifierValue(ann),
                 xref: marker && marker.dataset ? marker.dataset.annotationXref : undefined,
@@ -5425,6 +5452,10 @@
                     : undefined,
             });
             if (!apiIdentifier) return;
+            const oldQuads = cloneHighlightQuads(ann && ann.quads);
+            const oldAnchorText = ann ? ann.anchor_text : undefined;
+            const oldRect = cloneHighlightRect(ann && ann.rect);
+            const oldSource = resolveAnnotationSource(ann || {});
             // Any human edit transfers ownership; send new quads + anchor phrase.
             const data = await updateAnnotationRequest(apiIdentifier, {
                 quads: payload.quadsPdf,
@@ -5432,26 +5463,58 @@
                 source: 'HUMAN',
             });
             if (data && data.success) {
+                const responseAnn = data.annotation || null;
+                pushUndoOperation({
+                    type: 'highlight-extend',
+                    identifier: resolveAnnotationIdentifierValue(responseAnn)
+                        || resolveAnnotationIdentifierValue(ann),
+                    xref: responseAnn && responseAnn.xref != null
+                        ? String(responseAnn.xref)
+                        : (marker && marker.dataset ? marker.dataset.annotationXref : undefined),
+                    requestId: (responseAnn && (
+                        responseAnn.stable_id
+                        || responseAnn.requestIdentifier
+                        || responseAnn.id
+                    )) || (marker && marker.dataset
+                        ? (marker.dataset.annotationRequestId || marker.dataset.annotationIdentifier)
+                        : undefined),
+                    pageIdx: payload.pageIdx,
+                    oldQuads: oldQuads,
+                    newQuads: responseAnn && Array.isArray(responseAnn.quads)
+                        ? cloneHighlightQuads(responseAnn.quads)
+                        : cloneHighlightQuads(payload.quadsPdf),
+                    oldAnchorText: oldAnchorText,
+                    newAnchorText: responseAnn && responseAnn.anchor_text !== undefined
+                        ? responseAnn.anchor_text
+                        : payload.anchorText,
+                    oldRect: oldRect,
+                    newRect: responseAnn && responseAnn.rect
+                        ? cloneHighlightRect(responseAnn.rect)
+                        : oldRect,
+                    oldSource: oldSource,
+                    newSource: 'HUMAN',
+                    isOwnershipTransfer: oldSource === 'AI',
+                });
+
                 marker.classList.remove('source-ai');
                 marker.classList.add('source-human');
                 marker.dataset.annotationSource = 'HUMAN';
                 // Update the local cache from the server response (top-left
                 // quads) so the re-render keeps the new span instead of
                 // reverting to the pre-edit geometry.
-                if (data.annotation && Array.isArray(data.annotation.quads)) {
+                if (responseAnn && Array.isArray(responseAnn.quads)) {
                     const pageAnns = annotationsData[payload.pageIdx] || [];
                     const norm = normalizeAnnotationIdentifierValue(resolveAnnotationIdentifierValue(ann));
                     const idx = pageAnns.findIndex(function (a) {
                         return normalizeAnnotationIdentifierValue(resolveAnnotationIdentifierValue(a)) === norm;
                     });
                     if (idx >= 0) {
-                        pageAnns[idx] = Object.assign({}, pageAnns[idx], {
-                            quads: data.annotation.quads,
-                            anchor_text: data.annotation.anchor_text,
-                            rect: data.annotation.rect || pageAnns[idx].rect,
-                            source: 'HUMAN',
-                            xref: data.annotation.xref != null ? data.annotation.xref : pageAnns[idx].xref,
-                        });
+                        pageAnns[idx] = Object.assign(
+                            {},
+                            pageAnns[idx],
+                            responseAnn,
+                            { source: responseAnn.source || 'HUMAN' }
+                        );
                     }
                     if (_currentOverlayRenderer) _currentOverlayRenderer.renderAnnotations(true);
                 }
@@ -5471,6 +5534,109 @@
         } finally {
             if (HighlightAnchor) HighlightAnchor.deselect();
         }
+    }
+
+    function cloneHighlightRect(rect) {
+        return Array.isArray(rect) ? rect.slice() : rect;
+    }
+
+    function cloneHighlightQuads(quads) {
+        if (!Array.isArray(quads)) return quads;
+        return quads.map(function (quad) {
+            return Array.isArray(quad) ? quad.slice() : quad;
+        });
+    }
+
+    async function convertHighlightTopLeftRectToPdf(rect, pageIdx) {
+        const converted = cloneHighlightRect(rect);
+        const viewer = window.__pdfGradedViewer;
+        if (!Array.isArray(converted) || converted.length !== 4 || !viewer || !viewer.pdf) {
+            return converted;
+        }
+        try {
+            const page = await viewer.pdf.getPage(pageIdx + 1);
+            const pageHeight = page.view[3] - page.view[1];
+            return [
+                converted[0],
+                pageHeight - converted[3],
+                converted[2],
+                pageHeight - converted[1],
+            ];
+        } catch (_error) {
+            return converted;
+        }
+    }
+
+    async function convertHighlightTopLeftQuadsToPdf(quads, pageIdx) {
+        if (!Array.isArray(quads)) return quads;
+        const converted = [];
+        for (const quad of quads) {
+            converted.push(await convertHighlightTopLeftRectToPdf(quad, pageIdx));
+        }
+        return converted;
+    }
+
+    async function performHighlightExtendUndoFallback(operation) {
+        const apiIdentifier = buildApiAnnotationIdentifier({
+            identifier: operation.identifier,
+            xref: operation.xref,
+            requestId: operation.requestId,
+        });
+        if (!apiIdentifier) {
+            throw new Error('Unable to resolve annotation identifier for highlight extend undo.');
+        }
+
+        const oldQuadsPdf = await convertHighlightTopLeftQuadsToPdf(
+            operation.oldQuads,
+            operation.pageIdx
+        );
+        const oldRectPdf = await convertHighlightTopLeftRectToPdf(
+            operation.oldRect,
+            operation.pageIdx
+        );
+        const updateData = {
+            quads: oldQuadsPdf,
+            anchor_text: operation.oldAnchorText,
+            rect: oldRectPdf,
+        };
+        if (operation.oldSource) {
+            updateData.source = operation.oldSource;
+        }
+
+        const data = await updateAnnotationRequest(apiIdentifier, updateData);
+        if (!data || !data.success) {
+            throw new Error((data && data.error) || 'Highlight extend undo failed.');
+        }
+
+        const pageAnns = annotationsData[operation.pageIdx] || [];
+        const annotationIdx = findAnnotationIndex(
+            operation.pageIdx,
+            operation.identifier || operation.requestId || operation.xref
+        );
+        if (annotationIdx >= 0) {
+            if (data.annotation) {
+                pageAnns[annotationIdx] = enhanceAnnotationEntry(data.annotation);
+            } else {
+                pageAnns[annotationIdx] = Object.assign({}, pageAnns[annotationIdx], {
+                    quads: cloneHighlightQuads(operation.oldQuads),
+                    anchor_text: operation.oldAnchorText,
+                    rect: cloneHighlightRect(operation.oldRect),
+                    source: operation.oldSource,
+                });
+            }
+        }
+
+        renderAnnotationsList();
+        if (_currentOverlayRenderer) {
+            _currentOverlayRenderer.renderAnnotations(true);
+        } else {
+            renderAnnotationsForPage(operation.pageIdx + 1, true);
+        }
+        markLocalAnnotationChange();
+        if (operation.isOwnershipTransfer) {
+            showToast('success', translatePdfPreviewText('Ownership reverted to AI'));
+        }
+        return data;
     }
 
     function makeAnnotationDraggable(marker, identifier) {
