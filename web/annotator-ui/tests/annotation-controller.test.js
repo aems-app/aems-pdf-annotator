@@ -181,6 +181,72 @@ describe('annotation-controller state ownership', () => {
     });
   });
 
+  it('namespaces xref-only highlight identities when capturing extend undo', async () => {
+    document.body.innerHTML = `
+      <div
+        class="annotation-marker source-human"
+        data-annotation-xref="77"
+        data-annotation-request-id="77"
+        data-annotation-source="HUMAN"
+      ></div>
+    `;
+    const mod = await loadAnnotationControllerModule();
+    const helpers = await loadAnnotationHelpersModule();
+    const annotation = {
+      xref: 77,
+      page_index: 0,
+      type: 'Highlight',
+      quads: [[10, 20, 50, 30]],
+      anchor_text: 'legacy phrase',
+      rect: [10, 20, 50, 30],
+      source: 'HUMAN',
+    };
+    let currentAnnotationsData = { 0: [annotation] };
+    const updateAnnotationRequest = vi.fn().mockResolvedValue({
+      success: true,
+      annotation: {
+        ...annotation,
+        xref: 78,
+        quads: [[10, 20, 80, 30]],
+        anchor_text: 'extended legacy phrase',
+        rect: [10, 20, 80, 30],
+      },
+    });
+    const controller = mod.createAnnotationController({
+      annotationsState: { undoStack: [] },
+      getAnnotationsData: () => currentAnnotationsData,
+      setAnnotationsData: (data) => { currentAnnotationsData = data; },
+      helpers: {
+        buildApiAnnotationIdentifier: helpers.buildApiAnnotationIdentifier,
+        normalizeAnnotationIdentifierValue: helpers.normalizeAnnotationIdentifierValue,
+        resolveAnnotationIdentifierValue: helpers.resolveAnnotationIdentifierValue,
+        resolveAnnotationSource: helpers.resolveAnnotationSource,
+        updateAnnotationRequest,
+      },
+    });
+
+    await controller.persistHighlightExtend(
+      document.querySelector('.annotation-marker'),
+      annotation,
+      {
+        quadsPdf: [[10, 20, 80, 30]],
+        anchorText: 'extended legacy phrase',
+        pageIdx: 0,
+      },
+    );
+
+    expect(updateAnnotationRequest).toHaveBeenCalledWith('xref:77', {
+      quads: [[10, 20, 80, 30]],
+      anchor_text: 'extended legacy phrase',
+      source: 'HUMAN',
+    });
+    expect(controller.peekUndoOperation()).toMatchObject({
+      identifier: 'xref:78',
+      xref: '78',
+      requestId: 'xref:77',
+    });
+  });
+
   it('restores highlight quads, anchor, rect, and AI ownership during extend undo', async () => {
     document.body.innerHTML = `
       <div
