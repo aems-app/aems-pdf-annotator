@@ -11,8 +11,10 @@ async function createUndoHarness({
   controllerUndoStack = [],
   performHighlightExtendUndo = vi.fn().mockResolvedValue({ success: true }),
   updateAnnotation = vi.fn().mockResolvedValue({ success: true }),
+  visibilityController = null,
 } = {}) {
   let modalHelpers;
+  let overlayHelpers;
 
   window.PdfPreviewModalStateCore = {
     createModalState: (options) => ({
@@ -34,6 +36,8 @@ async function createUndoHarness({
         popUndoOperation: () => controllerUndoStack.pop() || null,
         getUndoStack: () => controllerUndoStack,
         performHighlightExtendUndo,
+        unobserveAnnotationMarker: visibilityController?.unobserveAnnotationMarker,
+        getVisibleMarkers: visibilityController?.getVisibleMarkers,
         onAnnotationsChanged: () => {},
         onAnnotationsLoaded: () => {},
         onRenderListNeeded: () => {},
@@ -43,6 +47,20 @@ async function createUndoHarness({
       };
     },
   };
+  if (visibilityController) {
+    window.PdfPreviewModalOverlayRenderer = {
+      createOverlayRenderer: (options) => {
+        overlayHelpers = options.helpers;
+        return {
+          onMarkerClicked: () => {},
+          onMarkerDblClicked: () => {},
+          onOverlayDblClicked: () => {},
+          onOverlayReady: () => {},
+          destroy: () => {},
+        };
+      },
+    };
+  }
 
   class FakeViewer {
     onAnnotationsPageChange() {}
@@ -87,6 +105,7 @@ async function createUndoHarness({
   return {
     handle,
     buildApiAnnotationIdentifier: modalHelpers.buildApiAnnotationIdentifier,
+    unobserveAnnotationMarker: overlayHelpers?.unobserveAnnotationMarker,
     pushLocalUndo: modalHelpers.pushUndoOperation,
     dispatchUndo: () => {
       document.dispatchEvent(new window.KeyboardEvent('keydown', {
@@ -969,6 +988,30 @@ describe('pdf-preview-modal placement helpers', () => {
 
     expect(harness.buildApiAnnotationIdentifier({ identifier: '123' })).toBe('id:123');
     expect(harness.buildApiAnnotationIdentifier({ requestId: '456' })).toBe('id:456');
+    harness.handle.destroy();
+  });
+
+  it('unobserves one marker without copying the controller visible-marker set', async () => {
+    const unobserveAnnotationMarker = vi.fn();
+    const getVisibleMarkers = vi.fn(() => new Set(
+      Array.from({ length: 100 }, (_value, index) => `0:annotation-${index}`),
+    ));
+    const harness = await createUndoHarness({
+      visibilityController: {
+        unobserveAnnotationMarker,
+        getVisibleMarkers,
+      },
+    });
+    const marker = document.createElement('div');
+    marker.dataset.annotationPage = '0';
+    marker.dataset.annotationRequestId = 'annotation-50';
+    getVisibleMarkers.mockClear();
+
+    harness.unobserveAnnotationMarker(marker);
+
+    expect(unobserveAnnotationMarker).toHaveBeenCalledOnce();
+    expect(unobserveAnnotationMarker).toHaveBeenCalledWith(marker);
+    expect(getVisibleMarkers).not.toHaveBeenCalled();
     harness.handle.destroy();
   });
 
