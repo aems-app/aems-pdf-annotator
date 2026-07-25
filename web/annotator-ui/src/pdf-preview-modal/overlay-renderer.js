@@ -55,6 +55,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
         var buildDisplayOrderByPagePosition = _helpers.buildDisplayOrderByPagePosition || function () { return {}; };
         var resolveDisplayOrderFromLookup = _helpers.resolveDisplayOrderFromLookup || function () { return 1; };
         var observeAnnotationMarker = _helpers.observeAnnotationMarker || function () {};
+        var unobserveAnnotationMarker = _helpers.unobserveAnnotationMarker || function () {};
         var makeAnnotationDraggable = _helpers.makeAnnotationDraggable || function () {};
         var isAnnotationDragging = _helpers.isAnnotationDragging || function () { return false; };
         var escapeCssAttribute = _helpers.escapeCssAttribute || UtilsModule.escapeCssAttribute || function (value) {
@@ -88,6 +89,13 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
         // -----------------------------------------------------------------
         // Core: render annotations for a single page
         // -----------------------------------------------------------------
+
+        function _clearOverlayMarkers(overlay) {
+            overlay.querySelectorAll('.annotation-marker').forEach(function (marker) {
+                unobserveAnnotationMarker(marker);
+            });
+            overlay.innerHTML = '';
+        }
 
         /**
          * Render annotation overlays for a specific page number (1-based).
@@ -183,7 +191,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             }
 
             // Clear existing annotations in this overlay
-            overlay.innerHTML = '';
+            _clearOverlayMarkers(overlay);
 
             if (!canvasWidth || !canvasHeight) {
                 overlay.style.pointerEvents = 'auto';
@@ -700,7 +708,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                         delete ov._dblclickHandler;
                     }
                     delete ov.dataset.annotationRenderSignature;
-                    ov.innerHTML = '';
+                    _clearOverlayMarkers(ov);
                 }
                 _trackedOverlays = [];
 

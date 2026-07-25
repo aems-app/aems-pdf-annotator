@@ -487,6 +487,475 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             _syncAnnotationsState({ undoStack: [] });
         }
 
+        function _cloneRect(rect) {
+            return Array.isArray(rect) ? rect.slice() : rect;
+        }
+
+        function _cloneQuads(quads) {
+            if (!Array.isArray(quads)) {
+                return quads;
+            }
+            return quads.map(function (quad) {
+                return Array.isArray(quad) ? quad.slice() : quad;
+            });
+        }
+
+        function _normalizeIdentifier(value) {
+            if (_h.normalizeAnnotationIdentifierValue) {
+                return _h.normalizeAnnotationIdentifierValue(value);
+            }
+            return value == null ? null : String(value).trim() || null;
+        }
+
+        function _resolveIdentifier(annotation) {
+            if (!annotation) {
+                return null;
+            }
+            if (_h.resolveAnnotationIdentifierValue) {
+                return _h.resolveAnnotationIdentifierValue(annotation);
+            }
+            return extractStableAnnotationId(annotation, _h)
+                || (annotation && annotation.requestIdentifier)
+                || (annotation && annotation.xref != null ? String(annotation.xref) : null);
+        }
+
+        function _namespaceXrefIdentifier(value, xref) {
+            var normalized = _normalizeIdentifier(value);
+            var normalizedXref = _normalizeIdentifier(xref);
+            if (!normalized ||
+                normalized.indexOf('|') !== -1 ||
+                normalized.indexOf('xref:') === 0 ||
+                normalized.indexOf('id:') === 0) {
+                return normalized;
+            }
+            return normalizedXref && normalized === normalizedXref
+                ? 'xref:' + normalized
+                : normalized;
+        }
+
+        function _findAnnotationIndexByOperation(pageIdx, operation) {
+            var identifiers = [
+                operation && operation.identifier,
+                operation && operation.requestId,
+                operation && operation.xref,
+            ];
+            if (_h.findAnnotationIndex) {
+                for (var helperIdx = 0; helperIdx < identifiers.length; helperIdx++) {
+                    if (identifiers[helperIdx] == null) continue;
+                    var found = _h.findAnnotationIndex(pageIdx, identifiers[helperIdx]);
+                    if (found >= 0) {
+                        return found;
+                    }
+                }
+            }
+
+            var annotationsData = _getAnnotationsData();
+            var pageAnnotations = annotationsData && annotationsData[pageIdx]
+                ? annotationsData[pageIdx]
+                : [];
+            var normalizedIdentifiers = identifiers
+                .map(_normalizeIdentifier)
+                .filter(function (identifier) { return !!identifier; });
+            return pageAnnotations.findIndex(function (annotation) {
+                var annotationIdentifiers = [
+                    _resolveIdentifier(annotation),
+                    annotation && annotation.requestIdentifier,
+                    annotation && annotation.stable_id,
+                    annotation && annotation.id,
+                    annotation && annotation.xref,
+                ].map(_normalizeIdentifier);
+                return annotationIdentifiers.some(function (identifier) {
+                    return identifier && normalizedIdentifiers.indexOf(identifier) !== -1;
+                });
+            });
+        }
+
+        function _extractStableIdentifier(annotation, operation) {
+            var currentXref = _normalizeIdentifier(annotation && annotation.xref);
+            var storedXref = _normalizeIdentifier(operation && operation.xref);
+            var candidates = [
+                { value: annotation && annotation.stable_id, explicit: true },
+                { value: annotation && annotation.stableId, explicit: true },
+                { value: annotation && annotation.requestIdentifier, explicit: false },
+                { value: annotation && annotation.id, explicit: false },
+                { value: operation && operation.requestId, explicit: false },
+                { value: operation && operation.identifier, explicit: false },
+            ];
+
+            for (var candidateIdx = 0; candidateIdx < candidates.length; candidateIdx++) {
+                var candidate = candidates[candidateIdx];
+                var normalized = _normalizeIdentifier(candidate.value);
+                if (!normalized) continue;
+
+                var parts = normalized.split('|');
+                for (var partIdx = 0; partIdx < parts.length; partIdx++) {
+                    var token = parts[partIdx].trim();
+                    if (!token || token.indexOf('xref:') === 0) continue;
+                    if (token.indexOf('id:') === 0) {
+                        token = token.slice(3).trim();
+                    }
+                    if (!token) continue;
+                    if (!candidate.explicit && (token === currentXref || token === storedXref)) {
+                        continue;
+                    }
+                    if (_h.isAnnotationType && _h.isAnnotationType(token)) {
+                        continue;
+                    }
+                    return token;
+                }
+            }
+            return null;
+        }
+
+        function _resolveCurrentUndoTarget(pageIdx, operation) {
+            var annotationsData = _getAnnotationsData();
+            var pageAnnotations = annotationsData && annotationsData[pageIdx]
+                ? annotationsData[pageIdx]
+                : [];
+            var operationStableIdentifier = _extractStableIdentifier(null, operation);
+            var annotationIdx = _findAnnotationIndexByOperation(
+                pageIdx,
+                operationStableIdentifier
+                    ? {
+                        identifier: operationStableIdentifier,
+                        requestId: operationStableIdentifier,
+                        xref: operation && operation.xref,
+                    }
+                    : operation
+            );
+            if (annotationIdx < 0 || !pageAnnotations[annotationIdx]) {
+                return null;
+            }
+
+            var annotation = pageAnnotations[annotationIdx];
+            var stableIdentifier = _extractStableIdentifier(annotation, operation);
+            var currentXref = _normalizeIdentifier(annotation.xref);
+            var namespacedStableIdentifier = stableIdentifier && /^\d+$/.test(stableIdentifier)
+                ? 'id:' + stableIdentifier
+                : stableIdentifier;
+            var apiIdentifier = stableIdentifier
+                ? _h.buildApiAnnotationIdentifier({ identifier: namespacedStableIdentifier })
+                : _h.buildApiAnnotationIdentifier({ xref: currentXref });
+            if (!apiIdentifier) {
+                return null;
+            }
+            return {
+                annotation: annotation,
+                annotationIdx: annotationIdx,
+                apiIdentifier: apiIdentifier,
+            };
+        }
+
+        function _isMissingAnnotationFailure(value) {
+            if (!value) return false;
+            var status = value.status
+                || value.statusCode
+                || (value.response && value.response.status)
+                || (value.data && value.data.status);
+            if (Number(status) === 404) {
+                return true;
+            }
+            var message = value.error
+                || value.message
+                || value.detail
+                || (value.data && (value.data.error || value.data.detail))
+                || '';
+            return /annotation (?:was )?not found|annotation no longer exists/i.test(String(message));
+        }
+
+        function _dropMissingHighlightUndo() {
+            var message = _h.translatePdfPreviewText
+                ? _h.translatePdfPreviewText('Annotation no longer exists')
+                : 'Annotation no longer exists';
+            if (_h.showToast) {
+                _h.showToast('error', message);
+            }
+            return {
+                success: false,
+                missing: true,
+                error: message,
+            };
+        }
+
+        function _replaceAnnotationFromResponse(pageIdx, operation, annotation, fallbackState) {
+            var annotationsData = _getAnnotationsData();
+            if (!annotationsData[pageIdx]) {
+                annotationsData[pageIdx] = [];
+            }
+            var annotationIdx = _findAnnotationIndexByOperation(pageIdx, operation);
+            var currentAnnotation = annotationIdx >= 0 ? annotationsData[pageIdx][annotationIdx] : {};
+            var updatedAnnotation;
+
+            if (annotation) {
+                updatedAnnotation = _h.enhanceAnnotationEntry
+                    ? _h.enhanceAnnotationEntry(annotation)
+                    : Object.assign({}, currentAnnotation, annotation);
+            } else {
+                updatedAnnotation = Object.assign({}, currentAnnotation, fallbackState || {});
+            }
+
+            if (annotationIdx >= 0) {
+                annotationsData[pageIdx][annotationIdx] = updatedAnnotation;
+            } else {
+                annotationsData[pageIdx].push(updatedAnnotation);
+            }
+            _setAnnotationsData(annotationsData);
+            return updatedAnnotation;
+        }
+
+        function _updateHighlightMarkerSource(operation, annotation, source) {
+            var markers = document.querySelectorAll('.annotation-marker');
+            var identifiers = [
+                operation && operation.identifier,
+                operation && operation.requestId,
+            ].map(_normalizeIdentifier);
+            for (var markerIdx = 0; markerIdx < markers.length; markerIdx++) {
+                var marker = markers[markerIdx];
+                var markerIdentifiers = [
+                    marker.dataset.annotationRequestId,
+                    marker.dataset.annotationIdentifier,
+                    marker.dataset.annotationXref,
+                ].map(_normalizeIdentifier);
+                var isMatch = markerIdentifiers.some(function (identifier) {
+                    return identifier && identifiers.indexOf(identifier) !== -1;
+                });
+                if (!isMatch) continue;
+
+                marker.classList.toggle('source-ai', source === 'AI');
+                marker.classList.toggle('source-human', source !== 'AI');
+                marker.dataset.annotationSource = source;
+                if (annotation && annotation.xref != null) {
+                    marker.dataset.annotationXref = String(annotation.xref);
+                }
+                break;
+            }
+        }
+
+        async function _convertTopLeftRectToPdf(rect, pageIdx) {
+            var converted = _cloneRect(rect);
+            if (!Array.isArray(converted) || converted.length !== 4) {
+                return converted;
+            }
+            var viewer = _h.getViewer ? _h.getViewer() : window.__pdfGradedViewer;
+            if (!viewer || !viewer.pdf) {
+                return converted;
+            }
+            try {
+                var page = await viewer.pdf.getPage(pageIdx + 1);
+                var pageHeight = page.view[3] - page.view[1];
+                return [
+                    converted[0],
+                    pageHeight - converted[3],
+                    converted[2],
+                    pageHeight - converted[1],
+                ];
+            } catch (_error) {
+                return converted;
+            }
+        }
+
+        async function _convertTopLeftQuadsToPdf(quads, pageIdx) {
+            if (!Array.isArray(quads)) {
+                return quads;
+            }
+            var converted = [];
+            for (var quadIdx = 0; quadIdx < quads.length; quadIdx++) {
+                converted.push(await _convertTopLeftRectToPdf(quads[quadIdx], pageIdx));
+            }
+            return converted;
+        }
+
+        async function persistHighlightExtend(marker, annotation, payload) {
+            payload = payload || {};
+            if (!_h.buildApiAnnotationIdentifier || !_h.updateAnnotationRequest) {
+                throw new Error('Annotation update helpers are unavailable.');
+            }
+
+            var pageIdx = Number(payload.pageIdx);
+            var stableIdentifier = _resolveIdentifier(annotation);
+            var markerXref = marker && marker.dataset ? marker.dataset.annotationXref : null;
+            var markerRequestId = marker && marker.dataset
+                ? (marker.dataset.annotationRequestId || marker.dataset.annotationIdentifier)
+                : null;
+            var explicitStableIdentifier = _extractStableIdentifier(annotation, null);
+            var requestIdentifier = explicitStableIdentifier
+                || _namespaceXrefIdentifier(stableIdentifier, markerXref);
+            var requestRequestId = (
+                explicitStableIdentifier &&
+                _normalizeIdentifier(markerRequestId) === _normalizeIdentifier(explicitStableIdentifier)
+            )
+                ? explicitStableIdentifier
+                : _namespaceXrefIdentifier(markerRequestId, markerXref);
+            var apiIdentifier = _h.buildApiAnnotationIdentifier({
+                identifier: requestIdentifier,
+                xref: markerXref,
+                requestId: requestRequestId,
+            });
+            if (!apiIdentifier) {
+                return { success: false, error: 'Unable to resolve annotation identifier.' };
+            }
+
+            // Snapshot before awaiting persistence. Highlight replacement can
+            // mutate both geometry and ownership, and the source object may be
+            // refreshed while the request is in flight.
+            var oldQuads = _cloneQuads(annotation && annotation.quads);
+            var oldAnchorText = annotation ? annotation.anchor_text : undefined;
+            var oldRect = _cloneRect(annotation && annotation.rect);
+            var oldSource = _h.resolveAnnotationSource
+                ? _h.resolveAnnotationSource(annotation)
+                : ((annotation && annotation.source) || 'HUMAN');
+
+            var data = await _h.updateAnnotationRequest(apiIdentifier, {
+                quads: payload.quadsPdf,
+                anchor_text: payload.anchorText,
+                source: 'HUMAN',
+            });
+            if (!data || !data.success) {
+                return data || { success: false };
+            }
+
+            var responseAnnotation = data.annotation || null;
+            var undoXref = responseAnnotation && responseAnnotation.xref != null
+                ? String(responseAnnotation.xref)
+                : markerXref;
+            var responseStableIdentifier = _extractStableIdentifier(responseAnnotation, null);
+            var undoIdentifier = responseStableIdentifier
+                || explicitStableIdentifier
+                || _namespaceXrefIdentifier(
+                    _resolveIdentifier(responseAnnotation) || stableIdentifier || markerRequestId,
+                    undoXref
+                );
+            var rawUndoRequestId = (responseAnnotation && (
+                responseAnnotation.stable_id
+                || responseAnnotation.requestIdentifier
+                || responseAnnotation.id
+            )) || markerRequestId;
+            var undoRequestId = responseStableIdentifier
+                || explicitStableIdentifier
+                || _namespaceXrefIdentifier(
+                    _namespaceXrefIdentifier(rawUndoRequestId, undoXref),
+                    markerXref
+                );
+            var newQuads = responseAnnotation && Array.isArray(responseAnnotation.quads)
+                ? _cloneQuads(responseAnnotation.quads)
+                : _cloneQuads(payload.quadsPdf);
+            var newAnchorText = responseAnnotation && responseAnnotation.anchor_text !== undefined
+                ? responseAnnotation.anchor_text
+                : payload.anchorText;
+            var newRect = responseAnnotation && responseAnnotation.rect
+                ? _cloneRect(responseAnnotation.rect)
+                : oldRect;
+
+            pushUndoOperation({
+                type: 'highlight-extend',
+                identifier: undoIdentifier,
+                xref: undoXref,
+                requestId: undoRequestId,
+                pageIdx: pageIdx,
+                oldQuads: oldQuads,
+                newQuads: newQuads,
+                oldAnchorText: oldAnchorText,
+                newAnchorText: newAnchorText,
+                oldRect: oldRect,
+                newRect: newRect,
+                oldSource: oldSource,
+                newSource: 'HUMAN',
+                isOwnershipTransfer: oldSource === 'AI',
+            });
+
+            var operation = peekUndoOperation();
+            _updateHighlightMarkerSource(operation, responseAnnotation, 'HUMAN');
+            if (responseAnnotation && Array.isArray(responseAnnotation.quads)) {
+                _replaceAnnotationFromResponse(pageIdx, operation, responseAnnotation, {
+                    quads: newQuads,
+                    anchor_text: newAnchorText,
+                    rect: newRect,
+                    source: 'HUMAN',
+                });
+                markLocalChange();
+                _renderAfterMutation({ forceRender: true });
+            }
+            return data;
+        }
+
+        async function performHighlightExtendUndo(operation) {
+            if (!operation || operation.type !== 'highlight-extend') {
+                throw new Error('Invalid highlight extend undo operation.');
+            }
+            if (!_h.buildApiAnnotationIdentifier || !_h.updateAnnotationRequest) {
+                throw new Error('Annotation update helpers are unavailable.');
+            }
+
+            // A highlight PUT deletes and recreates the PDF annotation. Resolve
+            // against live state now: operation.xref may already be obsolete
+            // after a newer extend, undo, move, or delete-undo.
+            var currentTarget = _resolveCurrentUndoTarget(operation.pageIdx, operation);
+            if (!currentTarget) {
+                return _dropMissingHighlightUndo();
+            }
+
+            var oldQuadsPdf = await _convertTopLeftQuadsToPdf(
+                operation.oldQuads,
+                operation.pageIdx
+            );
+            var oldRectPdf = await _convertTopLeftRectToPdf(
+                operation.oldRect,
+                operation.pageIdx
+            );
+            var updateData = {
+                quads: oldQuadsPdf,
+                anchor_text: operation.oldAnchorText,
+                rect: oldRectPdf,
+            };
+            if (operation.oldSource) {
+                updateData.source = operation.oldSource;
+            }
+
+            var data;
+            try {
+                data = await _h.updateAnnotationRequest(currentTarget.apiIdentifier, updateData);
+            } catch (error) {
+                if (_isMissingAnnotationFailure(error)) {
+                    return _dropMissingHighlightUndo();
+                }
+                throw error;
+            }
+            if (!data || !data.success) {
+                if (_isMissingAnnotationFailure(data)) {
+                    return _dropMissingHighlightUndo();
+                }
+                throw new Error((data && data.error) || 'Highlight extend undo failed.');
+            }
+
+            var fallbackState = {
+                quads: _cloneQuads(operation.oldQuads),
+                anchor_text: operation.oldAnchorText,
+                rect: _cloneRect(operation.oldRect),
+                source: operation.oldSource,
+            };
+            var updatedAnnotation = _replaceAnnotationFromResponse(
+                operation.pageIdx,
+                operation,
+                data.annotation || null,
+                fallbackState
+            );
+            _updateHighlightMarkerSource(
+                operation,
+                updatedAnnotation,
+                operation.oldSource || 'HUMAN'
+            );
+            markLocalChange();
+            _renderAfterMutation({ forceRender: true });
+
+            if (operation.isOwnershipTransfer && _h.showToast) {
+                var message = _h.translatePdfPreviewText
+                    ? _h.translatePdfPreviewText('Ownership reverted to AI')
+                    : 'Ownership reverted to AI';
+                _h.showToast('success', message);
+            }
+            return data;
+        }
+
         // -----------------------------------------------------------------
         // Polling
         // -----------------------------------------------------------------
@@ -2643,6 +3112,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             peekUndoOperation: peekUndoOperation,
             popUndoOperation: popUndoOperation,
             clearUndoStack: clearUndoStack,
+            persistHighlightExtend: persistHighlightExtend,
+            performHighlightExtendUndo: performHighlightExtendUndo,
 
             // --- Polling ---
             markLocalChange: markLocalChange,

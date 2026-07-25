@@ -128,17 +128,29 @@ window.PdfPreviewModalAnnotationHelpers = window.PdfPreviewModalAnnotationHelper
      * @returns {{xref: string|null, stableId: string|null}} Resolved values
      */
     exports.resolveAnnotationIdParts = function resolveAnnotationIdParts({ xref, requestId, identifier }) {
+        const normalizedRequest = exports.normalizeAnnotationIdentifierValue(requestId);
+        const normalizedIdentifier = exports.normalizeAnnotationIdentifierValue(identifier);
         const parsedRequest = exports.parseCompositeIdentifier(requestId);
         const parsedIdentifier = exports.parseCompositeIdentifier(identifier);
+        const bareStableId = (value) => (
+            value
+            && !value.includes('|')
+            && !value.startsWith('xref:')
+            && !value.startsWith('id:')
+                ? value
+                : null
+        );
 
         const resolvedXref = exports.normalizeAnnotationIdentifierValue(xref)
             || parsedRequest.xref
             || parsedIdentifier.xref;
 
-        const resolvedStable = exports.normalizeAnnotationIdentifierValue(requestId)
-            || parsedRequest.stableId
+        const resolvedStable = parsedRequest.stableId
             || parsedIdentifier.stableId
-            || exports.normalizeAnnotationIdentifierValue(identifier);
+            // A generic identifier/requestId is a stable ID unless its caller
+            // explicitly namespaced it as an xref.
+            || bareStableId(normalizedRequest)
+            || bareStableId(normalizedIdentifier);
 
         return { xref: resolvedXref, stableId: resolvedStable };
     };
@@ -172,17 +184,17 @@ window.PdfPreviewModalAnnotationHelpers = window.PdfPreviewModalAnnotationHelper
         const effectiveXref = parsedXref || null;
         const effectiveStable = parsedStable || null;
 
-        // Prefer exact xref when available
-        if (effectiveXref) {
-            return `xref:${effectiveXref}`;
-        }
-
+        // Stable IDs survive backend delete-and-recreate mutations; xrefs do not.
         if (effectiveStable) {
             // Prefix numeric IDs with id: to avoid confusion with xref
             if (/^\d+$/.test(effectiveStable)) {
                 return `id:${effectiveStable}`;
             }
             return effectiveStable;
+        }
+
+        if (effectiveXref) {
+            return `xref:${effectiveXref}`;
         }
 
         if (!normIdentifier) {
