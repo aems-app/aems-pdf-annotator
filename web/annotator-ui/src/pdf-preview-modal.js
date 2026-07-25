@@ -4728,11 +4728,14 @@
         if (!_currentAnnotationCtrl || !_currentAnnotationCtrl.unobserveAnnotationMarker || _annotationCtrlDelegating) {
             throw new Error('Annotation controller must be initialized before unobserving markers.');
         }
+        const pageIdx = marker && marker.dataset
+            ? parseInt(marker.dataset.annotationPage || marker.dataset.pageIdx || '-1', 10)
+            : -1;
+        const markerKey = buildAnnotationVisibilityKey(pageIdx, { marker });
         _currentAnnotationCtrl.unobserveAnnotationMarker(marker);
-        visibleAnnotationMarkers.clear();
-        _currentAnnotationCtrl.getVisibleMarkers().forEach((markerKey) => {
-            visibleAnnotationMarkers.add(markerKey);
-        });
+        if (markerKey) {
+            visibleAnnotationMarkers.delete(markerKey);
+        }
     }
 
     function renderAnnotationsList() {
