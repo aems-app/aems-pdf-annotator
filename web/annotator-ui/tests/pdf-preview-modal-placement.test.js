@@ -86,6 +86,7 @@ async function createUndoHarness({
 
   return {
     handle,
+    buildApiAnnotationIdentifier: modalHelpers.buildApiAnnotationIdentifier,
     pushLocalUndo: modalHelpers.pushUndoOperation,
     dispatchUndo: () => {
       document.dispatchEvent(new window.KeyboardEvent('keydown', {
@@ -184,6 +185,7 @@ describe('pdf-preview-modal placement helpers', () => {
     delete window.PdfPreviewModalUtils;
     delete window.PdfPreviewModalStateCore;
     delete window.PdfPreviewModalViewer;
+    delete window.PdfPreviewModalAnnotationHelpers;
     delete window.PdfPreviewModalAnnotationController;
     delete window.PdfPreviewModalDocumentController;
     delete window.PdfPreviewModalOverlayRenderer;
@@ -960,6 +962,14 @@ describe('pdf-preview-modal placement helpers', () => {
     expect(lookup.get('ann-2')).toBe(2);
     expect(lookup.has('draw-1')).toBe(false);
     expect(lookup.has('box-1')).toBe(false);
+  });
+
+  it('keeps bare numeric stable-only identifiers stable in the monolith fallback', async () => {
+    const harness = await createUndoHarness();
+
+    expect(harness.buildApiAnnotationIdentifier({ identifier: '123' })).toBe('id:123');
+    expect(harness.buildApiAnnotationIdentifier({ requestId: '456' })).toBe('id:456');
+    harness.handle.destroy();
   });
 
   it('discards a dead move undo so an older operation can run', async () => {

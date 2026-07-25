@@ -519,6 +519,20 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 || (annotation && annotation.xref != null ? String(annotation.xref) : null);
         }
 
+        function _namespaceXrefIdentifier(value, xref) {
+            var normalized = _normalizeIdentifier(value);
+            var normalizedXref = _normalizeIdentifier(xref);
+            if (!normalized ||
+                normalized.indexOf('|') !== -1 ||
+                normalized.indexOf('xref:') === 0 ||
+                normalized.indexOf('id:') === 0) {
+                return normalized;
+            }
+            return normalizedXref && normalized === normalizedXref
+                ? 'xref:' + normalized
+                : normalized;
+        }
+
         function _findAnnotationIndexByOperation(pageIdx, operation) {
             var identifiers = [
                 operation && operation.identifier,
@@ -763,10 +777,19 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var markerRequestId = marker && marker.dataset
                 ? (marker.dataset.annotationRequestId || marker.dataset.annotationIdentifier)
                 : null;
+            var explicitStableIdentifier = _extractStableIdentifier(annotation, null);
+            var requestIdentifier = explicitStableIdentifier
+                || _namespaceXrefIdentifier(stableIdentifier, markerXref);
+            var requestRequestId = (
+                explicitStableIdentifier &&
+                _normalizeIdentifier(markerRequestId) === _normalizeIdentifier(explicitStableIdentifier)
+            )
+                ? explicitStableIdentifier
+                : _namespaceXrefIdentifier(markerRequestId, markerXref);
             var apiIdentifier = _h.buildApiAnnotationIdentifier({
-                identifier: stableIdentifier,
+                identifier: requestIdentifier,
                 xref: markerXref,
-                requestId: markerRequestId,
+                requestId: requestRequestId,
             });
             if (!apiIdentifier) {
                 return { success: false, error: 'Unable to resolve annotation identifier.' };
@@ -792,17 +815,27 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
 
             var responseAnnotation = data.annotation || null;
-            var undoIdentifier = _resolveIdentifier(responseAnnotation)
-                || stableIdentifier
-                || markerRequestId;
             var undoXref = responseAnnotation && responseAnnotation.xref != null
                 ? String(responseAnnotation.xref)
                 : markerXref;
-            var undoRequestId = (responseAnnotation && (
+            var responseStableIdentifier = _extractStableIdentifier(responseAnnotation, null);
+            var undoIdentifier = responseStableIdentifier
+                || explicitStableIdentifier
+                || _namespaceXrefIdentifier(
+                    _resolveIdentifier(responseAnnotation) || stableIdentifier || markerRequestId,
+                    undoXref
+                );
+            var rawUndoRequestId = (responseAnnotation && (
                 responseAnnotation.stable_id
                 || responseAnnotation.requestIdentifier
                 || responseAnnotation.id
             )) || markerRequestId;
+            var undoRequestId = responseStableIdentifier
+                || explicitStableIdentifier
+                || _namespaceXrefIdentifier(
+                    _namespaceXrefIdentifier(rawUndoRequestId, undoXref),
+                    markerXref
+                );
             var newQuads = responseAnnotation && Array.isArray(responseAnnotation.quads)
                 ? _cloneQuads(responseAnnotation.quads)
                 : _cloneQuads(payload.quadsPdf);

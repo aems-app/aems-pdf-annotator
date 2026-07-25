@@ -3126,11 +3126,24 @@
         }
         // Fallback - use local parseCompositeIdentifier
         const { xref, requestId, identifier } = params;
+        const normalizedRequest = normalizeAnnotationIdentifierValue(requestId);
+        const normalizedIdentifier = normalizeAnnotationIdentifierValue(identifier);
         const parsedRequest = parseCompositeIdentifier(requestId);
         const parsedIdentifier = parseCompositeIdentifier(identifier);
+        const bareStableId = (value) => (
+            value
+            && !value.includes('|')
+            && !value.startsWith('xref:')
+            && !value.startsWith('id:')
+                ? value
+                : null
+        );
         return {
             xref: normalizeAnnotationIdentifierValue(xref) || parsedRequest.xref || parsedIdentifier.xref,
-            stableId: parsedRequest.stableId || parsedIdentifier.stableId
+            stableId: parsedRequest.stableId
+                || parsedIdentifier.stableId
+                || bareStableId(normalizedRequest)
+                || bareStableId(normalizedIdentifier)
         };
     }
 
@@ -3235,6 +3248,20 @@
             }
         }
         return -1;
+    }
+
+    function namespaceXrefIdentifier(value, xref) {
+        const normalized = normalizeAnnotationIdentifierValue(value);
+        const normalizedXref = normalizeAnnotationIdentifierValue(xref);
+        if (!normalized
+            || normalized.includes('|')
+            || normalized.startsWith('xref:')
+            || normalized.startsWith('id:')) {
+            return normalized;
+        }
+        return normalizedXref && normalized === normalizedXref
+            ? `xref:${normalized}`
+            : normalized;
     }
 
     function extractStableUndoIdentifier(annotation, operation) {
@@ -5580,12 +5607,27 @@
                 return controllerData;
             }
 
+            const stableIdentifier = resolveAnnotationIdentifierValue(ann);
+            const markerXref = marker && marker.dataset
+                ? marker.dataset.annotationXref
+                : undefined;
+            const markerRequestId = marker && marker.dataset
+                ? (marker.dataset.annotationRequestId || marker.dataset.annotationIdentifier)
+                : undefined;
+            const explicitStableIdentifier = extractStableUndoIdentifier(ann, null);
+            const requestIdentifier = explicitStableIdentifier
+                || namespaceXrefIdentifier(stableIdentifier, markerXref);
+            const requestRequestId = (
+                explicitStableIdentifier
+                && normalizeAnnotationIdentifierValue(markerRequestId)
+                    === normalizeAnnotationIdentifierValue(explicitStableIdentifier)
+            )
+                ? explicitStableIdentifier
+                : namespaceXrefIdentifier(markerRequestId, markerXref);
             const apiIdentifier = buildApiAnnotationIdentifier({
-                identifier: resolveAnnotationIdentifierValue(ann),
-                xref: marker && marker.dataset ? marker.dataset.annotationXref : undefined,
-                requestId: marker && marker.dataset
-                    ? (marker.dataset.annotationRequestId || marker.dataset.annotationIdentifier)
-                    : undefined,
+                identifier: requestIdentifier,
+                xref: markerXref,
+                requestId: requestRequestId,
             });
             if (!apiIdentifier) return;
             const oldQuads = cloneHighlightQuads(ann && ann.quads);
@@ -5600,20 +5642,34 @@
             });
             if (data && data.success) {
                 const responseAnn = data.annotation || null;
+                const undoXref = responseAnn && responseAnn.xref != null
+                    ? String(responseAnn.xref)
+                    : markerXref;
+                const responseStableIdentifier = extractStableUndoIdentifier(responseAnn, null);
+                const undoIdentifier = responseStableIdentifier
+                    || explicitStableIdentifier
+                    || namespaceXrefIdentifier(
+                        resolveAnnotationIdentifierValue(responseAnn)
+                            || stableIdentifier
+                            || markerRequestId,
+                        undoXref
+                    );
+                const rawUndoRequestId = (responseAnn && (
+                    responseAnn.stable_id
+                    || responseAnn.requestIdentifier
+                    || responseAnn.id
+                )) || markerRequestId;
+                const undoRequestId = responseStableIdentifier
+                    || explicitStableIdentifier
+                    || namespaceXrefIdentifier(
+                        namespaceXrefIdentifier(rawUndoRequestId, undoXref),
+                        markerXref
+                    );
                 pushUndoOperation({
                     type: 'highlight-extend',
-                    identifier: resolveAnnotationIdentifierValue(responseAnn)
-                        || resolveAnnotationIdentifierValue(ann),
-                    xref: responseAnn && responseAnn.xref != null
-                        ? String(responseAnn.xref)
-                        : (marker && marker.dataset ? marker.dataset.annotationXref : undefined),
-                    requestId: (responseAnn && (
-                        responseAnn.stable_id
-                        || responseAnn.requestIdentifier
-                        || responseAnn.id
-                    )) || (marker && marker.dataset
-                        ? (marker.dataset.annotationRequestId || marker.dataset.annotationIdentifier)
-                        : undefined),
+                    identifier: undoIdentifier,
+                    xref: undoXref,
+                    requestId: undoRequestId,
                     pageIdx: payload.pageIdx,
                     oldQuads: oldQuads,
                     newQuads: responseAnn && Array.isArray(responseAnn.quads)
