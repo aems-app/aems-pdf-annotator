@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  LOSSY_DELETE_HIGHLIGHT,
+  cloneLossyDeleteHighlight,
+} from './fixtures/lossy-delete-undo.fixture.js';
 
 const MODULE_PATH = '../src/pdf-preview-modal/annotation-controller.js';
 
@@ -75,6 +79,43 @@ describe('annotation-controller state ownership', () => {
     expect(popped).toMatchObject({ type: 'delete', identifier: 'ann-7' });
     expect(controller.getUndoStack()).toEqual([]);
     expect(annotationsState.undoStack).toEqual([]);
+  });
+
+  it('snapshots every quad and text-anchor identity field before deleting a highlight', async () => {
+    const mod = await loadAnnotationControllerModule();
+    const annotation = cloneLossyDeleteHighlight();
+    const annotationsData = { 0: [annotation] };
+    const deleteAnnotationRequest = vi.fn().mockResolvedValue({ success: true });
+    const controller = mod.createAnnotationController({
+      annotationsState: { undoStack: [] },
+      getAnnotationsData: () => annotationsData,
+      helpers: {
+        normalizeAnnotationIdentifierValue: (value) => value == null ? null : String(value),
+        buildApiAnnotationIdentifier: ({ identifier }) => identifier,
+        deleteAnnotationRequest,
+        findAnnotationEntry: () => annotation,
+        findAnnotationIndex: () => 0,
+        deriveAnnotationPriority: (ann) => ann.priority,
+        resolveAnnotationSource: (ann) => ann.source,
+      },
+    });
+
+    await controller.deleteAnnotation(0, LOSSY_DELETE_HIGHLIGHT.stable_id);
+
+    expect(deleteAnnotationRequest).toHaveBeenCalledOnce();
+    expect(controller.peekUndoOperation()).toMatchObject({
+      type: 'delete',
+      pageIdx: 0,
+      annotation: {
+        quads: LOSSY_DELETE_HIGHLIGHT.quads,
+        anchor_text: LOSSY_DELETE_HIGHLIGHT.anchor_text,
+        check_id: 'Q1-05',
+        task_id: 'Q1',
+        stable_id: 'Q1-05',
+        source: 'AI',
+      },
+    });
+    expect(controller.peekUndoOperation().annotation.quads).not.toBe(annotation.quads);
   });
 
   it('captures a full undo operation after completing a highlight extend', async () => {
