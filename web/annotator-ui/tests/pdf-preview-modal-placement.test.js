@@ -1041,6 +1041,38 @@ describe('pdf-preview-modal placement helpers', () => {
     harness.handle.destroy();
   });
 
+  it('still converts deleted highlight quads when the snapshot rect is malformed', async () => {
+    // The conversion used to run inside a guard on the rect's shape, so a
+    // missing or malformed rect left otherwise-valid quads in top-left space
+    // and the highlight came back painted at the wrong end of the page.
+    const createAnnotation = vi.fn().mockResolvedValue({ success: true });
+    const harness = await createUndoHarness({
+      createAnnotation,
+      visibilityController: {},
+      controllerUndoStack: [{
+        type: 'delete',
+        pageIdx: 0,
+        annotation: { ...cloneLossyDeleteHighlight(), rect: null },
+        undoTimestamp: 100,
+      }],
+    });
+    window.__pdfGradedViewer = {
+      pdf: {
+        getPage: vi.fn().mockResolvedValue({ view: [0, 0, 612, DELETE_UNDO_PAGE_HEIGHT] }),
+      },
+    };
+
+    harness.dispatchUndo();
+    await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledOnce());
+
+    expect(createAnnotation.mock.calls[0][2].quads).toEqual([
+      [84.96, 663.31, 527.04, 675.26],
+      [84.96, 648.86, 527.04, 660.81],
+      [84.96, 634.41, 145.58, 646.37],
+    ]);
+    harness.handle.destroy();
+  });
+
   it('keeps the recreate payload unchanged for a non-highlight Text annotation', async () => {
     const createAnnotation = vi.fn().mockResolvedValue({ success: true });
     const harness = await createUndoHarness({

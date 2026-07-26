@@ -2917,7 +2917,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     annotation: {
                         content: originalAnn.content,
                         type: originalAnn.type,
-                        rect: originalAnn.rect,
+                        rect: _cloneRect(originalAnn && originalAnn.rect),
                         color: originalAnn.color,
                         priority: _h.deriveAnnotationPriority ? _h.deriveAnnotationPriority(originalAnn) : originalAnn.priority,
                         xref: originalAnn.xref,

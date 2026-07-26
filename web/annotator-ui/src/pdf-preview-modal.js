@@ -3812,37 +3812,26 @@
 
         try {
             if (operation.type === 'delete') {
-                let apiRect = operation.annotation.rect;
                 const isQuadHighlight =
                     String(operation.annotation.type || '').toLowerCase() === 'highlight' &&
                     Array.isArray(operation.annotation.quads) &&
                     operation.annotation.quads.length > 0 &&
                     operation.annotation.quads.every((quad) => Array.isArray(quad) && quad.length === 4);
-                // Delete snapshots store highlight quads in viewer/PyMuPDF top-left space.
-                let apiQuads = isQuadHighlight
-                    ? operation.annotation.quads.map((quad) => quad.slice())
+                // Delete snapshots store rect and quads in viewer/PyMuPDF top-left
+                // space. Reuse the shared converters rather than re-deriving the
+                // flip here: the two paths drifted once already, and converting
+                // quads inside the rect's validity check meant a malformed rect
+                // silently left perfectly good quads unconverted.
+                const apiRect = await convertHighlightTopLeftRectToPdf(
+                    operation.annotation.rect,
+                    operation.pageIdx,
+                );
+                const apiQuads = isQuadHighlight
+                    ? await convertHighlightTopLeftQuadsToPdf(
+                          operation.annotation.quads,
+                          operation.pageIdx,
+                      )
                     : null;
-                const viewer = window.__pdfGradedViewer;
-                if (Array.isArray(apiRect) && apiRect.length === 4 && viewer?.pdf) {
-                    try {
-                        const pg = await viewer.pdf.getPage(operation.pageIdx + 1);
-                        const pageHeight = pg.view[3] - pg.view[1];
-                        apiRect = [
-                            apiRect[0],
-                            pageHeight - apiRect[3],
-                            apiRect[2],
-                            pageHeight - apiRect[1],
-                        ];
-                        apiQuads = apiQuads && apiQuads.map((quad) => [
-                            quad[0],
-                            pageHeight - quad[3],
-                            quad[2],
-                            pageHeight - quad[1],
-                        ]);
-                    } catch (_error) {
-                        // Fall back to the original rect if page metadata is unavailable.
-                    }
-                }
 
                 // Recreate the deleted annotation
                 const annotationData = {
