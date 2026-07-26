@@ -3812,22 +3812,26 @@
 
         try {
             if (operation.type === 'delete') {
-                let apiRect = operation.annotation.rect;
-                const viewer = window.__pdfGradedViewer;
-                if (Array.isArray(apiRect) && apiRect.length === 4 && viewer?.pdf) {
-                    try {
-                        const pg = await viewer.pdf.getPage(operation.pageIdx + 1);
-                        const pageHeight = pg.view[3] - pg.view[1];
-                        apiRect = [
-                            apiRect[0],
-                            pageHeight - apiRect[3],
-                            apiRect[2],
-                            pageHeight - apiRect[1],
-                        ];
-                    } catch (_error) {
-                        // Fall back to the original rect if page metadata is unavailable.
-                    }
-                }
+                const isQuadHighlight =
+                    String(operation.annotation.type || '').toLowerCase() === 'highlight' &&
+                    Array.isArray(operation.annotation.quads) &&
+                    operation.annotation.quads.length > 0 &&
+                    operation.annotation.quads.every((quad) => Array.isArray(quad) && quad.length === 4);
+                // Delete snapshots store rect and quads in viewer/PyMuPDF top-left
+                // space. Reuse the shared converters rather than re-deriving the
+                // flip here: the two paths drifted once already, and converting
+                // quads inside the rect's validity check meant a malformed rect
+                // silently left perfectly good quads unconverted.
+                const apiRect = await convertHighlightTopLeftRectToPdf(
+                    operation.annotation.rect,
+                    operation.pageIdx,
+                );
+                const apiQuads = isQuadHighlight
+                    ? await convertHighlightTopLeftQuadsToPdf(
+                          operation.annotation.quads,
+                          operation.pageIdx,
+                      )
+                    : null;
 
                 // Recreate the deleted annotation
                 const annotationData = {
@@ -3838,6 +3842,14 @@
                     page_index: operation.pageIdx,
                     source: operation.annotation.source || 'HUMAN',  // Preserve original source
                 };
+
+                if (isQuadHighlight) {
+                    annotationData.quads = apiQuads;
+                    annotationData.anchor_text = operation.annotation.anchor_text;
+                    annotationData.check_id = operation.annotation.check_id;
+                    annotationData.task_id = operation.annotation.task_id;
+                    annotationData.stable_id = operation.annotation.stable_id;
+                }
 
                 // Call the API to recreate the annotation
                 try {

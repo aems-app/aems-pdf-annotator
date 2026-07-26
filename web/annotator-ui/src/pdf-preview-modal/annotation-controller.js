@@ -2917,11 +2917,16 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     annotation: {
                         content: originalAnn.content,
                         type: originalAnn.type,
-                        rect: originalAnn.rect,
+                        rect: _cloneRect(originalAnn && originalAnn.rect),
                         color: originalAnn.color,
                         priority: _h.deriveAnnotationPriority ? _h.deriveAnnotationPriority(originalAnn) : originalAnn.priority,
                         xref: originalAnn.xref,
                         id: originalAnn.id,
+                        quads: _cloneQuads(originalAnn && originalAnn.quads),
+                        anchor_text: originalAnn ? originalAnn.anchor_text : undefined,
+                        check_id: originalAnn.check_id,
+                        task_id: originalAnn.task_id,
+                        stable_id: _extractStableIdentifier(originalAnn, null),
                         source: _h.resolveAnnotationSource ? _h.resolveAnnotationSource(originalAnn) : originalAnn.source,
                     },
                 });

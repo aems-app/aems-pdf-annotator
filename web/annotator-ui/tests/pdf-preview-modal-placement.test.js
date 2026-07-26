@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  DELETE_UNDO_PAGE_HEIGHT,
+  LOSSY_DELETE_HIGHLIGHT,
+  cloneLossyDeleteHighlight,
+} from './fixtures/lossy-delete-undo.fixture.js';
 
 const MODULE_PATH = '../src/pdf-preview-modal.js';
 
@@ -10,6 +15,7 @@ const loadPlacementHelpers = async () => {
 async function createUndoHarness({
   controllerUndoStack = [],
   performHighlightExtendUndo = vi.fn().mockResolvedValue({ success: true }),
+  createAnnotation = vi.fn().mockResolvedValue({ success: true }),
   updateAnnotation = vi.fn().mockResolvedValue({ success: true }),
   visibilityController = null,
 } = {}) {
@@ -38,6 +44,7 @@ async function createUndoHarness({
         performHighlightExtendUndo,
         unobserveAnnotationMarker: visibilityController?.unobserveAnnotationMarker,
         getVisibleMarkers: visibilityController?.getVisibleMarkers,
+        renderList: vi.fn(),
         onAnnotationsChanged: () => {},
         onAnnotationsLoaded: () => {},
         onRenderListNeeded: () => {},
@@ -56,6 +63,7 @@ async function createUndoHarness({
           onMarkerDblClicked: () => {},
           onOverlayDblClicked: () => {},
           onOverlayReady: () => {},
+          renderPage: visibilityController.renderPage || vi.fn(),
           destroy: () => {},
         };
       },
@@ -92,6 +100,7 @@ async function createUndoHarness({
   window.bootstrap.Modal = FakeModal;
 
   const adapter = {
+    createAnnotation,
     updateAnnotation,
   };
   await loadPlacementHelpers();
@@ -988,6 +997,122 @@ describe('pdf-preview-modal placement helpers', () => {
 
     expect(harness.buildApiAnnotationIdentifier({ identifier: '123' })).toBe('id:123');
     expect(harness.buildApiAnnotationIdentifier({ requestId: '456' })).toBe('id:456');
+    harness.handle.destroy();
+  });
+
+  it('forwards deleted highlight quads, anchor text, and identity when recreating it', async () => {
+    const createAnnotation = vi.fn().mockResolvedValue({ success: true });
+    const harness = await createUndoHarness({
+      createAnnotation,
+      visibilityController: {},
+      controllerUndoStack: [{
+        type: 'delete',
+        pageIdx: 0,
+        annotation: cloneLossyDeleteHighlight(),
+        undoTimestamp: 100,
+      }],
+    });
+    window.__pdfGradedViewer = {
+      pdf: {
+        getPage: vi.fn().mockResolvedValue({ view: [0, 0, 612, DELETE_UNDO_PAGE_HEIGHT] }),
+      },
+    };
+
+    harness.dispatchUndo();
+    await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledOnce());
+
+    expect(createAnnotation.mock.calls[0][2]).toEqual({
+      content: LOSSY_DELETE_HIGHLIGHT.content,
+      type: 'Highlight',
+      rect: [84.96, 634.41, 527.04, 675.26],
+      color: 'amber',
+      page_index: 0,
+      source: 'AI',
+      quads: [
+        [84.96, 663.31, 527.04, 675.26],
+        [84.96, 648.86, 527.04, 660.81],
+        [84.96, 634.41, 145.58, 646.37],
+      ],
+      anchor_text: LOSSY_DELETE_HIGHLIGHT.anchor_text,
+      check_id: 'Q1-05',
+      task_id: 'Q1',
+      stable_id: 'Q1-05',
+    });
+    harness.handle.destroy();
+  });
+
+  it('still converts deleted highlight quads when the snapshot rect is malformed', async () => {
+    // The conversion used to run inside a guard on the rect's shape, so a
+    // missing or malformed rect left otherwise-valid quads in top-left space
+    // and the highlight came back painted at the wrong end of the page.
+    const createAnnotation = vi.fn().mockResolvedValue({ success: true });
+    const harness = await createUndoHarness({
+      createAnnotation,
+      visibilityController: {},
+      controllerUndoStack: [{
+        type: 'delete',
+        pageIdx: 0,
+        annotation: { ...cloneLossyDeleteHighlight(), rect: null },
+        undoTimestamp: 100,
+      }],
+    });
+    window.__pdfGradedViewer = {
+      pdf: {
+        getPage: vi.fn().mockResolvedValue({ view: [0, 0, 612, DELETE_UNDO_PAGE_HEIGHT] }),
+      },
+    };
+
+    harness.dispatchUndo();
+    await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledOnce());
+
+    expect(createAnnotation.mock.calls[0][2].quads).toEqual([
+      [84.96, 663.31, 527.04, 675.26],
+      [84.96, 648.86, 527.04, 660.81],
+      [84.96, 634.41, 145.58, 646.37],
+    ]);
+    harness.handle.destroy();
+  });
+
+  it('keeps the recreate payload unchanged for a non-highlight Text annotation', async () => {
+    const createAnnotation = vi.fn().mockResolvedValue({ success: true });
+    const harness = await createUndoHarness({
+      createAnnotation,
+      visibilityController: {},
+      controllerUndoStack: [{
+        type: 'delete',
+        pageIdx: 0,
+        annotation: {
+          ...cloneLossyDeleteHighlight(),
+          id: 'text-1',
+          stable_id: 'text-1',
+          type: 'Text',
+          rect: [180, 190, 202, 212],
+          quads: undefined,
+          anchor_text: undefined,
+          content: 'Icon note',
+          source: 'HUMAN',
+        },
+        undoTimestamp: 100,
+      }],
+    });
+    window.__pdfGradedViewer = {
+      pdf: {
+        getPage: vi.fn().mockResolvedValue({ view: [0, 0, 612, DELETE_UNDO_PAGE_HEIGHT] }),
+      },
+    };
+
+    harness.dispatchUndo();
+    await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledOnce());
+
+    expect(createAnnotation.mock.calls[0][2]).toEqual({
+      content: 'Icon note',
+      type: 'Text',
+      rect: [180, 580, 202, 602],
+      color: 'amber',
+      page_index: 0,
+      source: 'HUMAN',
+    });
+    expect(createAnnotation.mock.calls[0][2]).not.toHaveProperty('quads');
     harness.handle.destroy();
   });
 
