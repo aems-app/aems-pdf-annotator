@@ -3813,6 +3813,15 @@
         try {
             if (operation.type === 'delete') {
                 let apiRect = operation.annotation.rect;
+                const isQuadHighlight =
+                    String(operation.annotation.type || '').toLowerCase() === 'highlight' &&
+                    Array.isArray(operation.annotation.quads) &&
+                    operation.annotation.quads.length > 0 &&
+                    operation.annotation.quads.every((quad) => Array.isArray(quad) && quad.length === 4);
+                // Delete snapshots store highlight quads in viewer/PyMuPDF top-left space.
+                let apiQuads = isQuadHighlight
+                    ? operation.annotation.quads.map((quad) => quad.slice())
+                    : null;
                 const viewer = window.__pdfGradedViewer;
                 if (Array.isArray(apiRect) && apiRect.length === 4 && viewer?.pdf) {
                     try {
@@ -3824,6 +3833,12 @@
                             apiRect[2],
                             pageHeight - apiRect[1],
                         ];
+                        apiQuads = apiQuads && apiQuads.map((quad) => [
+                            quad[0],
+                            pageHeight - quad[3],
+                            quad[2],
+                            pageHeight - quad[1],
+                        ]);
                     } catch (_error) {
                         // Fall back to the original rect if page metadata is unavailable.
                     }
@@ -3838,6 +3853,14 @@
                     page_index: operation.pageIdx,
                     source: operation.annotation.source || 'HUMAN',  // Preserve original source
                 };
+
+                if (isQuadHighlight) {
+                    annotationData.quads = apiQuads;
+                    annotationData.anchor_text = operation.annotation.anchor_text;
+                    annotationData.check_id = operation.annotation.check_id;
+                    annotationData.task_id = operation.annotation.task_id;
+                    annotationData.stable_id = operation.annotation.stable_id;
+                }
 
                 // Call the API to recreate the annotation
                 try {
