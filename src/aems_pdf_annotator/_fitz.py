@@ -8,6 +8,6 @@ warnings.filterwarnings(
     category=DeprecationWarning,
 )
 
-import fitz  # type: ignore  # noqa: E402
+import pymupdf as fitz  # type: ignore  # noqa: E402
 
 __all__ = ["fitz"]
