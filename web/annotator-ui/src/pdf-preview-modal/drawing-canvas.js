@@ -135,7 +135,7 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
         document.addEventListener('keyup', handleKeyUp);
         document.addEventListener('pointermove', handleDocumentPointerMove);
         document.addEventListener('pointerup', handleDocumentPointerUp);
-        document.addEventListener('pointercancel', handleDocumentPointerUp);
+        document.addEventListener('pointercancel', handleDocumentPointerCancel);
         keyListenersAttached = true;
     };
 
@@ -253,7 +253,7 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
                 existingCanvas.removeEventListener('pointerdown', handlePointerDown);
                 existingCanvas.removeEventListener('pointermove', handlePointerMove);
                 existingCanvas.removeEventListener('pointerup', handlePointerUp);
-                existingCanvas.removeEventListener('pointercancel', handlePointerUp);
+                existingCanvas.removeEventListener('pointercancel', handlePointerCancel);
                 if (existingCanvas.parentNode) {
                     existingCanvas.parentNode.removeChild(existingCanvas);
                 }
@@ -301,7 +301,7 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
         canvas.addEventListener('pointerdown', handlePointerDown);
         canvas.addEventListener('pointermove', handlePointerMove);
         canvas.addEventListener('pointerup', handlePointerUp);
-        canvas.addEventListener('pointercancel', handlePointerUp);
+        canvas.addEventListener('pointercancel', handlePointerCancel);
 
         var entry = { canvas: canvas, ctx: ctx };
         pageCanvases.set(pageIdx, entry);
@@ -349,7 +349,7 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
         entry.canvas.removeEventListener('pointerdown', handlePointerDown);
         entry.canvas.removeEventListener('pointermove', handlePointerMove);
         entry.canvas.removeEventListener('pointerup', handlePointerUp);
-        entry.canvas.removeEventListener('pointercancel', handlePointerUp);
+        entry.canvas.removeEventListener('pointercancel', handlePointerCancel);
 
         if (entry.canvas.parentNode) {
             entry.canvas.parentNode.removeChild(entry.canvas);
@@ -409,13 +409,70 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
 
     /**
      * @param {PointerEvent} e
-     * @returns {{x: number, y: number}}
+     * @returns {{x: number, y: number}|null}
      */
     function getActiveStrokeCoords(e) {
+        if (!activeStrokeTransform) return null;
         return {
             x: (e.clientX - activeStrokeTransform.left) * activeStrokeTransform.scaleX,
             y: (e.clientY - activeStrokeTransform.top) * activeStrokeTransform.scaleY
         };
+    }
+
+    /**
+     * Resolve one coordinate frame for every event of the active stroke.
+     *
+     * Stroke points live in canvas-pixel space, which is stable across a page
+     * rebuild: ``canvas.width`` is ``page.getViewport({scale: viewer.scale *
+     * viewer.zoom}).width`` and ``viewer.scale`` is a constant, so entering
+     * fullscreen changes only the CSS box, never the document frame. What does
+     * move is the client-to-canvas mapping, so the rect must be re-read from
+     * whichever overlay is actually mounted. The transform captured at
+     * pointerdown is the fallback for the case it was introduced for: no
+     * overlay is mounted at all because the rebuild has not replaced it yet.
+     *
+     * Mixing the two is what corrupted strokes that spanned a rebuild.
+     *
+     * @param {PointerEvent} e
+     * @returns {{x: number, y: number}|null}
+     */
+    function getStrokeCoords(e) {
+        var entry = currentStroke ? pageCanvases.get(currentStroke.pageIdx) : null;
+        var mounted = entry && entry.canvas && entry.canvas.isConnected ? entry.canvas : null;
+        if (mounted) return getCanvasCoords(e, mounted);
+        return getActiveStrokeCoords(e);
+    }
+
+    /**
+     * Whether there is a stroke in progress that this event's pointer owns.
+     *
+     * @param {PointerEvent} e
+     * @returns {boolean}
+     */
+    function hasActiveStroke(e) {
+        return Boolean(isDrawing && currentStroke && e.pointerId === activeStrokePointerId);
+    }
+
+    /**
+     * Whether a pointer event belongs to the canvas that owns the active
+     * stroke. A replacement overlay installed by ``renderSkeleton()`` is not
+     * entitled to continue a stroke it did not start; the document-level
+     * fallback finishes that stroke instead.
+     *
+     * @param {PointerEvent} e
+     * @returns {boolean}
+     */
+    function ownsActiveStroke(e) {
+        return hasActiveStroke(e) && e.currentTarget === activeStrokeCanvas;
+    }
+
+    /** Clear all transient state belonging to the active stroke. */
+    function resetActiveStroke() {
+        isDrawing = false;
+        currentStroke = null;
+        activeStrokeCanvas = null;
+        activeStrokePointerId = null;
+        activeStrokeTransform = null;
     }
 
     /**
@@ -426,6 +483,10 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
     function handlePointerDown(e) {
         if (activeTool !== 'pen' && activeTool !== 'highlighter') return;
         if (e.button !== 0) return; // Only primary button
+        // A second stylus or touch must not take over a stroke in progress:
+        // the stroke state is module-level, so overwriting it silently
+        // discarded the first pointer's ink.
+        if (isDrawing && currentStroke && e.pointerId !== activeStrokePointerId) return;
 
         var canvas = e.currentTarget;
         var coords = getCanvasCoords(e, canvas);
@@ -456,12 +517,8 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
      * @param {PointerEvent} e
      */
     function handlePointerMove(e) {
-        if (!isDrawing || !currentStroke) return;
-
-        var canvas = e.currentTarget;
-        var coords = getCanvasCoords(e, canvas);
-
-        appendPointerPoint(e, coords);
+        if (!ownsActiveStroke(e)) return;
+        appendPointerPoint(e, getStrokeCoords(e));
     }
 
     /**
@@ -469,7 +526,7 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
      * @param {{x: number, y: number}} coords
      */
     function appendPointerPoint(e, coords) {
-        if (!isDrawing || !currentStroke) return;
+        if (!isDrawing || !currentStroke || !coords) return;
 
         if (isShiftHeld) {
             // Straight line mode: keep only start point + current point
@@ -496,11 +553,21 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
         e.preventDefault();
     }
 
+    /**
+     * Whether the document-level fallback should handle this event: the
+     * canvas that owns the stroke did not receive it, so nobody else will.
+     *
+     * @param {PointerEvent} e
+     * @returns {boolean}
+     */
+    function documentShouldHandle(e) {
+        return hasActiveStroke(e) && e.target !== activeStrokeCanvas;
+    }
+
     /** @param {PointerEvent} e */
     function handleDocumentPointerMove(e) {
-        if (!isDrawing || !currentStroke || e.pointerId !== activeStrokePointerId) return;
-        if (e.target === activeStrokeCanvas) return;
-        appendPointerPoint(e, getActiveStrokeCoords(e));
+        if (!documentShouldHandle(e)) return;
+        appendPointerPoint(e, getStrokeCoords(e));
     }
 
     /**
@@ -549,11 +616,7 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
             pageStrokes.get(pageIdx).push(finalStroke);
             redrawPage(pageIdx);
 
-            isDrawing = false;
-            currentStroke = null;
-            activeStrokeCanvas = null;
-            activeStrokePointerId = null;
-            activeStrokeTransform = null;
+            resetActiveStroke();
 
             // Fire callback after clearing transient state so a resize waiting
             // for the stroke may proceed while persistence is asynchronous.
@@ -561,11 +624,7 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
                 exports.onStrokeComplete(pageIdx, finalStroke);
             }
         } else {
-            isDrawing = false;
-            currentStroke = null;
-            activeStrokeCanvas = null;
-            activeStrokePointerId = null;
-            activeStrokeTransform = null;
+            resetActiveStroke();
         }
 
         e.preventDefault();
@@ -573,9 +632,29 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
 
     /** @param {PointerEvent} e */
     function handleDocumentPointerUp(e) {
-        if (!isDrawing || !currentStroke || e.pointerId !== activeStrokePointerId) return;
-        if (e.target === activeStrokeCanvas) return;
-        appendPointerPoint(e, getActiveStrokeCoords(e));
+        if (!documentShouldHandle(e)) return;
+        appendPointerPoint(e, getStrokeCoords(e));
+        handlePointerUp(e);
+    }
+
+    /**
+     * Handle pointercancel - finalize the accumulated prefix WITHOUT extending
+     * it. A cancellation is not a terminal sample of the gesture, so its
+     * coordinates must not become a point: a cancel raised away from the
+     * stroke otherwise dragged the ink off the page. Whether a cancel should
+     * discard the whole gesture is a separate product decision; the behaviour
+     * here stays "do not lose the stroke".
+     *
+     * @param {PointerEvent} e
+     */
+    function handlePointerCancel(e) {
+        if (!hasActiveStroke(e)) return;
+        handlePointerUp(e);
+    }
+
+    /** @param {PointerEvent} e */
+    function handleDocumentPointerCancel(e) {
+        if (!documentShouldHandle(e)) return;
         handlePointerUp(e);
     }
 
@@ -986,7 +1065,7 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
             entry.canvas.removeEventListener('pointerdown', handlePointerDown);
             entry.canvas.removeEventListener('pointermove', handlePointerMove);
             entry.canvas.removeEventListener('pointerup', handlePointerUp);
-            entry.canvas.removeEventListener('pointercancel', handlePointerUp);
+            entry.canvas.removeEventListener('pointercancel', handlePointerCancel);
 
             if (entry.canvas.parentNode) {
                 entry.canvas.parentNode.removeChild(entry.canvas);
@@ -1012,7 +1091,7 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
             document.removeEventListener('keyup', handleKeyUp);
             document.removeEventListener('pointermove', handleDocumentPointerMove);
             document.removeEventListener('pointerup', handleDocumentPointerUp);
-            document.removeEventListener('pointercancel', handleDocumentPointerUp);
+            document.removeEventListener('pointercancel', handleDocumentPointerCancel);
             keyListenersAttached = false;
         }
 
