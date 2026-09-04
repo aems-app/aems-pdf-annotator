@@ -92,6 +92,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
         var _destroyed = false;
         var _originalPdfLoadPromise = null;
         var _gradedPdfLoadPromise = null;
+        var _fullscreenResizeTimer = null;
 
         // Handler references for cleanup (bound elements persist across modal opens)
         var _boundHandlers = {
@@ -201,12 +202,19 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
             var redrawAll = function () {
                 if (_destroyed) return Promise.resolve();
 
+                if (typeof options.isDrawingFn === 'function' && options.isDrawingFn()) {
+                    _fullscreenResizeTimer = setTimeout(redrawAll, 50);
+                    return Promise.resolve();
+                }
+
+                _fullscreenResizeTimer = null;
+
                 var gradedViewer = window.__pdfGradedViewer;
                 var originalViewer = window.__pdfOriginalViewer;
                 var promises = [];
 
                 if (gradedViewer && gradedViewer.pdf) {
-                    var p = gradedViewer.reRenderAllPages(true).then(function () {
+                    var p = gradedViewer.reRenderAllPages(false).then(function () {
                         // Emit so annotations + markup can re-render
                         _emit('onResizeComplete', { viewer: 'graded' });
                     });
@@ -228,7 +236,8 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
             };
 
             // Wait for transition to complete then re-render
-            setTimeout(redrawAll, 400);
+            clearTimeout(_fullscreenResizeTimer);
+            _fullscreenResizeTimer = setTimeout(redrawAll, 400);
         }
 
         // -----------------------------------------------------------------
@@ -953,6 +962,8 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
             destroy: function () {
                 if (_destroyed) return;
                 _destroyed = true;
+                clearTimeout(_fullscreenResizeTimer);
+                _fullscreenResizeTimer = null;
                 _blobUrls.forEach(function (url) {
                     try { URL.revokeObjectURL(url); } catch (_e) { /* ignore */ }
                 });
