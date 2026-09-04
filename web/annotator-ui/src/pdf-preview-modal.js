@@ -3419,38 +3419,42 @@
     // Markup Module Wiring — Drawing strokes, text boxes, selection
     // =========================================================================
 
+    async function resolveDrawingViewport(viewer, pageNum) {
+        var viewport = viewer.getViewportForPage(pageNum);
+        if (viewport) return viewport;
+        if (!viewer.pdf || typeof viewer.pdf.getPage !== 'function') return null;
+
+        var page = await viewer.pdf.getPage(pageNum);
+        return page.getViewport({ scale: viewer.scale * viewer.zoom });
+    }
+
     function wireMarkupModuleCallbacks() {
         if (DrawingCanvas) {
             DrawingCanvas.onStrokeComplete = function (pageIdx, stroke) {
-                var pageWrapper = null;
-                var wrappers = document.querySelectorAll('#pdfGradedContainer .pdf-page-wrapper');
-                if (wrappers[pageIdx]) pageWrapper = wrappers[pageIdx];
-                if (!pageWrapper) return;
-
-                var pdfCanvas = pageWrapper.querySelector('canvas');
                 var viewer = window.__pdfGradedViewer;
-                if (!pdfCanvas || !viewer) return;
+                if (!viewer) return;
 
-                var viewport = viewer.getViewportForPage(stroke.pageIdx + 1);
-                if (!viewport) return;
+                resolveDrawingViewport(viewer, stroke.pageIdx + 1).then(function (viewport) {
+                    if (!viewport) return null;
 
-                var pdfPoints = stroke.points.map(function (pt) {
-                    return viewport.convertToPdfPoint(pt.x, pt.y);
-                });
+                    var pdfPoints = stroke.points.map(function (pt) {
+                        return viewport.convertToPdfPoint(pt.x, pt.y);
+                    });
 
-                createAnnotationRequest({
-                    page_index: pageIdx,
-                    content: '',
-                    type: 'drawing',
-                    drawing_style: stroke.style,
-                    points: pdfPoints,
-                    stroke_width: stroke.strokeWidth,
-                    stroke_opacity: stroke.opacity,
-                    stroke_color_rgb: stroke.color.rgb,
-                    color: 'amber'
+                    return createAnnotationRequest({
+                        page_index: pageIdx,
+                        content: '',
+                        type: 'drawing',
+                        drawing_style: stroke.style,
+                        points: pdfPoints,
+                        stroke_width: stroke.strokeWidth,
+                        stroke_opacity: stroke.opacity,
+                        stroke_color_rgb: stroke.color.rgb,
+                        color: 'amber'
+                    });
                 })
                 .then(function (data) {
-                    if (data.success && data.annotation) {
+                    if (data && data.success && data.annotation) {
                         stroke.annotationId = data.annotation.stable_id || data.annotation.xref;
                         upsertAnnotationEntryLocal(data.annotation, pageIdx);
                         refreshMarkupFromAnnotations();
@@ -8687,6 +8691,11 @@
                 mode: state.options.mode,
                 annotatedPdfPolicy: state.options.annotatedPdfPolicy,
                 capabilities: state.options.capabilities,
+                isDrawingFn: function () {
+                    return Boolean(DrawingCanvas &&
+                        typeof DrawingCanvas.isDrawingActive === 'function' &&
+                        DrawingCanvas.isDrawingActive());
+                },
             });
 
             // Wire document controller events to monolith functions
@@ -9132,6 +9141,7 @@
         repositionAllLabels,
         renderCompactInlineLabelContent,
         setupLabelTooltipEvents,
+        resolveDrawingViewport,
         shouldIgnoreDetachedInlineBlur,
         focusElementWithoutScroll,
         getUndoStacks: () => ({

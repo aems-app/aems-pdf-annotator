@@ -17,6 +17,7 @@ function createMockContext() {
 
   return {
     operations,
+    clearRect: vi.fn(),
     save: vi.fn(),
     restore: vi.fn(),
     beginPath: vi.fn(),
@@ -61,6 +62,7 @@ describe('drawing-canvas stroke rendering', () => {
   });
 
   afterEach(() => {
+    window.PdfPreviewModalDrawingCanvas?.destroy();
     vi.restoreAllMocks();
   });
 
@@ -106,5 +108,60 @@ describe('drawing-canvas stroke rendering', () => {
       lineWidth: module.HIGHLIGHTER_WIDTH,
       composite: 'multiply',
     });
+  });
+
+  it('finishes a stroke through the document when its canvas is detached mid-drag', async () => {
+    const ctx = createMockContext();
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx);
+
+    const wrapper = document.createElement('div');
+    const pdfCanvas = document.createElement('canvas');
+    pdfCanvas.width = 600;
+    pdfCanvas.height = 800;
+    wrapper.appendChild(pdfCanvas);
+    document.body.appendChild(wrapper);
+
+    const module = await loadDrawingCanvasModule();
+    module.setActiveTool('pen');
+    const { canvas } = module.ensureCanvasForPage(0, wrapper);
+    canvas.getBoundingClientRect = () => ({
+      left: 10,
+      top: 20,
+      right: 310,
+      bottom: 420,
+      width: 300,
+      height: 400,
+    });
+    canvas.setPointerCapture = vi.fn();
+    canvas.releasePointerCapture = vi.fn();
+    const completed = vi.fn();
+    module.onStrokeComplete = completed;
+
+    const dispatchPointer = (target, type, { x, y }) => {
+      const event = new MouseEvent(type, {
+        bubbles: true,
+        button: 0,
+        clientX: x,
+        clientY: y,
+      });
+      Object.defineProperty(event, 'pointerId', { value: 7 });
+      target.dispatchEvent(event);
+    };
+
+    dispatchPointer(canvas, 'pointerdown', { x: 40, y: 60 });
+    dispatchPointer(canvas, 'pointermove', { x: 70, y: 100 });
+    canvas.remove();
+    dispatchPointer(document, 'pointermove', { x: 100, y: 140 });
+    dispatchPointer(document, 'pointerup', { x: 130, y: 180 });
+
+    expect(completed).toHaveBeenCalledTimes(1);
+    const stroke = completed.mock.calls[0][1];
+    expect(stroke.points).toEqual([
+      { x: 60, y: 80 },
+      { x: 120, y: 160 },
+      { x: 180, y: 240 },
+      { x: 240, y: 320 },
+    ]);
+    expect(module.getPageStrokes(0)).toHaveLength(1);
   });
 });

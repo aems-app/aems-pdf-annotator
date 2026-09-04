@@ -85,6 +85,15 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
     /** @type {boolean} Whether document key listeners are attached */
     var keyListenersAttached = false;
 
+    /** @type {HTMLCanvasElement|null} Canvas where the active stroke began */
+    var activeStrokeCanvas = null;
+
+    /** @type {number|null} Pointer that owns the active stroke */
+    var activeStrokePointerId = null;
+
+    /** @type {{left: number, top: number, scaleX: number, scaleY: number}|null} */
+    var activeStrokeTransform = null;
+
     /** @type {Map<number, {canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D}>} */
     var pageCanvases = new Map();
 
@@ -124,6 +133,9 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
         if (keyListenersAttached) return;
         document.addEventListener('keydown', handleKeyDown);
         document.addEventListener('keyup', handleKeyUp);
+        document.addEventListener('pointermove', handleDocumentPointerMove);
+        document.addEventListener('pointerup', handleDocumentPointerUp);
+        document.addEventListener('pointercancel', handleDocumentPointerUp);
         keyListenersAttached = true;
     };
 
@@ -379,6 +391,34 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
     }
 
     /**
+     * Preserve the coordinate transform used when a stroke starts. The canvas
+     * may be detached by a PDF re-render before later pointer events arrive.
+     *
+     * @param {HTMLCanvasElement} canvas
+     * @returns {{left: number, top: number, scaleX: number, scaleY: number}}
+     */
+    function captureCanvasTransform(canvas) {
+        var rect = canvas.getBoundingClientRect();
+        return {
+            left: rect.left,
+            top: rect.top,
+            scaleX: canvas.width / rect.width,
+            scaleY: canvas.height / rect.height
+        };
+    }
+
+    /**
+     * @param {PointerEvent} e
+     * @returns {{x: number, y: number}}
+     */
+    function getActiveStrokeCoords(e) {
+        return {
+            x: (e.clientX - activeStrokeTransform.left) * activeStrokeTransform.scaleX,
+            y: (e.clientY - activeStrokeTransform.top) * activeStrokeTransform.scaleY
+        };
+    }
+
+    /**
      * Handle pointerdown - start a new stroke if a drawing tool is active.
      *
      * @param {PointerEvent} e
@@ -394,6 +434,9 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
         canvas.setPointerCapture(e.pointerId);
 
         isDrawing = true;
+        activeStrokeCanvas = canvas;
+        activeStrokePointerId = e.pointerId;
+        activeStrokeTransform = captureCanvasTransform(canvas);
         currentStroke = {
             pageIdx: pageIdx,
             points: [{ x: coords.x, y: coords.y }],
@@ -417,6 +460,16 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
 
         var canvas = e.currentTarget;
         var coords = getCanvasCoords(e, canvas);
+
+        appendPointerPoint(e, coords);
+    }
+
+    /**
+     * @param {PointerEvent} e
+     * @param {{x: number, y: number}} coords
+     */
+    function appendPointerPoint(e, coords) {
+        if (!isDrawing || !currentStroke) return;
 
         if (isShiftHeld) {
             // Straight line mode: keep only start point + current point
@@ -443,6 +496,13 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
         e.preventDefault();
     }
 
+    /** @param {PointerEvent} e */
+    function handleDocumentPointerMove(e) {
+        if (!isDrawing || !currentStroke || e.pointerId !== activeStrokePointerId) return;
+        if (e.target === activeStrokeCanvas) return;
+        appendPointerPoint(e, getActiveStrokeCoords(e));
+    }
+
     /**
      * Handle pointerup - finalize stroke and store it.
      *
@@ -450,9 +510,16 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
      */
     function handlePointerUp(e) {
         if (!isDrawing || !currentStroke) return;
+        if (e.pointerId !== activeStrokePointerId) return;
 
-        var canvas = e.currentTarget;
-        canvas.releasePointerCapture(e.pointerId);
+        var canvas = activeStrokeCanvas;
+        if (canvas && typeof canvas.releasePointerCapture === 'function') {
+            try {
+                canvas.releasePointerCapture(e.pointerId);
+            } catch (_error) {
+                // Detaching a captured element implicitly releases capture.
+            }
+        }
 
         // Only store strokes with at least 2 points (or 1 for a dot)
         if (currentStroke.points.length >= 1) {
@@ -482,16 +549,34 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
             pageStrokes.get(pageIdx).push(finalStroke);
             redrawPage(pageIdx);
 
-            // Fire callback
+            isDrawing = false;
+            currentStroke = null;
+            activeStrokeCanvas = null;
+            activeStrokePointerId = null;
+            activeStrokeTransform = null;
+
+            // Fire callback after clearing transient state so a resize waiting
+            // for the stroke may proceed while persistence is asynchronous.
             if (typeof exports.onStrokeComplete === 'function') {
                 exports.onStrokeComplete(pageIdx, finalStroke);
             }
+        } else {
+            isDrawing = false;
+            currentStroke = null;
+            activeStrokeCanvas = null;
+            activeStrokePointerId = null;
+            activeStrokeTransform = null;
         }
 
-        isDrawing = false;
-        currentStroke = null;
-
         e.preventDefault();
+    }
+
+    /** @param {PointerEvent} e */
+    function handleDocumentPointerUp(e) {
+        if (!isDrawing || !currentStroke || e.pointerId !== activeStrokePointerId) return;
+        if (e.target === activeStrokeCanvas) return;
+        appendPointerPoint(e, getActiveStrokeCoords(e));
+        handlePointerUp(e);
     }
 
     // =========================================================================
@@ -861,6 +946,11 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
         return markupModeActive;
     };
 
+    /** @returns {boolean} Whether a pointer stroke is currently in progress. */
+    exports.isDrawingActive = function isDrawingActive() {
+        return isDrawing;
+    };
+
     /**
      * Get the preset color palette.
      *
@@ -909,6 +999,9 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
         // Reset state
         isDrawing = false;
         currentStroke = null;
+        activeStrokeCanvas = null;
+        activeStrokePointerId = null;
+        activeStrokeTransform = null;
         activeTool = null;
         markupModeActive = false;
         activeColor = PRESET_COLORS[0];
@@ -917,6 +1010,9 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
         if (keyListenersAttached) {
             document.removeEventListener('keydown', handleKeyDown);
             document.removeEventListener('keyup', handleKeyUp);
+            document.removeEventListener('pointermove', handleDocumentPointerMove);
+            document.removeEventListener('pointerup', handleDocumentPointerUp);
+            document.removeEventListener('pointercancel', handleDocumentPointerUp);
             keyListenersAttached = false;
         }
 
