@@ -18,6 +18,27 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
 (function (exports) {
     'use strict';
 
+    /**
+     * Returned by reRenderAllPages() when its pre-destruction recheck says a
+     * rebuild would destroy work in progress. Nothing has been torn down;
+     * the caller (requestRebuild) retries.
+     */
+    var REBUILD_DEFERRED = 'rebuild-deferred';
+
+    /** How often a deferred rebuild retries. */
+    var REBUILD_RETRY_MS = 50;
+
+    /**
+     * Upper bound on deferral. A predicate that never clears -- a stuck
+     * isDrawing flag, say -- must not freeze the pages at the old width for
+     * the life of the modal, so past this point the rebuild proceeds anyway.
+     */
+    var REBUILD_DEFER_DEADLINE_MS = 10000;
+
+    exports.REBUILD_DEFERRED = REBUILD_DEFERRED;
+    exports.REBUILD_RETRY_MS = REBUILD_RETRY_MS;
+    exports.REBUILD_DEFER_DEADLINE_MS = REBUILD_DEFER_DEADLINE_MS;
+
     // =========================================================================
     // Dependencies
     // =========================================================================
@@ -139,6 +160,20 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             this._resizeDebounceTimer = null;
             this._isDestroyed = false;
 
+            /**
+             * Injected predicate: return true while a rebuild would destroy
+             * work in progress (a pen stroke being drawn, say). Set by the
+             * modal via a setter rather than a constructor argument, because
+             * viewer instances outlive individual modal opens. The viewer
+             * deliberately knows nothing about what it is deferring for.
+             * @type {null|(() => boolean)}
+             */
+            this.shouldDeferRebuild = null;
+            /** @type {null|{force: boolean, timer: number|null, promise: Promise, resolve: Function, attempt: Function, deadline: number}} */
+            this._pendingRebuild = null;
+            /** Set only by the arbiter when its deadline has expired. */
+            this._rebuildDeferOverride = false;
+
             if (this.isGradedViewer && this.container && typeof ResizeObserver !== 'undefined') {
                 this._resizeObserver = new ResizeObserver(() => {
                     if (this._isDestroyed || this.useSinglePageMode || !this.pdf || this.isRendering) {
@@ -165,7 +200,12 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                             return;
                         }
 
-                        this.reRenderAllPages(true).catch((error) => {
+                        // Through the arbiter, not straight into
+                        // reRenderAllPages: this 120 ms timer beats the
+                        // document-controller's 400 ms deferral, so before the
+                        // arbiter existed it was this rebuild that destroyed
+                        // the drawing overlay mid-stroke.
+                        this.requestRebuild(true).catch((error) => {
                             console.error('[FRONTEND] Failed to re-render graded PDF after container resize:', error);
                         });
                     }, 120);
@@ -197,6 +237,16 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 clearTimeout(this._resizeDebounceTimer);
                 this._resizeDebounceTimer = null;
             }
+
+            // A deferred rebuild must not outlive the viewer, or its retry
+            // timer keeps firing against a torn-down container.
+            if (this._pendingRebuild) {
+                if (this._pendingRebuild.timer) clearTimeout(this._pendingRebuild.timer);
+                const stale = this._pendingRebuild;
+                this._pendingRebuild = null;
+                stale.resolve();
+            }
+            this.shouldDeferRebuild = null;
 
             if (this._resizeObserver) {
                 this._resizeObserver.disconnect();
@@ -960,6 +1010,124 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
         // Re-render All Pages (used by resize observer, not zoom)
         // =====================================================================
 
+        /**
+         * Whether a rebuild must be held off right now.
+         *
+         * A throwing predicate must never be able to freeze the layout, so a
+         * failure is treated as "do not defer".
+         *
+         * @returns {boolean}
+         */
+        _shouldDeferRebuildNow() {
+            if (this._rebuildDeferOverride) return false;
+            if (typeof this.shouldDeferRebuild !== 'function') return false;
+            try {
+                return Boolean(this.shouldDeferRebuild());
+            } catch (error) {
+                console.error('[FRONTEND] shouldDeferRebuild threw; rebuilding anyway:', error);
+                return false;
+            }
+        }
+
+        /**
+         * The single entry point for scheduling a page rebuild.
+         *
+         * Every destructive caller goes through here rather than calling
+         * reRenderAllPages() directly, because the guard has to live at one
+         * boundary: PDFViewer's own ResizeObserver used to rebuild on a 120 ms
+         * debounce with no guard at all, which beat the 400 ms deferral in
+         * document-controller and destroyed the drawing overlay mid-stroke.
+         *
+         * Concurrent requests coalesce into one rebuild and the strongest
+         * `force` wins. The returned promise resolves after the rebuild has
+         * actually happened, never merely because it was deferred. A pending
+         * rebuild is retained while the predicate holds and is retried, so a
+         * deferred resize is never silently dropped -- and a predicate that
+         * never clears cannot defer past REBUILD_DEFER_DEADLINE_MS.
+         *
+         * @param {boolean} [force]
+         * @returns {Promise<void>}
+         */
+        requestRebuild(force = false) {
+            if (this._isDestroyed) return Promise.resolve();
+
+            if (this._pendingRebuild) {
+                this._pendingRebuild.force = this._pendingRebuild.force || Boolean(force);
+                return this._pendingRebuild.promise;
+            }
+
+            const pending = {
+                force: Boolean(force),
+                timer: null,
+                promise: null,
+                resolve: null,
+                attempt: null,
+                deadline: Date.now() + REBUILD_DEFER_DEADLINE_MS,
+            };
+            pending.promise = new Promise((resolve) => { pending.resolve = resolve; });
+            this._pendingRebuild = pending;
+
+            const finish = () => {
+                if (this._pendingRebuild === pending) this._pendingRebuild = null;
+                pending.resolve();
+            };
+
+            const attempt = () => {
+                pending.timer = null;
+                if (this._isDestroyed) { finish(); return; }
+
+                const expired = Date.now() >= pending.deadline;
+                if (!expired && this._shouldDeferRebuildNow()) {
+                    pending.timer = window.setTimeout(attempt, REBUILD_RETRY_MS);
+                    return;
+                }
+                if (expired) {
+                    console.warn('[FRONTEND] rebuild defer deadline exceeded; rebuilding anyway');
+                }
+
+                // The override also suppresses the recheck inside
+                // reRenderAllPages, or an expired deadline would bounce
+                // straight back into the retry loop.
+                this._rebuildDeferOverride = expired;
+                let result;
+                try {
+                    result = this.reRenderAllPages(pending.force);
+                } finally {
+                    this._rebuildDeferOverride = false;
+                }
+                Promise.resolve(result)
+                    .then((outcome) => {
+                        if (outcome === REBUILD_DEFERRED && !this._isDestroyed) {
+                            // A stroke started between the guard check and the
+                            // destructive clear. Nothing was torn down; retry.
+                            pending.timer = window.setTimeout(attempt, REBUILD_RETRY_MS);
+                            return;
+                        }
+                        finish();
+                    })
+                    .catch((error) => {
+                        console.error('[FRONTEND] Failed to rebuild PDF pages:', error);
+                        finish();
+                    });
+            };
+
+            pending.attempt = attempt;
+            attempt();
+            return pending.promise;
+        }
+
+        /**
+         * Run a deferred rebuild now instead of waiting for the next retry.
+         * Called when the work the rebuild was waiting for has finished.
+         */
+        flushPendingRebuild() {
+            const pending = this._pendingRebuild;
+            if (!pending || !pending.timer) return;
+            clearTimeout(pending.timer);
+            pending.timer = null;
+            pending.attempt();
+        }
+
         async reRenderAllPages(force = false) {
             const targetPage = this.pdf ? Math.min(Math.max(this.currentPage || 1, 1), this.pdf.numPages) : 1;
             const containerWidth = this.getEffectiveContainerWidth();
@@ -980,6 +1148,17 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 const relativeTop = rect.top - containerRect.top;
                 const ratio = rect.height ? relativeTop / rect.height : 0;
                 scrollAnchor = { page: this.currentPage, ratio };
+            }
+
+            // Last recheck before the point of no return. Everything below
+            // this line is destructive: pageViewports is cleared here and
+            // renderSkeleton() then wipes the page wrappers, taking the
+            // drawing overlay with them. Checking only at the scheduler's
+            // timer entry is not enough -- renderSkeleton() awaits
+            // pdf.getPage(1), so a stroke can begin after the guard passed.
+            // Returning the sentinel tears nothing down; the arbiter retries.
+            if (this._shouldDeferRebuildNow()) {
+                return REBUILD_DEFERRED;
             }
 
             // Cancel in-flight renders

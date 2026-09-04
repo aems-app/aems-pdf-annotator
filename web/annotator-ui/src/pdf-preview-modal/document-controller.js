@@ -202,6 +202,12 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
             var redrawAll = function () {
                 if (_destroyed) return Promise.resolve();
 
+                // Fast path only. The AUTHORITATIVE drawing guard now lives in
+                // PDFViewer.requestRebuild(), because this controller is not the
+                // only destructive caller -- the viewer's own ResizeObserver
+                // rebuilds on a 120 ms debounce and used to beat this 400 ms
+                // path entirely. Skipping here just avoids pointless churn; it
+                // can only ever delay a rebuild, never let one through.
                 if (typeof options.isDrawingFn === 'function' && options.isDrawingFn()) {
                     _fullscreenResizeTimer = setTimeout(redrawAll, 50);
                     return Promise.resolve();
@@ -214,7 +220,10 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                 var promises = [];
 
                 if (gradedViewer && gradedViewer.pdf) {
-                    var p = gradedViewer.reRenderAllPages(false).then(function () {
+                    var rebuild = typeof gradedViewer.requestRebuild === 'function'
+                        ? gradedViewer.requestRebuild(false)
+                        : gradedViewer.reRenderAllPages(false);
+                    var p = rebuild.then(function () {
                         // Emit so annotations + markup can re-render
                         _emit('onResizeComplete', { viewer: 'graded' });
                     });
