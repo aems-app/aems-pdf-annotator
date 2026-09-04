@@ -206,6 +206,23 @@ function sumTranslateOffsets(transform) {
 }
 
 describe('pdf-preview-modal placement helpers', () => {
+  it('rebuilds a drawing viewport when the viewer cache was cleared', async () => {
+    const helpers = await loadPlacementHelpers();
+    const fallbackViewport = { convertToPdfPoint: vi.fn() };
+    const getPage = vi.fn().mockResolvedValue({
+      getViewport: vi.fn().mockReturnValue(fallbackViewport),
+    });
+    const viewer = {
+      getViewportForPage: vi.fn().mockReturnValue(undefined),
+      pdf: { getPage },
+      scale: 1.5,
+      zoom: 2,
+    };
+
+    await expect(helpers.resolveDrawingViewport(viewer, 3)).resolves.toBe(fallbackViewport);
+    expect(getPage).toHaveBeenCalledWith(3);
+  });
+
   beforeEach(() => {
     vi.resetModules();
     delete window.AEMSPdfAnnotator;

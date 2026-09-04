@@ -20,12 +20,14 @@ describe('document-controller adapter routing', () => {
     window.__pdfOriginalViewer = {
       pdf: { numPages: 2 },
       loadPDF: vi.fn().mockResolvedValue(undefined),
+      renderPage: vi.fn(),
     };
     window.__pdfGradedViewer = {
       pdf: { numPages: 3 },
       currentPage: 1,
       loadPDF: vi.fn().mockResolvedValue(undefined),
       renderPage: vi.fn(),
+      reRenderAllPages: vi.fn().mockResolvedValue(undefined),
       onAnnotationsPageChange: vi.fn((cb) => { gradedPageChangeHandler = cb; }),
       onPageRendered: vi.fn((cb) => { gradedPageRenderedHandler = cb; }),
       onSliderSync: vi.fn(),
@@ -203,5 +205,45 @@ describe('document-controller adapter routing', () => {
       '/api/canvas/submissions/1001/pdf-graded?assignment_id=501',
       expect.objectContaining({ credentials: 'same-origin' }),
     );
+  });
+
+  it('coalesces duplicate fullscreen resize requests into one non-forced rebuild', async () => {
+    vi.useFakeTimers();
+    try {
+      const controllerModule = await loadDocumentControllerModule();
+      const controller = controllerModule.createDocumentController({}, {});
+
+      controller.handleResize();
+      controller.handleResize();
+      await vi.advanceTimersByTimeAsync(400);
+
+      expect(window.__pdfGradedViewer.reRenderAllPages).toHaveBeenCalledTimes(1);
+      expect(window.__pdfGradedViewer.reRenderAllPages).toHaveBeenCalledWith(false);
+      controller.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('defers a fullscreen rebuild until an active drawing stroke finishes', async () => {
+    vi.useFakeTimers();
+    try {
+      let drawing = true;
+      const controllerModule = await loadDocumentControllerModule();
+      const controller = controllerModule.createDocumentController({}, {
+        isDrawingFn: () => drawing,
+      });
+
+      controller.handleResize();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(window.__pdfGradedViewer.reRenderAllPages).not.toHaveBeenCalled();
+
+      drawing = false;
+      await vi.advanceTimersByTimeAsync(50);
+      expect(window.__pdfGradedViewer.reRenderAllPages).toHaveBeenCalledTimes(1);
+      controller.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
