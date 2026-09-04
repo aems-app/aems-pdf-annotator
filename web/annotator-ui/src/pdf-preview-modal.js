@@ -945,7 +945,9 @@
             // For continuous scroll, re-render all pages
             if (window.__pdfGradedViewer?.pdf) {
                 // Force re-render after fullscreen toggles so marker geometry is recomputed immediately.
-                await window.__pdfGradedViewer.reRenderAllPages(true);
+                // Via the arbiter: this is a destructive rebuild and a
+                // fullscreen toggle is exactly when a stroke may be in flight.
+                await window.__pdfGradedViewer.requestRebuild(true);
                 if (typeof renderAllAnnotations === 'function') {
                     renderAllAnnotations(true);
                 }
@@ -1232,6 +1234,23 @@
                 syncGradedPageSlider(viewer);
             });
         }
+
+        // Rewired on every call, not only on creation: the viewer instances are
+        // cached on window and outlive individual modal opens, so a
+        // creation-time-only hook would leave a reopened modal with a stale (or
+        // absent) predicate and the rebuild guard silently off.
+        //
+        // The viewer holds a generic "should I defer a rebuild" predicate and
+        // knows nothing about drawing; the dependency points this way so that
+        // pdf-viewer.js never reaches into the DrawingCanvas global.
+        if (window.__pdfGradedViewer && 'shouldDeferRebuild' in window.__pdfGradedViewer) {
+            window.__pdfGradedViewer.shouldDeferRebuild = function () {
+                return Boolean(DrawingCanvas
+                    && typeof DrawingCanvas.isDrawingActive === 'function'
+                    && DrawingCanvas.isDrawingActive());
+            };
+        }
+
         return true;
     }
 
@@ -3433,6 +3452,13 @@
             DrawingCanvas.onStrokeComplete = function (pageIdx, stroke) {
                 var viewer = window.__pdfGradedViewer;
                 if (!viewer) return;
+
+                // The stroke is finished and isDrawing is already false by the
+                // time this fires, so any rebuild the arbiter held back can run
+                // now rather than waiting out its retry interval.
+                if (typeof viewer.flushPendingRebuild === 'function') {
+                    viewer.flushPendingRebuild();
+                }
 
                 resolveDrawingViewport(viewer, stroke.pageIdx + 1).then(function (viewport) {
                     if (!viewport) return null;
@@ -7986,7 +8012,7 @@
                 if (!window.__pdfGradedViewer?.pdf) {
                     return;
                 }
-                window.__pdfGradedViewer.reRenderAllPages(true).then(() => {
+                window.__pdfGradedViewer.requestRebuild(true).then(() => {
                     if (typeof renderAnnotationsList === 'function') {
                         renderAnnotationsList();
                     }
