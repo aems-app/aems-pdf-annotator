@@ -9,7 +9,8 @@ const loadDocumentControllerModule = async () => {
 
 describe('document-controller adapter routing', () => {
   let gradedPageChangeHandler;
-  let gradedPageRenderedHandler;
+  let gradedResizeCompleteHandler;
+let gradedPageRenderedHandler;
 
   beforeEach(() => {
     vi.resetModules();
@@ -28,9 +29,11 @@ describe('document-controller adapter routing', () => {
       loadPDF: vi.fn().mockResolvedValue(undefined),
       renderPage: vi.fn(),
       reRenderAllPages: vi.fn().mockResolvedValue(undefined),
+      relayoutPagesForContainer: vi.fn().mockResolvedValue(undefined),
       onAnnotationsPageChange: vi.fn((cb) => { gradedPageChangeHandler = cb; }),
       onPageRendered: vi.fn((cb) => { gradedPageRenderedHandler = cb; }),
       onSliderSync: vi.fn(),
+      onResizeComplete: vi.fn((cb) => { gradedResizeCompleteHandler = cb; }),
     };
 
     Object.defineProperty(URL, 'createObjectURL', {
@@ -207,7 +210,7 @@ describe('document-controller adapter routing', () => {
     );
   });
 
-  it('coalesces duplicate fullscreen resize requests into one non-forced rebuild', async () => {
+  it('coalesces duplicate fullscreen resize requests into one non-destructive reflow', async () => {
     vi.useFakeTimers();
     try {
       const controllerModule = await loadDocumentControllerModule();
@@ -217,15 +220,56 @@ describe('document-controller adapter routing', () => {
       controller.handleResize();
       await vi.advanceTimersByTimeAsync(400);
 
-      expect(window.__pdfGradedViewer.reRenderAllPages).toHaveBeenCalledTimes(1);
-      expect(window.__pdfGradedViewer.reRenderAllPages).toHaveBeenCalledWith(false);
+      // The fullscreen path must not rebuild: reRenderAllPages(false) still
+      // reached renderSkeleton()'s `container.innerHTML = ''` for any width
+      // delta >= 2px, destroying the drawing overlay (#472).
+      expect(window.__pdfGradedViewer.relayoutPagesForContainer).toHaveBeenCalledTimes(1);
+      expect(window.__pdfGradedViewer.reRenderAllPages).not.toHaveBeenCalled();
       controller.destroy();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('defers a fullscreen rebuild until an active drawing stroke finishes', async () => {
+  it('holds the resize-complete event while a stroke is in progress', async () => {
+    // The event's consumers end in refreshMarkupFromAnnotations(), which does an
+    // unconditional DrawingCanvas pageStrokes.clear() and repaints only from
+    // annotationsData -- so firing it mid-stroke, or before a finished stroke's
+    // create-POST resolves, erases the ink the reflow exists to protect. The
+    // fullscreen path already deferred for this reason; the viewer-level
+    // callback added for the reflow must too.
+    vi.useFakeTimers();
+    try {
+      let drawing = true;
+      const controllerModule = await loadDocumentControllerModule();
+      const controller = controllerModule.createDocumentController({}, {
+        isDrawingFn: () => drawing,
+      });
+      const seen = [];
+      controller.onResizeComplete(() => seen.push(1));
+      // ensureModalViewers() is the only place the viewer callbacks are wired,
+      // and it bails without a viewer module, so provide the minimum it needs.
+      window.PdfPreviewModalViewer = {
+        PDFViewer: function FakeOriginalViewer() {},
+        resolvePdfjsLib: () => ({}),
+      };
+      controller.ensureViewers();          // wires the viewer callbacks
+      expect(typeof gradedResizeCompleteHandler).toBe('function');
+
+      gradedResizeCompleteHandler();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(seen, 'fired while the pointer was still down').toEqual([]);
+
+      drawing = false;
+      await vi.advanceTimersByTimeAsync(60);
+      expect(seen).toEqual([1]);
+      controller.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('defers the fullscreen reflow until an active drawing stroke finishes', async () => {
     vi.useFakeTimers();
     try {
       let drawing = true;
@@ -236,11 +280,12 @@ describe('document-controller adapter routing', () => {
 
       controller.handleResize();
       await vi.advanceTimersByTimeAsync(400);
-      expect(window.__pdfGradedViewer.reRenderAllPages).not.toHaveBeenCalled();
+      expect(window.__pdfGradedViewer.relayoutPagesForContainer).not.toHaveBeenCalled();
 
       drawing = false;
       await vi.advanceTimersByTimeAsync(50);
-      expect(window.__pdfGradedViewer.reRenderAllPages).toHaveBeenCalledTimes(1);
+      expect(window.__pdfGradedViewer.relayoutPagesForContainer).toHaveBeenCalledTimes(1);
+      expect(window.__pdfGradedViewer.reRenderAllPages).not.toHaveBeenCalled();
       controller.destroy();
     } finally {
       vi.useRealTimers();

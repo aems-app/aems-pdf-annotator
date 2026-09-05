@@ -93,6 +93,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
         var _originalPdfLoadPromise = null;
         var _gradedPdfLoadPromise = null;
         var _fullscreenResizeTimer = null;
+        var _resizeCompleteRetry = null;
 
         // Handler references for cleanup (bound elements persist across modal opens)
         var _boundHandlers = {
@@ -190,7 +191,27 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
             // onResizeComplete event, which the host already wires to
             // renderAllAnnotations(true) + refreshMarkupFromAnnotations().
             window.__pdfGradedViewer.onResizeComplete(function () {
-                if (!_destroyed) _emit('onResizeComplete', { viewer: 'graded' });
+                if (_destroyed) return;
+                // Consumers of this event end in refreshMarkupFromAnnotations(),
+                // which does an unconditional DrawingCanvas pageStrokes.clear()
+                // and repaints only from annotationsData -- so a stroke whose
+                // create-POST has not resolved would be wiped off the overlay.
+                // handleFullscreenResize() already defers for exactly this
+                // reason; without the same guard here the reflow would erase the
+                // stroke it exists to protect.
+                if (typeof options.isDrawingFn === 'function' && options.isDrawingFn()) {
+                    clearTimeout(_resizeCompleteRetry);
+                    _resizeCompleteRetry = setTimeout(function retry() {
+                        if (_destroyed) return;
+                        if (typeof options.isDrawingFn === 'function' && options.isDrawingFn()) {
+                            _resizeCompleteRetry = setTimeout(retry, 50);
+                            return;
+                        }
+                        _emit('onResizeComplete', { viewer: 'graded' });
+                    }, 50);
+                    return;
+                }
+                _emit('onResizeComplete', { viewer: 'graded' });
             });
             window.__pdfGradedViewer.onSliderSync(function (viewer) {
                 if (!_destroyed) {
@@ -222,7 +243,12 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                 var promises = [];
 
                 if (gradedViewer && gradedViewer.pdf) {
-                    var p = gradedViewer.reRenderAllPages(false).then(function () {
+                    // Reflow rather than rebuild. reRenderAllPages(false) still
+                    // reached renderSkeleton() for any width delta >= 2 px,
+                    // including the whole 2-15 px band the viewer's own 16 px
+                    // ResizeObserver dead-band never reflows -- so the overlay
+                    // teardown survived there.
+                    var p = gradedViewer.relayoutPagesForContainer().then(function () {
                         // Emit so annotations + markup can re-render
                         _emit('onResizeComplete', { viewer: 'graded' });
                     });
@@ -245,6 +271,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
 
             // Wait for transition to complete then re-render
             clearTimeout(_fullscreenResizeTimer);
+            clearTimeout(_resizeCompleteRetry);
             _fullscreenResizeTimer = setTimeout(redrawAll, 400);
         }
 
@@ -971,6 +998,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                 if (_destroyed) return;
                 _destroyed = true;
                 clearTimeout(_fullscreenResizeTimer);
+            clearTimeout(_resizeCompleteRetry);
                 _fullscreenResizeTimer = null;
                 _blobUrls.forEach(function (url) {
                     try { URL.revokeObjectURL(url); } catch (_e) { /* ignore */ }

@@ -944,8 +944,13 @@
         const redrawAll = async () => {
             // For continuous scroll, re-render all pages
             if (window.__pdfGradedViewer?.pdf) {
-                // Force re-render after fullscreen toggles so marker geometry is recomputed immediately.
-                await window.__pdfGradedViewer.reRenderAllPages(true);
+                // Reflow, not reRenderAllPages(true). force=true bypassed the
+                // width guard and always reached renderSkeleton()'s
+                // `container.innerHTML = ''`, so on this fallback path the
+                // drawing overlay was still destroyed 400 ms after every
+                // fullscreen toggle -- and unlike the shell path there is no
+                // isDrawingActive() deferral here. That is #472 unfixed.
+                await window.__pdfGradedViewer.relayoutPagesForContainer();
                 if (typeof renderAllAnnotations === 'function') {
                     renderAllAnnotations(true);
                 }
@@ -1232,6 +1237,22 @@
             // onPageRendered never fires and the px-positioned markers would
             // keep their pre-resize geometry.
             window.__pdfGradedViewer.onResizeComplete(() => {
+                // refreshMarkupFromAnnotations() does an unconditional
+                // DrawingCanvas pageStrokes.clear() and repaints only from
+                // annotationsData, so running it mid-stroke -- or before a
+                // finished stroke's create-POST resolves -- erases the very ink
+                // the reflow exists to protect. Retry once the pointer is up.
+                const drawing = Boolean(DrawingCanvas
+                    && typeof DrawingCanvas.isDrawingActive === 'function'
+                    && DrawingCanvas.isDrawingActive());
+                if (drawing) {
+                    clearTimeout(window._reflowResizeRetry);
+                    window._reflowResizeRetry = setTimeout(
+                        () => window.__pdfGradedViewer?._onResizeComplete?.(window.__pdfGradedViewer),
+                        50,
+                    );
+                    return;
+                }
                 if (typeof renderAllAnnotations === 'function') {
                     renderAllAnnotations(true);
                 }

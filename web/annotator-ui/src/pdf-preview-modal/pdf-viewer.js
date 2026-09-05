@@ -243,6 +243,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             this._onAnnotationsPageChange = null;
             this._onPageRendered = null;
             this._onSliderSync = null;
+            this._onResizeComplete = null;
 
             // Release PDF document
             if (this.pdf) {
@@ -362,6 +363,20 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
         // PDF Loading
         // =====================================================================
 
+        /**
+         * Drop every cache that describes the CURRENT document.
+         *
+         * Extracted so the skeleton base size cannot be forgotten here again:
+         * it describes page 1 of one specific document, and a stale copy would
+         * size the next document's not-yet-rendered pages.
+         */
+        _resetDocumentCaches() {
+            this.renderedPages.clear();
+            this.renderingPages.clear();
+            this.pageViewports.clear();
+            this._skeletonBaseViewport = null;
+        }
+
         async loadPDF(url) {
             debugLog(`[FRONTEND] loadPDF called for ${this.containerId}, URL: ${url.substring(0, 50)}...`);
             try {
@@ -372,9 +387,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 this.showLoading(true);
 
                 // Clear all tracking state when loading a new PDF
-                this.renderedPages.clear();
-                this.renderingPages.clear();
-                this.pageViewports.clear();
+                this._resetDocumentCaches();
                 this.renderTasks.forEach((task) => {
                     try {
                         task.cancel();
@@ -1014,6 +1027,12 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
         async relayoutPagesForContainer() {
             if (this._isDestroyed || !this.pdf || !this.container) return;
 
+            // Single-page mode is the one path where the container width really
+            // does set canvas.width (renderPage builds its viewport as
+            // scale * fitScaleFactor * zoom), so a CSS-only reflow would leave
+            // the page rendered at the wrong resolution. It must rebuild.
+            if (this.useSinglePageMode) return;
+
             // A zoom mutates this.zoom synchronously but only clears
             // pageViewports after it has awaited getPage(1). A resize timer that
             // comes due in that gap would read viewports built at the PREVIOUS
@@ -1112,6 +1131,10 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
 
             this.lastRenderContainerWidth = containerWidth;
             this.updateZoomLevel();
+            // The rebuild reached this through scrollToPage(); it fires
+            // _onSliderSync and PdfPreviewModalComparison.onPageChange, which
+            // would otherwise be orphaned on every resize.
+            this.updatePageInfo();
 
             // Annotation markers and text boxes are positioned in CSS pixels,
             // so they need repositioning even though nothing was rebuilt.

@@ -383,6 +383,91 @@ describe('pdf-viewer non-destructive container reflow', () => {
     ).toBeLessThanOrEqual(1);
   });
 
+  // ---- Zoom is not an identity in this arithmetic --------------------------
+
+  it('reflows correctly at a zoom other than 1', async () => {
+    // Every other test here runs at zoom 1.0, where `* zoom` and `/ zoom` are
+    // identity operations and a zoom-blind implementation (`const zoom = 1`)
+    // would pass. This one makes the zoom terms load-bearing.
+    const cw = { value: 816 };            // effective 800
+    const viewer = await makeViewer(cw);
+    viewer.zoom = 1.25;
+    await viewer.renderSkeleton();
+    await viewer.renderSpecificPage(1);
+    const canvas = document.querySelector('.pdf-page-canvas[data-page-num="1"]');
+    const wrapper = canvas.parentElement;
+    // The bitmap is scale*zoom and must not move; only the box may.
+    const bitmap = Math.trunc(PAGE_W * viewer.scale * 1.25);   // canvas.width is an int
+    expect(canvas.width).toBe(bitmap);
+
+    cw.value = 616;                        // effective 600
+    await viewer.relayoutPagesForContainer();
+
+    const base = PAGE_W * viewer.scale;    // 918 -- zoom-independent
+    const fit = Math.min(1, 600 / base);
+    expect(wrapper.style.width).toBe(`${base * fit * 1.25}px`);
+    expect(canvas.width).toBe(bitmap);     // still untouched
+  });
+
+  // ---- Lifecycle -----------------------------------------------------------
+
+  it('never reflows a single-page viewer, whose bitmap DOES follow the container', async () => {
+    // renderPage() builds its viewport as scale * fitScaleFactor * zoom and
+    // assigns it to canvas.width, so for that mode the load-bearing invariant
+    // is false and a CSS-only reflow would leave the page at the wrong size.
+    const cw = { value: 816 };
+    const viewer = await makeViewer(cw);
+    await viewer.renderSkeleton();
+    const wrapper = document.querySelector('.pdf-page-wrapper[data-page-num="1"]');
+    const before = wrapper.style.width;
+
+    viewer.useSinglePageMode = true;
+    cw.value = 516;
+    await viewer.relayoutPagesForContainer();
+
+    expect(wrapper.style.width).toBe(before);
+  });
+
+  it('destroy() releases the resize-complete callback like every other one', async () => {
+    const cw = { value: 816 };
+    const viewer = await makeViewer(cw);
+    viewer.onResizeComplete(() => {});
+    expect(viewer._onResizeComplete).toBeTypeOf('function');
+
+    viewer.destroy();
+
+    // The graded viewer is a window-lifetime singleton, so a retained closure
+    // keeps the whole controller graph (including the page-text cache) alive.
+    expect(viewer._onResizeComplete).toBeNull();
+  });
+
+  it('forgets the previous document base size when a new PDF is loaded', async () => {
+    const cw = { value: 816 };
+    const viewer = await makeViewer(cw);
+    await viewer.renderSkeleton();
+    expect(viewer._skeletonBaseViewport).toBeTruthy();
+
+    // loadPDF resets every other per-document cache before assigning this.pdf;
+    // a stale base here would size a differently-shaped document's pages.
+    viewer._resetDocumentCaches();
+
+    expect(viewer._skeletonBaseViewport).toBeNull();
+  });
+
+  it('refreshes the page indicator so the slider and comparison mode follow', async () => {
+    const cw = { value: 816 };
+    const viewer = await makeViewer(cw);
+    await viewer.renderSkeleton();
+    const info = vi.spyOn(viewer, 'updatePageInfo');
+
+    cw.value = 616;
+    await viewer.relayoutPagesForContainer();
+
+    // The rebuild reached updatePageInfo() through scrollToPage(); it fires
+    // _onSliderSync and PdfPreviewModalComparison.onPageChange.
+    expect(info).toHaveBeenCalled();
+  });
+
   // ---- Routing -------------------------------------------------------------
 
   it('the ResizeObserver reflows instead of rebuilding', async () => {
@@ -400,6 +485,32 @@ describe('pdf-viewer non-destructive container reflow', () => {
     await vi.waitFor(() => expect(reflow).toHaveBeenCalled(), { timeout: 2000 });
 
     expect(rebuild, 'a container resize must not rebuild the page DOM').not.toHaveBeenCalled();
+  });
+
+  it('an observer-driven resize leaves the real overlay in place', async () => {
+    // The test above mocks both methods, so it proves routing and nothing else:
+    // any OTHER destructive call in the observer body would be invisible to it.
+    // This one lets the real code run and checks the node identity that #472 is
+    // actually about.
+    const cw = { value: 816 };
+    const viewer = await makeViewer(cw);
+    const before = expectedDisplay(viewer);
+    const { wrapper, overlay, canvas } = buildRenderedPage(viewer, 1, before.w, before.h);
+    viewer._skeletonBaseViewport = { width: PAGE_W * viewer.scale, height: PAGE_H * viewer.scale };
+    viewer.lastRenderContainerWidth = viewer.getEffectiveContainerWidth();
+    const bitmapW = canvas.width;
+
+    cw.value = 516;
+    resizeObserverCallback([]);
+    await vi.waitFor(
+      () => expect(wrapper.style.width).not.toBe(`${before.w}px`),
+      { timeout: 2000 },
+    );
+
+    expect(document.querySelector('#pdfGradedContainer .drawing-canvas-overlay')).toBe(overlay);
+    expect(overlay.isConnected).toBe(true);
+    expect(canvas.width).toBe(bitmapW);
+    expect(viewer.pageViewports.get(1)).toBeTruthy();
   });
 
   it('a zoom change does NOT take the reflow path, because the bitmap changes', async () => {
