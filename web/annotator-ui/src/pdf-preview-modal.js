@@ -1024,6 +1024,17 @@
     let resizeDebounceTimer;
     let _reflowResizeRetryTimer = null;
 
+    // Strokes finished but not yet persisted.
+    //
+    // isDrawingActive() goes false at pointer-up, but the stroke only reaches
+    // annotationsData in the create-POST's .then(). A resize landing in that
+    // window would run refreshMarkupFromAnnotations(), whose first act is an
+    // unconditional DrawingCanvas pageStrokes.clear() repopulated from an
+    // annotationsData that does not yet contain the stroke -- the ink the user
+    // just drew would vanish. So the resize-complete guard waits for this too,
+    // not only for the pointer.
+    let _pendingDrawingSaves = 0;
+
     /**
      * Reposition markup after a resize settled -- once the pointer is up.
      *
@@ -1040,7 +1051,7 @@
         const drawing = Boolean(DrawingCanvas
             && typeof DrawingCanvas.isDrawingActive === 'function'
             && DrawingCanvas.isDrawingActive());
-        if (drawing) {
+        if (drawing || _pendingDrawingSaves > 0) {
             clearTimeout(_reflowResizeRetryTimer);
             _reflowResizeRetryTimer = setTimeout(onReflowComplete, 50);
             return;
@@ -3479,6 +3490,7 @@
                 var viewer = window.__pdfGradedViewer;
                 if (!viewer) return;
 
+                _pendingDrawingSaves += 1;
                 resolveDrawingViewport(viewer, stroke.pageIdx + 1).then(function (viewport) {
                     if (!viewport) return null;
 
@@ -3512,6 +3524,9 @@
                 })
                 .catch(function (err) {
                     console.error('Failed to save drawing stroke:', err);
+                })
+                .finally(function () {
+                    _pendingDrawingSaves = Math.max(0, _pendingDrawingSaves - 1);
                 });
             };
         }
@@ -8031,7 +8046,13 @@
                 if (!window.__pdfGradedViewer?.pdf) {
                     return;
                 }
-                window.__pdfGradedViewer.reRenderAllPages(true).then(() => {
+                // Reflow, despite the name of this function having always
+                // promised one: reRenderAllPages(true) reaches renderSkeleton()
+                // and empties the container, destroying the drawing overlay
+                // 180 ms after the pane is activated, with no drawing guard.
+                // This was the last such path and an external review found it
+                // after the teardown had twice been declared gone.
+                window.__pdfGradedViewer.relayoutPagesForContainer().then(() => {
                     if (typeof renderAnnotationsList === 'function') {
                         renderAnnotationsList();
                     }
@@ -9175,6 +9196,8 @@
         return createPdfPreviewModal(normalizePackageOptions(options));
     };
     window.PdfPreviewModal.__test = {
+        setPendingDrawingSaves: function (n) { _pendingDrawingSaves = n; },
+        getPendingDrawingSaves: function () { return _pendingDrawingSaves; },
         buildTaskPlacementBands,
         compareTaskPlacementEntries,
         buildDisplayOrderByPagePosition,

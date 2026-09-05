@@ -468,6 +468,43 @@ describe('pdf-viewer non-destructive container reflow', () => {
     expect(info).toHaveBeenCalled();
   });
 
+  // ---- The overlay must be the same rectangle as the page ------------------
+
+  it('leaves the wrapper and the page canvas on the SAME box under a clamp', async () => {
+    // Stroke coordinates are mapped through the .drawing-canvas-overlay, which is
+    // width:100%/height:100% of the WRAPPER (drawing-canvas.js:270-271). So the
+    // wrapper's box has to be the page's box. _applyFittedBox measured the
+    // clamped width, corrected the height, and wrote the CLAMPED width to the
+    // canvas -- but left the wrapper on the REQUESTED width. While the CSS clamp
+    // is active both render clamped, so nothing shows; the moment the clamp goes
+    // away (leaving split-panel fullscreen) the wrapper springs to the requested
+    // width while the canvas stays clamped, and the overlay goes with the
+    // wrapper. Codex measured ~115 bitmap px of coordinate error at the page
+    // edge for a 750/600 split.
+    const cw = { value: 616 };
+    const viewer = await makeViewer(cw);
+    const before = expectedDisplay(viewer);
+    const { wrapper, canvas } = buildRenderedPage(viewer, 1, before.w, before.h);
+
+    const CAP = 480;                      // `max-width` caps against the container
+    wrapper.getBoundingClientRect = () => ({
+      top: 0,
+      left: 0,
+      width: Math.min(parseFloat(wrapper.style.width || '0'), CAP),
+      height: parseFloat(wrapper.style.height || '0'),
+    });
+
+    cw.value = 816;
+    await viewer.relayoutPagesForContainer();
+
+    expect(canvas.style.width).not.toBe('');
+    expect(
+      wrapper.style.width,
+      'the overlay follows the wrapper, so the wrapper must not be wider than the page',
+    ).toBe(canvas.style.width);
+    expect(wrapper.style.height).toBe(canvas.style.height);
+  });
+
   // ---- Mixed page sizes ----------------------------------------------------
 
   it('sizes a rendered page from its OWN viewport, not page 1s', async () => {
@@ -536,21 +573,23 @@ describe('pdf-viewer non-destructive container reflow', () => {
     const before = expectedDisplay(viewer);
     const { wrapper } = buildRenderedPage(viewer, 1, before.w, before.h);
 
-    // Model the clamp: the used width is 20% below whatever is asked for.
-    const CLAMP = 0.8;
+    // Model `max-width: calc(100% - 1rem)` the way CSS actually behaves: a cap
+    // against the CONTAINER, so it is idempotent. A `requested * 0.8` stub is
+    // not, and re-reading it would re-clamp and make the model lie.
+    const CAP = 480;
     wrapper.getBoundingClientRect = () => ({
       top: 0,
       left: 0,
-      width: parseFloat(wrapper.style.width || '0') * CLAMP,
+      width: Math.min(parseFloat(wrapper.style.width || '0'), CAP),
       height: parseFloat(wrapper.style.height || '0'),
     });
 
     cw.value = 616;
     await viewer.relayoutPagesForContainer();
 
-    const usedW = parseFloat(wrapper.style.width) * CLAMP;
     const aspect = PAGE_H / PAGE_W;                       // the page's own ratio
-    expect(parseFloat(wrapper.style.height)).toBeCloseTo(usedW * aspect, 1);
+    expect(parseFloat(wrapper.style.width)).toBeCloseTo(CAP, 1);
+    expect(parseFloat(wrapper.style.height)).toBeCloseTo(CAP * aspect, 1);
   });
 
   // ---- Routing -------------------------------------------------------------
@@ -624,6 +663,29 @@ describe('pdf-viewer non-destructive container reflow', () => {
     await vi.waitFor(() => expect(wrapper.style.width).not.toBe(narrowWidth), { timeout: 2000 });
 
     expect(wrapper.style.width).toBe(wideWidth);
+  });
+
+  it('reflows an ordinary small resize, not just a fullscreen-sized one', async () => {
+    // An external review found this mutant survives the whole suite:
+    //   `Math.abs(containerWidth - previousWidth) < 16`  ->  `< 299`
+    // because every observer-driven test here moves the width by ~300px. A
+    // viewer that ignored everything under 299px would sit out ordinary browser
+    // and split-panel resizes entirely, which is most of them.
+    const cw = { value: 816 };
+    const viewer = await makeViewer(cw);
+    const before = expectedDisplay(viewer);
+    const { wrapper, overlay } = buildRenderedPage(viewer, 1, before.w, before.h);
+    viewer._skeletonBaseViewport = { width: PAGE_W * viewer.scale, height: PAGE_H * viewer.scale };
+    viewer.lastRenderContainerWidth = viewer.getEffectiveContainerWidth();
+    const startWidth = wrapper.style.width;
+
+    cw.value = 776;                       // 40px: an ordinary pane drag
+    resizeObserverCallback([]);
+    await vi.waitFor(() => expect(wrapper.style.width).not.toBe(startWidth), { timeout: 2000 });
+
+    const after = expectedDisplay(viewer);
+    expect(wrapper.style.width).toBe(`${after.w}px`);
+    expect(overlay.isConnected, 'the overlay must survive an ordinary resize').toBe(true);
   });
 
   it('a zoom change does NOT take the reflow path, because the bitmap changes', async () => {

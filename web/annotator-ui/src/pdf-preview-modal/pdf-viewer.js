@@ -1030,8 +1030,18 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             if (displayWidth > 0 && Math.abs(usedWidth - displayWidth) > 0.5) {
                 const aspect = displayHeight / displayWidth;
                 displayHeight = usedWidth * aspect;
-                wrapper.style.height = `${displayHeight}px`;
                 displayWidth = usedWidth;
+                // Write the MEASURED width back, not just the height. The
+                // drawing overlay is width:100%/height:100% of this wrapper
+                // (drawing-canvas.js:270-271) and stroke coordinates are mapped
+                // through it, so the wrapper's box has to be the page's box.
+                // Leaving the requested width here looks harmless while the CSS
+                // clamp is active -- both render clamped -- but the moment the
+                // clamp lifts, the wrapper springs to the requested width while
+                // the page canvas stays clamped, and the overlay goes with the
+                // wrapper. That is ~115 bitmap px of error at the page edge.
+                wrapper.style.width = `${displayWidth}px`;
+                wrapper.style.height = `${displayHeight}px`;
             }
             return { width: displayWidth, height: displayHeight };
         }

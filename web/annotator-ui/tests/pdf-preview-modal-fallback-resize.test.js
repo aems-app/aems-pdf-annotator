@@ -87,6 +87,29 @@ describe('monolith fallback fullscreen resize', () => {
     expect(window.__pdfGradedViewer.relayoutPagesForContainer).toHaveBeenCalled();
   });
 
+  it('does not clear the stroke store while a finished stroke is still saving', async () => {
+    // isDrawingActive() goes false at pointer-up (drawing-canvas.js:619), but the
+    // stroke only reaches annotationsData in the create-POST's .then(). A resize
+    // landing in that window runs refreshMarkupFromAnnotations() ->
+    // pageStrokes.clear(), repopulated from an annotationsData that does not yet
+    // contain the stroke -- so the ink the user just drew disappears until
+    // something else refreshes. Found by an external review, not by me.
+    drawing = false;                       // pointer is already up
+    window.PdfPreviewModal?.__test?.setPendingDrawingSaves?.(1);
+
+    document.dispatchEvent(new Event('fullscreenchange'));
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(loadStrokes, 'markup refreshed while the create-POST was in flight')
+      .not.toHaveBeenCalled();
+
+    window.PdfPreviewModal?.__test?.setPendingDrawingSaves?.(0);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(loadStrokes, 'markup never refreshed after the POST resolved')
+      .toHaveBeenCalled();
+  });
+
   it('does not clear the stroke store while the pointer is still down', async () => {
     drawing = true;
 
