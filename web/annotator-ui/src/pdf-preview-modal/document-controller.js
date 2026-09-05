@@ -93,6 +93,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
         var _originalPdfLoadPromise = null;
         var _gradedPdfLoadPromise = null;
         var _fullscreenResizeTimer = null;
+        var _resizeCompleteRetry = null;
 
         // Handler references for cleanup (bound elements persist across modal opens)
         var _boundHandlers = {
@@ -132,6 +133,37 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
         // -----------------------------------------------------------------
         // Viewer initialization
         // -----------------------------------------------------------------
+
+        /**
+         * Announce that a resize settled, once the pointer is up.
+         *
+         * Every consumer ends in refreshMarkupFromAnnotations(), whose first
+         * action is an unconditional DrawingCanvas pageStrokes.clear() repainted
+         * only from annotationsData -- and annotationsData gains a stroke only in
+         * the create-POST's .then(). Emitting mid-stroke therefore erases the ink
+         * the reflow exists to protect, so this waits, as the 400 ms fullscreen
+         * path always did.
+         *
+         * It also re-runs the active search highlight. Those boxes are absolute
+         * CSS pixels derived from canvas.getBoundingClientRect() at highlight
+         * time (see highlightSearchMatch), and the only thing that used to
+         * discard them on a resize was renderSkeleton() emptying the container.
+         * A reflow keeps the overlay, so stale boxes would simply stay put --
+         * visible on the ResizeObserver-only paths (window resize, split-panel
+         * toggle), which have no other re-highlight wire.
+         */
+        function emitResizeComplete() {
+            if (_destroyed) return;
+            if (typeof options.isDrawingFn === 'function' && options.isDrawingFn()) {
+                clearTimeout(_resizeCompleteRetry);
+                _resizeCompleteRetry = setTimeout(emitResizeComplete, 50);
+                return;
+            }
+            _emit('onResizeComplete', { viewer: 'graded' });
+            if (_searchState.matches.length > 0 && _searchState.currentIndex >= 0) {
+                highlightSearchMatch(_searchState.matches[_searchState.currentIndex]);
+            }
+        }
 
         function ensureModalViewers() {
             var ViewerModule = window.PdfPreviewModalViewer;
@@ -184,6 +216,12 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                 });
                 if (!_destroyed) _emit('onPageRendered', pageNum);
             });
+            // A non-destructive container reflow renders no page, so
+            // onPageRendered never fires and the px-positioned annotation
+            // markers would keep their pre-resize geometry. Re-use the existing
+            // onResizeComplete event, which the host already wires to
+            // renderAllAnnotations(true) + refreshMarkupFromAnnotations().
+            window.__pdfGradedViewer.onResizeComplete(emitResizeComplete);
             window.__pdfGradedViewer.onSliderSync(function (viewer) {
                 if (!_destroyed) {
                     syncGradedPageSlider(viewer);
@@ -214,10 +252,18 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                 var promises = [];
 
                 if (gradedViewer && gradedViewer.pdf) {
-                    var p = gradedViewer.reRenderAllPages(false).then(function () {
-                        // Emit so annotations + markup can re-render
-                        _emit('onResizeComplete', { viewer: 'graded' });
-                    });
+                    // Reflow rather than rebuild. reRenderAllPages(false) still
+                    // reached renderSkeleton() for any width delta >= 2 px,
+                    // including the whole 2-15 px band the viewer's own 16 px
+                    // ResizeObserver dead-band never reflows -- so the overlay
+                    // teardown survived there.
+                    // Same guarded emitter as the viewer-level callback: the
+                    // reflow reaches _onResizeComplete on its own, but returns
+                    // early when destroyed, in single-page mode, or while a zoom
+                    // is in flight -- and the host still needs its px-placed
+                    // markers repositioned in those cases.
+                    var p = gradedViewer.relayoutPagesForContainer()
+                        .then(emitResizeComplete);
                     promises.push(p);
                 }
                 if (originalViewer && originalViewer.pdf) {
@@ -237,6 +283,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
 
             // Wait for transition to complete then re-render
             clearTimeout(_fullscreenResizeTimer);
+            clearTimeout(_resizeCompleteRetry);
             _fullscreenResizeTimer = setTimeout(redrawAll, 400);
         }
 
@@ -963,6 +1010,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                 if (_destroyed) return;
                 _destroyed = true;
                 clearTimeout(_fullscreenResizeTimer);
+            clearTimeout(_resizeCompleteRetry);
                 _fullscreenResizeTimer = null;
                 _blobUrls.forEach(function (url) {
                     try { URL.revokeObjectURL(url); } catch (_e) { /* ignore */ }

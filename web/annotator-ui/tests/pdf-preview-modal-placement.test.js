@@ -74,6 +74,7 @@ async function createUndoHarness({
     onAnnotationsPageChange() {}
     onPageRendered() {}
     onSliderSync() {}
+    onResizeComplete() {}
   }
   window.PdfPreviewModalViewer = {
     PDFViewer: FakeViewer,

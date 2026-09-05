@@ -944,13 +944,17 @@
         const redrawAll = async () => {
             // For continuous scroll, re-render all pages
             if (window.__pdfGradedViewer?.pdf) {
-                // Force re-render after fullscreen toggles so marker geometry is recomputed immediately.
-                await window.__pdfGradedViewer.reRenderAllPages(true);
-                if (typeof renderAllAnnotations === 'function') {
-                    renderAllAnnotations(true);
-                }
-
-                refreshMarkupFromAnnotations();
+                // Reflow, not reRenderAllPages(true). force=true bypassed the
+                // width guard and always reached renderSkeleton()'s
+                // `container.innerHTML = ''`, so on this fallback path the
+                // drawing overlay was still destroyed 400 ms after every
+                // fullscreen toggle -- and unlike the shell path there is no
+                // isDrawingActive() deferral here. That is #472 unfixed.
+                await window.__pdfGradedViewer.relayoutPagesForContainer();
+                // Guarded: this raw pair used to run unguarded here, bypassing
+                // the very deferral added for the viewer callback, and would
+                // wipe uncommitted ink 400 ms after a fullscreen toggle.
+                onReflowComplete();
             }
             if (window.__pdfOriginalViewer?.pdf) {
                 // Original viewer still uses single page, keep old behavior
@@ -1018,6 +1022,43 @@
 
     // Keep markers aligned when browser is zoomed (Ctrl+Wheel) or resized
     let resizeDebounceTimer;
+    let _reflowResizeRetryTimer = null;
+
+    /**
+     * Reposition markup after a resize settled -- once the pointer is up.
+     *
+     * refreshMarkupFromAnnotations() does an unconditional DrawingCanvas
+     * pageStrokes.clear() and repaints only from annotationsData, which gains a
+     * stroke only in the create-POST's .then(). Running it mid-stroke, or before
+     * that POST resolves, erases the ink the reflow exists to protect.
+     *
+     * Module-scope so BOTH the viewer's onResizeComplete registration and the
+     * fallback handleFullscreenResize() use it. They used to have two copies and
+     * only one of them was guarded.
+     */
+    function onReflowComplete() {
+        const drawing = Boolean(DrawingCanvas
+            && typeof DrawingCanvas.isDrawingActive === 'function'
+            && DrawingCanvas.isDrawingActive());
+        if (drawing) {
+            clearTimeout(_reflowResizeRetryTimer);
+            _reflowResizeRetryTimer = setTimeout(onReflowComplete, 50);
+            return;
+        }
+        // renderAllAnnotations throws when the overlay renderer has not been
+        // initialised, and an uncaught throw here would skip the markup refresh
+        // entirely -- leaving the drawing overlay stale after every resize. The
+        // markup refresh is the more important of the two and must not be
+        // hostage to it.
+        try {
+            if (typeof renderAllAnnotations === 'function') {
+                renderAllAnnotations(true);
+            }
+        } catch (error) {
+            console.error('[FRONTEND] renderAllAnnotations failed after a resize:', error);
+        }
+        refreshMarkupFromAnnotations();
+    }
     // FE-5 FIX: Named handler for cleanup
     const handleResize = () => {
         if (_currentShell) return; // Shell handles resize
@@ -1228,6 +1269,10 @@
                 }
                 refreshMarkupFromAnnotations();
             });
+            // A non-destructive container reflow renders no page, so
+            // onPageRendered never fires and the px-positioned markers would
+            // keep their pre-resize geometry.
+            window.__pdfGradedViewer.onResizeComplete(onReflowComplete);
             window.__pdfGradedViewer.onSliderSync((viewer) => {
                 syncGradedPageSlider(viewer);
             });

@@ -138,6 +138,9 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             this._resizeObserver = null;
             this._resizeDebounceTimer = null;
             this._isDestroyed = false;
+            this._skeletonBaseViewport = null;
+            this._onResizeComplete = null;
+            this._zoomInFlight = false;
 
             if (this.isGradedViewer && this.container && typeof ResizeObserver !== 'undefined') {
                 this._resizeObserver = new ResizeObserver(() => {
@@ -165,8 +168,13 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                             return;
                         }
 
-                        this.reRenderAllPages(true).catch((error) => {
-                            console.error('[FRONTEND] Failed to re-render graded PDF after container resize:', error);
+                        // Reflow, do NOT rebuild. A container-width change
+                        // never alters canvas.width (that is scale*zoom), so
+                        // there is nothing to re-render -- and rebuilding here
+                        // destroys the drawing overlay mid-stroke, which is
+                        // issue #472. See relayoutPagesForContainer().
+                        this.relayoutPagesForContainer().catch((error) => {
+                            console.error('[FRONTEND] Failed to reflow graded PDF after container resize:', error);
                         });
                     }, 120);
                 });
@@ -235,6 +243,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             this._onAnnotationsPageChange = null;
             this._onPageRendered = null;
             this._onSliderSync = null;
+            this._onResizeComplete = null;
 
             // Release PDF document
             if (this.pdf) {
@@ -354,6 +363,20 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
         // PDF Loading
         // =====================================================================
 
+        /**
+         * Drop every cache that describes the CURRENT document.
+         *
+         * Extracted so the skeleton base size cannot be forgotten here again:
+         * it describes page 1 of one specific document, and a stale copy would
+         * size the next document's not-yet-rendered pages.
+         */
+        _resetDocumentCaches() {
+            this.renderedPages.clear();
+            this.renderingPages.clear();
+            this.pageViewports.clear();
+            this._skeletonBaseViewport = null;
+        }
+
         async loadPDF(url) {
             debugLog(`[FRONTEND] loadPDF called for ${this.containerId}, URL: ${url.substring(0, 50)}...`);
             try {
@@ -364,9 +387,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 this.showLoading(true);
 
                 // Clear all tracking state when loading a new PDF
-                this.renderedPages.clear();
-                this.renderingPages.clear();
-                this.pageViewports.clear();
+                this._resetDocumentCaches();
                 this.renderTasks.forEach((task) => {
                     try {
                         task.cancel();
@@ -459,6 +480,12 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
 
             const firstPage = await this.pdf.getPage(1);
             const baseViewport = firstPage.getViewport({ scale: this.scale });
+            // Kept so relayoutPagesForContainer() can size not-yet-rendered
+            // pages the same way this loop does, without an async getPage().
+            this._skeletonBaseViewport = {
+                width: baseViewport.width,
+                height: baseViewport.height,
+            };
 
             const containerWidth = this.getEffectiveContainerWidth();
             const fitScaleFactor = Math.min(1, containerWidth / baseViewport.width);
@@ -600,13 +627,12 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 const displayWidth = baseViewport.width * fitScaleFactor * this.zoom;
                 const displayHeight = baseViewport.height * fitScaleFactor * this.zoom;
 
-                wrapper.style.width = `${displayWidth}px`;
-                wrapper.style.height = `${displayHeight}px`;
+                const box = this._applyFittedBox(wrapper, displayWidth, displayHeight);
 
                 canvas.width = viewport.width;
                 canvas.height = viewport.height;
-                canvas.style.width = `${displayWidth}px`;
-                canvas.style.height = `${displayHeight}px`;
+                canvas.style.width = `${box.width}px`;
+                canvas.style.height = `${box.height}px`;
 
                 this.pageViewports.set(pageNum, viewport);
 
@@ -884,6 +910,19 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
 
         async zoomResizeAndRenderVisible() {
             if (!this.pdf) return;
+            // Set before the first await: zoom has already been mutated by the
+            // caller, and pageViewports is not cleared until after getPage(1)
+            // resolves. relayoutPagesForContainer() must not read that
+            // inconsistent pair. See its guard.
+            this._zoomInFlight = true;
+            try {
+                await this._zoomResizeAndRenderVisible();
+            } finally {
+                this._zoomInFlight = false;
+            }
+        }
+
+        async _zoomResizeAndRenderVisible() {
             this.zoomVersion++;
             const capturedVersion = this.zoomVersion;
 
@@ -959,6 +998,218 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
         // =====================================================================
         // Re-render All Pages (used by resize observer, not zoom)
         // =====================================================================
+
+        /**
+         * Size a page box, honouring any CSS clamp on its width.
+         *
+         * The wrapper's width is inline px, but CSS can still narrow it without
+         * JS: annotator-ui.css gives `.pdf-page-wrapper` a
+         * `max-width: calc(100% - 1rem)` under
+         * `.preview-fullscreen.split-panel-mode`, where the page canvas is also
+         * `max-width:100%; height:auto`. Writing the height that goes with the
+         * REQUESTED width then leaves the wrapper taller than the page it
+         * contains, and the drawing overlay -- 100% x 100% of the wrapper --
+         * inherits the surplus, so ink drifts further down the page the further
+         * down you draw. Re-derive the height from the width the browser
+         * actually used.
+         *
+         * @param {HTMLElement} wrapper
+         * @param {number} displayWidth  requested CSS width in px
+         * @param {number} displayHeight requested CSS height in px
+         * @returns {{width: number, height: number}} the box actually applied
+         */
+        _applyFittedBox(wrapper, displayWidth, displayHeight) {
+            wrapper.style.width = `${displayWidth}px`;
+            wrapper.style.height = `${displayHeight}px`;
+
+            let usedWidth = displayWidth;
+            if (typeof wrapper.getBoundingClientRect === 'function') {
+                const measured = wrapper.getBoundingClientRect().width;
+                if (measured > 0) usedWidth = measured;
+            }
+            if (displayWidth > 0 && Math.abs(usedWidth - displayWidth) > 0.5) {
+                const aspect = displayHeight / displayWidth;
+                displayHeight = usedWidth * aspect;
+                wrapper.style.height = `${displayHeight}px`;
+                displayWidth = usedWidth;
+            }
+            return { width: displayWidth, height: displayHeight };
+        }
+
+        /**
+         * Resize the page boxes for a new container width WITHOUT rebuilding.
+         *
+         * A pure container-width change does not alter the PDF bitmap: `scale`
+         * is a constant and `zoom` is unchanged, so `canvas.width` — the
+         * document coordinate frame — stays exactly as it is. Only the CSS box
+         * moves. reRenderAllPages() nevertheless clears `pageViewports` and
+         * calls renderSkeleton(), whose `container.innerHTML = ''` destroys
+         * every page wrapper and with it the `.drawing-canvas-overlay`. That is
+         * the teardown behind #472.
+         *
+         * So the resize path reflows instead. Nothing is torn down, no viewport
+         * is cleared, no render is cancelled, and the drawing overlay keeps its
+         * DOM identity and its bitmap — a stroke in progress simply continues.
+         *
+         * This is deliberately NOT the reverted arbiter, and the reason is in
+         * drawing-canvas.js rather than here: getStrokeCoords() re-reads the
+         * MOUNTED overlay's live getBoundingClientRect() on every pointer event
+         * and only falls back to the transform frozen at pointerdown when the
+         * overlay is detached (`isConnected === false`). Stroke points are
+         * canvas-pixel coordinates, which a container resize cannot move, so the
+         * ink is anchored to the document and absorbs a geometry change whenever
+         * it lands -- including not at all. The reverted attempt broke precisely
+         * by FORCING that frozen branch while the CSS box moved; keeping the
+         * overlay mounted is what makes the timing irrelevant.
+         *
+         * Callers may therefore defer or skip this freely. document-controller's
+         * 400 ms fullscreen path does defer it behind isDrawingFn().
+         *
+         * Known gap, pre-existing and not closed here: annotator-ui.css's
+         * `.pdf-page-wrapper { max-width: calc(100% - 1rem) }` under
+         * `.preview-fullscreen.split-panel-mode` clamps the used WIDTH without
+         * JS while the inline height stays as written, so a container change
+         * inside the ResizeObserver's 16 px dead-band leaves up to ~22 CSS px of
+         * vertical skew at the bottom of an A4 page. The pre-change rebuild
+         * computed height the same way and had the same skew.
+         *
+         * Only valid while `scale * zoom` is unchanged. A zoom change must keep
+         * its destructive path, or pages would display at the wrong resolution.
+         *
+         * @returns {Promise<void>}
+         */
+        async relayoutPagesForContainer() {
+            if (this._isDestroyed || !this.pdf || !this.container) return;
+
+            // Single-page mode is the one path where the container width really
+            // does set canvas.width (renderPage builds its viewport as
+            // scale * fitScaleFactor * zoom), so a CSS-only reflow would leave
+            // the page rendered at the wrong resolution. It must rebuild.
+            if (this.useSinglePageMode) return;
+
+            // A zoom mutates this.zoom synchronously but only clears
+            // pageViewports after it has awaited getPage(1). A resize timer that
+            // comes due in that gap would read viewports built at the PREVIOUS
+            // zoom and divide them by the new one, sizing every page ~20% wrong.
+            // The zoom path recomputes the container fit itself, so skipping
+            // here loses nothing.
+            if (this._zoomInFlight) return;
+
+            const containerWidth = this.getEffectiveContainerWidth();
+            if (!(containerWidth > 0)) return;
+
+            // Fall back to the first page's base size for pages that have not
+            // rendered yet, exactly as renderSkeleton() does.
+            let skeletonBase = this._skeletonBaseViewport || null;
+            if (!skeletonBase && typeof this.pdf.getPage === 'function') {
+                try {
+                    const firstPage = await this.pdf.getPage(1);
+                    const bv = firstPage.getViewport({ scale: this.scale });
+                    skeletonBase = { width: bv.width, height: bv.height };
+                    this._skeletonBaseViewport = skeletonBase;
+                } catch (error) {
+                    debugLog(`[FRONTEND] relayout could not read page 1: ${error}`);
+                }
+            }
+            if (this._isDestroyed) return;
+
+            const zoom = this.zoom || 1;
+            const wrappers = this.container.querySelectorAll('.pdf-page-wrapper');
+
+            // Every page height is about to change, so container.scrollTop --
+            // a pixel offset -- stops pointing at the same place in the
+            // document. Anchor on the current page's position within its own
+            // box, exactly as zoomResizeAndRenderVisible() does for the other
+            // in-place resize. Without this the reader is thrown roughly half a
+            // page per toggle, and further with every page above them.
+            let scrollAnchor = null;
+            const anchorWrapper = this.container.querySelector(
+                `.pdf-page-wrapper[data-page-num="${this.currentPage}"]`
+            );
+            if (anchorWrapper) {
+                const rect = anchorWrapper.getBoundingClientRect();
+                const containerRect = this.container.getBoundingClientRect();
+                const relativeTop = rect.top - containerRect.top;
+                scrollAnchor = {
+                    page: this.currentPage,
+                    ratio: rect.height ? relativeTop / rect.height : 0,
+                };
+            }
+
+            wrappers.forEach((wrapper) => {
+                const pageNum = parseInt(wrapper.dataset.pageNum, 10);
+                const viewport = this.pageViewports.get(pageNum);
+
+                // The stored viewport is at scale*zoom, so its base is that
+                // divided by zoom — the same quantity renderSpecificPage()
+                // derives from page.getViewport({scale}), without needing an
+                // async getPage() per page.
+                let baseWidth;
+                let baseHeight;
+                if (viewport && viewport.width && viewport.height) {
+                    baseWidth = viewport.width / zoom;
+                    baseHeight = viewport.height / zoom;
+                } else if (skeletonBase) {
+                    baseWidth = skeletonBase.width;
+                    baseHeight = skeletonBase.height;
+                } else {
+                    return;
+                }
+
+                const fitScaleFactor = Math.min(1, containerWidth / baseWidth);
+                const displayWidth = baseWidth * fitScaleFactor * zoom;
+                const displayHeight = baseHeight * fitScaleFactor * zoom;
+
+                const box = this._applyFittedBox(wrapper, displayWidth, displayHeight);
+
+                // Only the CSS size. Assigning canvas.width/height here would
+                // clear the bitmap and blank the page.
+                const pageCanvas = wrapper.querySelector('.pdf-page-canvas');
+                if (pageCanvas && pageCanvas.style.width !== '100%') {
+                    pageCanvas.style.width = `${box.width}px`;
+                    pageCanvas.style.height = `${box.height}px`;
+                }
+            });
+
+            if (scrollAnchor) {
+                const newWrapper = this.container.querySelector(
+                    `.pdf-page-wrapper[data-page-num="${scrollAnchor.page}"]`
+                );
+                if (newWrapper) {
+                    const newHeight = newWrapper.offsetHeight || 1;
+                    this.container.scrollTop =
+                        newWrapper.offsetTop - (scrollAnchor.ratio * newHeight);
+                }
+            }
+
+            this.lastRenderContainerWidth = containerWidth;
+            this.updateZoomLevel();
+            // The rebuild reached this through scrollToPage(); it fires
+            // _onSliderSync and PdfPreviewModalComparison.onPageChange, which
+            // would otherwise be orphaned on every resize.
+            this.updatePageInfo();
+
+            // Annotation markers and text boxes are positioned in CSS pixels,
+            // so they need repositioning even though nothing was rebuilt.
+            if (typeof this._onResizeComplete === 'function') {
+                try {
+                    this._onResizeComplete(this);
+                } catch (error) {
+                    console.error('[FRONTEND] resize-complete callback failed:', error);
+                }
+            }
+        }
+
+        /**
+         * Register a callback invoked after a non-destructive reflow, so
+         * overlay geometry can be recomputed without the page DOM being
+         * replaced.
+         *
+         * @param {(viewer: PDFViewer) => void} callback
+         */
+        onResizeComplete(callback) {
+            this._onResizeComplete = callback;
+        }
 
         async reRenderAllPages(force = false) {
             const targetPage = this.pdf ? Math.min(Math.max(this.currentPage || 1, 1), this.pdf.numPages) : 1;
