@@ -409,6 +409,54 @@ describe('pdf-viewer non-destructive container reflow', () => {
     expect(canvas.width).toBe(bitmap);     // still untouched
   });
 
+  // ---- Layout cost ---------------------------------------------------------
+
+  it('does not interleave style writes with layout reads across pages', async () => {
+    // _applyFittedBox writes a wrapper's size then immediately measures it. Done
+    // per page inside the loop, each write invalidates the layout the next read
+    // forces, so a 40-page document costs ~40 forced layout flushes per reflow --
+    // and a fullscreen toggle runs the reflow twice, at 120 ms and at 400 ms.
+    // Raised by an external review. The order must be: write every page, then
+    // read every page, then correct.
+    const cw = { value: 816 };
+    const viewer = await makeViewer(cw);
+    const PAGES = 12;
+    const before = expectedDisplay(viewer);
+    const order = [];
+    const wrappers = [];
+
+    for (let n = 1; n <= PAGES; n += 1) {
+      const { wrapper } = buildRenderedPage(viewer, n, before.w, before.h);
+      wrappers.push(wrapper);
+      let written = wrapper.style.width;
+      Object.defineProperty(wrapper.style, 'width', {
+        configurable: true,
+        get: () => written,
+        set: (v) => { order.push(`W${n}`); written = v; },
+      });
+      wrapper.getBoundingClientRect = () => {
+        order.push(`R${n}`);
+        return { top: 0, left: 0, width: parseFloat(written || '0'), height: 0 };
+      };
+    }
+    viewer._skeletonBaseViewport = { width: PAGE_W * viewer.scale, height: PAGE_H * viewer.scale };
+
+    cw.value = 616;
+    await viewer.relayoutPagesForContainer();
+
+    // Count write->read->write alternations. One flush point is fine; twelve is
+    // the thrash.
+    let alternations = 0;
+    for (let i = 1; i < order.length; i += 1) {
+      if (order[i][0] !== order[i - 1][0]) alternations += 1;
+    }
+    expect(order.length, 'the instrumentation never fired').toBeGreaterThan(PAGES);
+    expect(
+      alternations,
+      `writes and reads interleave ${alternations} times for ${PAGES} pages: ${order.join(',')}`,
+    ).toBeLessThanOrEqual(3);
+  });
+
   // ---- Lifecycle -----------------------------------------------------------
 
   it('never reflows a single-page viewer, whose bitmap DOES follow the container', async () => {

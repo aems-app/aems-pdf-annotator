@@ -1018,12 +1018,16 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
          * @param {number} displayHeight requested CSS height in px
          * @returns {{width: number, height: number}} the box actually applied
          */
-        _applyFittedBox(wrapper, displayWidth, displayHeight) {
-            wrapper.style.width = `${displayWidth}px`;
-            wrapper.style.height = `${displayHeight}px`;
+        _applyFittedBox(wrapper, displayWidth, displayHeight, measuredWidth) {
+            if (measuredWidth === undefined) {
+                wrapper.style.width = `${displayWidth}px`;
+                wrapper.style.height = `${displayHeight}px`;
+            }
 
             let usedWidth = displayWidth;
-            if (typeof wrapper.getBoundingClientRect === 'function') {
+            if (measuredWidth !== undefined) {
+                if (measuredWidth > 0) usedWidth = measuredWidth;
+            } else if (typeof wrapper.getBoundingClientRect === 'function') {
                 const measured = wrapper.getBoundingClientRect().width;
                 if (measured > 0) usedWidth = measured;
             }
@@ -1146,6 +1150,12 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 };
             }
 
+            // Three phases, not one loop. Writing a wrapper's size and then
+            // measuring it forces a layout flush; doing that per page means one
+            // flush PER PAGE, and a fullscreen toggle reflows twice (120 ms
+            // observer, 400 ms controller). Write everything, then read
+            // everything, then correct — one flush point instead of N.
+            const planned = [];
             wrappers.forEach((wrapper) => {
                 const pageNum = parseInt(wrapper.dataset.pageNum, 10);
                 const viewport = this.pageViewports.get(pageNum);
@@ -1170,11 +1180,33 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 const displayWidth = baseWidth * fitScaleFactor * zoom;
                 const displayHeight = baseHeight * fitScaleFactor * zoom;
 
-                const box = this._applyFittedBox(wrapper, displayWidth, displayHeight);
+                // Phase 1: write the requested box.
+                wrapper.style.width = `${displayWidth}px`;
+                wrapper.style.height = `${displayHeight}px`;
+                planned.push({ wrapper, displayWidth, displayHeight });
+            });
+
+            // Phase 2: read every used width. CSS can clamp the wrapper
+            // narrower than requested (annotator-ui.css gives .pdf-page-wrapper
+            // a max-width in fullscreen split-panel mode).
+            planned.forEach((entry) => {
+                entry.usedWidth = entry.displayWidth;
+                const wrapper = entry.wrapper;
+                if (typeof wrapper.getBoundingClientRect === 'function') {
+                    const measured = wrapper.getBoundingClientRect().width;
+                    if (measured > 0) entry.usedWidth = measured;
+                }
+            });
+
+            // Phase 3: correct anything the clamp changed, and size the canvas.
+            planned.forEach((entry) => {
+                const box = this._applyFittedBox(
+                    entry.wrapper, entry.displayWidth, entry.displayHeight, entry.usedWidth,
+                );
 
                 // Only the CSS size. Assigning canvas.width/height here would
                 // clear the bitmap and blank the page.
-                const pageCanvas = wrapper.querySelector('.pdf-page-canvas');
+                const pageCanvas = entry.wrapper.querySelector('.pdf-page-canvas');
                 if (pageCanvas && pageCanvas.style.width !== '100%') {
                     pageCanvas.style.width = `${box.width}px`;
                     pageCanvas.style.height = `${box.height}px`;
