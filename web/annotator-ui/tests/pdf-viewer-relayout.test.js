@@ -468,6 +468,59 @@ describe('pdf-viewer non-destructive container reflow', () => {
     expect(info).toHaveBeenCalled();
   });
 
+  // ---- Mixed page sizes ----------------------------------------------------
+
+  it('sizes a rendered page from its OWN viewport, not page 1s', async () => {
+    // Every other test uses a uniform document. A rendered page must be sized
+    // from the viewport renderSpecificPage() stored for THAT page; only pages
+    // with no stored viewport may fall back to page 1's base, which is exactly
+    // what renderSkeleton() does for the whole document.
+    const cw = { value: 816 };                 // effective 800
+    const viewer = await makeViewer(cw);
+    const LANDSCAPE_W = 1008;                  // A4 landscape, points
+    const LANDSCAPE_H = 612;
+
+    // page 1: portrait, rendered.  page 2: landscape, rendered.
+    const before = expectedDisplay(viewer);
+    const p1 = buildRenderedPage(viewer, 1, before.w, before.h);
+    const p2 = buildRenderedPage(viewer, 2, before.w, before.h);
+    viewer.pageViewports.set(2, {
+      width: LANDSCAPE_W * viewer.scale * viewer.zoom,
+      height: LANDSCAPE_H * viewer.scale * viewer.zoom,
+    });
+    // page 3: skeleton only, no stored viewport.
+    const container = document.getElementById('pdfGradedContainer');
+    const w3 = document.createElement('div');
+    w3.className = 'pdf-page-wrapper';
+    w3.dataset.pageNum = '3';
+    container.appendChild(w3);
+    viewer._skeletonBaseViewport = { width: PAGE_W * viewer.scale, height: PAGE_H * viewer.scale };
+
+    cw.value = 616;                            // effective 600
+    await viewer.relayoutPagesForContainer();
+
+    const fitOf = (baseW) => Math.min(1, 600 / baseW);
+    const portraitBase = PAGE_W * viewer.scale;      // 918
+    const landscapeBase = LANDSCAPE_W * viewer.scale; // 1512
+
+    expect(p1.wrapper.style.width).toBe(`${portraitBase * fitOf(portraitBase)}px`);
+    expect(p2.wrapper.style.width).toBe(`${landscapeBase * fitOf(landscapeBase)}px`);
+
+    // Both pages are wider than the container, so both fit to its width -- the
+    // WIDTHS coincide and cannot discriminate. The heights are what prove the
+    // landscape page was sized from its own viewport: if the reflow had used
+    // page 1's base for it, it would be portrait-tall.
+    expect(p1.wrapper.style.height)
+      .toBe(`${PAGE_H * viewer.scale * fitOf(portraitBase)}px`);
+    expect(p2.wrapper.style.height)
+      .toBe(`${LANDSCAPE_H * viewer.scale * fitOf(landscapeBase)}px`);
+    expect(p2.wrapper.style.height).not.toBe(p1.wrapper.style.height);
+
+    // The unrendered page falls back to page 1's base, as renderSkeleton does.
+    expect(w3.style.width).toBe(p1.wrapper.style.width);
+    expect(w3.style.height).toBe(p1.wrapper.style.height);
+  });
+
   // ---- The CSS clamp -------------------------------------------------------
 
   it('keeps the page box square with its content when CSS clamps the width', async () => {
