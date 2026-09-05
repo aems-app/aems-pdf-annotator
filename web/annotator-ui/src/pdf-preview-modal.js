@@ -951,11 +951,10 @@
                 // fullscreen toggle -- and unlike the shell path there is no
                 // isDrawingActive() deferral here. That is #472 unfixed.
                 await window.__pdfGradedViewer.relayoutPagesForContainer();
-                if (typeof renderAllAnnotations === 'function') {
-                    renderAllAnnotations(true);
-                }
-
-                refreshMarkupFromAnnotations();
+                // Guarded: this raw pair used to run unguarded here, bypassing
+                // the very deferral added for the viewer callback, and would
+                // wipe uncommitted ink 400 ms after a fullscreen toggle.
+                onReflowComplete();
             }
             if (window.__pdfOriginalViewer?.pdf) {
                 // Original viewer still uses single page, keep old behavior
@@ -1023,6 +1022,34 @@
 
     // Keep markers aligned when browser is zoomed (Ctrl+Wheel) or resized
     let resizeDebounceTimer;
+    let _reflowResizeRetryTimer = null;
+
+    /**
+     * Reposition markup after a resize settled -- once the pointer is up.
+     *
+     * refreshMarkupFromAnnotations() does an unconditional DrawingCanvas
+     * pageStrokes.clear() and repaints only from annotationsData, which gains a
+     * stroke only in the create-POST's .then(). Running it mid-stroke, or before
+     * that POST resolves, erases the ink the reflow exists to protect.
+     *
+     * Module-scope so BOTH the viewer's onResizeComplete registration and the
+     * fallback handleFullscreenResize() use it. They used to have two copies and
+     * only one of them was guarded.
+     */
+    function onReflowComplete() {
+        const drawing = Boolean(DrawingCanvas
+            && typeof DrawingCanvas.isDrawingActive === 'function'
+            && DrawingCanvas.isDrawingActive());
+        if (drawing) {
+            clearTimeout(_reflowResizeRetryTimer);
+            _reflowResizeRetryTimer = setTimeout(onReflowComplete, 50);
+            return;
+        }
+        if (typeof renderAllAnnotations === 'function') {
+            renderAllAnnotations(true);
+        }
+        refreshMarkupFromAnnotations();
+    }
     // FE-5 FIX: Named handler for cleanup
     const handleResize = () => {
         if (_currentShell) return; // Shell handles resize
@@ -1236,28 +1263,7 @@
             // A non-destructive container reflow renders no page, so
             // onPageRendered never fires and the px-positioned markers would
             // keep their pre-resize geometry.
-            window.__pdfGradedViewer.onResizeComplete(() => {
-                // refreshMarkupFromAnnotations() does an unconditional
-                // DrawingCanvas pageStrokes.clear() and repaints only from
-                // annotationsData, so running it mid-stroke -- or before a
-                // finished stroke's create-POST resolves -- erases the very ink
-                // the reflow exists to protect. Retry once the pointer is up.
-                const drawing = Boolean(DrawingCanvas
-                    && typeof DrawingCanvas.isDrawingActive === 'function'
-                    && DrawingCanvas.isDrawingActive());
-                if (drawing) {
-                    clearTimeout(window._reflowResizeRetry);
-                    window._reflowResizeRetry = setTimeout(
-                        () => window.__pdfGradedViewer?._onResizeComplete?.(window.__pdfGradedViewer),
-                        50,
-                    );
-                    return;
-                }
-                if (typeof renderAllAnnotations === 'function') {
-                    renderAllAnnotations(true);
-                }
-                refreshMarkupFromAnnotations();
-            });
+            window.__pdfGradedViewer.onResizeComplete(onReflowComplete);
             window.__pdfGradedViewer.onSliderSync((viewer) => {
                 syncGradedPageSlider(viewer);
             });

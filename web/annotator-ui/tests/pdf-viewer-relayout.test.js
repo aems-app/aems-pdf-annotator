@@ -513,6 +513,34 @@ describe('pdf-viewer non-destructive container reflow', () => {
     expect(viewer.pageViewports.get(1)).toBeTruthy();
   });
 
+  it('re-arms the observer dead-band so a width round trip is not swallowed', async () => {
+    // `lastRenderContainerWidth` has exactly two consumers, both the
+    // ResizeObserver's 16px dead-band. The reflow's write to it is the only
+    // thing that re-arms that band now that the destructive paths no longer run
+    // on a resize: without it the record permanently says "laid out for the
+    // width before the first reflow", so going 800 -> 500 -> 800 leaves the
+    // pages stuck narrow inside a wide container. Asserted behaviourally, not
+    // by reading the field.
+    const cw = { value: 816 };
+    const viewer = await makeViewer(cw);
+    const before = expectedDisplay(viewer);
+    const { wrapper } = buildRenderedPage(viewer, 1, before.w, before.h);
+    viewer._skeletonBaseViewport = { width: PAGE_W * viewer.scale, height: PAGE_H * viewer.scale };
+    viewer.lastRenderContainerWidth = viewer.getEffectiveContainerWidth();
+    const wideWidth = wrapper.style.width;
+
+    cw.value = 516;
+    resizeObserverCallback([]);
+    await vi.waitFor(() => expect(wrapper.style.width).not.toBe(wideWidth), { timeout: 2000 });
+    const narrowWidth = wrapper.style.width;
+
+    cw.value = 816;                       // back to where we started
+    resizeObserverCallback([]);
+    await vi.waitFor(() => expect(wrapper.style.width).not.toBe(narrowWidth), { timeout: 2000 });
+
+    expect(wrapper.style.width).toBe(wideWidth);
+  });
+
   it('a zoom change does NOT take the reflow path, because the bitmap changes', async () => {
     // The reflow is only sound while scale*zoom is unchanged: it never assigns
     // canvas.width. Routing zoom through it would leave every page rendered at

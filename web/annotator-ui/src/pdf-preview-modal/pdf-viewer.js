@@ -1015,9 +1015,27 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
          * is cleared, no render is cancelled, and the drawing overlay keeps its
          * DOM identity and its bitmap — a stroke in progress simply continues.
          *
-         * This is deliberately NOT the reverted arbiter: nothing waits for the
-         * stroke and nothing is deferred. Deferring the rebuild while the CSS
-         * relayout went ahead anyway is what made that attempt worse.
+         * This is deliberately NOT the reverted arbiter, and the reason is in
+         * drawing-canvas.js rather than here: getStrokeCoords() re-reads the
+         * MOUNTED overlay's live getBoundingClientRect() on every pointer event
+         * and only falls back to the transform frozen at pointerdown when the
+         * overlay is detached (`isConnected === false`). Stroke points are
+         * canvas-pixel coordinates, which a container resize cannot move, so the
+         * ink is anchored to the document and absorbs a geometry change whenever
+         * it lands -- including not at all. The reverted attempt broke precisely
+         * by FORCING that frozen branch while the CSS box moved; keeping the
+         * overlay mounted is what makes the timing irrelevant.
+         *
+         * Callers may therefore defer or skip this freely. document-controller's
+         * 400 ms fullscreen path does defer it behind isDrawingFn().
+         *
+         * Known gap, pre-existing and not closed here: annotator-ui.css's
+         * `.pdf-page-wrapper { max-width: calc(100% - 1rem) }` under
+         * `.preview-fullscreen.split-panel-mode` clamps the used WIDTH without
+         * JS while the inline height stays as written, so a container change
+         * inside the ResizeObserver's 16 px dead-band leaves up to ~22 CSS px of
+         * vertical skew at the bottom of an A4 page. The pre-change rebuild
+         * computed height the same way and had the same skew.
          *
          * Only valid while `scale * zoom` is unchanged. A zoom change must keep
          * its destructive path, or pages would display at the wrong resolution.
