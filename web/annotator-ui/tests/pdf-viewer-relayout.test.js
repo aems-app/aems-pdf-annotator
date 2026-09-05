@@ -468,6 +468,38 @@ describe('pdf-viewer non-destructive container reflow', () => {
     expect(info).toHaveBeenCalled();
   });
 
+  // ---- The CSS clamp -------------------------------------------------------
+
+  it('keeps the page box square with its content when CSS clamps the width', async () => {
+    // annotator-ui.css:1223 sets `.pdf-page-wrapper { max-width: calc(100% - 1rem) }`
+    // under .preview-fullscreen.split-panel-mode, and the canvas there is
+    // `max-width:100%; height:auto`. So the browser can make the wrapper
+    // NARROWER than the inline width without any JS, while the inline height
+    // stays as written -- the wrapper ends up taller than the page it contains,
+    // and the drawing overlay (100% x 100% of the wrapper) inherits that extra
+    // height. The result is a vertical offset that grows down the page.
+    const cw = { value: 816 };
+    const viewer = await makeViewer(cw);
+    const before = expectedDisplay(viewer);
+    const { wrapper } = buildRenderedPage(viewer, 1, before.w, before.h);
+
+    // Model the clamp: the used width is 20% below whatever is asked for.
+    const CLAMP = 0.8;
+    wrapper.getBoundingClientRect = () => ({
+      top: 0,
+      left: 0,
+      width: parseFloat(wrapper.style.width || '0') * CLAMP,
+      height: parseFloat(wrapper.style.height || '0'),
+    });
+
+    cw.value = 616;
+    await viewer.relayoutPagesForContainer();
+
+    const usedW = parseFloat(wrapper.style.width) * CLAMP;
+    const aspect = PAGE_H / PAGE_W;                       // the page's own ratio
+    expect(parseFloat(wrapper.style.height)).toBeCloseTo(usedW * aspect, 1);
+  });
+
   // ---- Routing -------------------------------------------------------------
 
   it('the ResizeObserver reflows instead of rebuilding', async () => {

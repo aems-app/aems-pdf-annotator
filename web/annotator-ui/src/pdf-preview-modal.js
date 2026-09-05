@@ -1045,8 +1045,17 @@
             _reflowResizeRetryTimer = setTimeout(onReflowComplete, 50);
             return;
         }
-        if (typeof renderAllAnnotations === 'function') {
-            renderAllAnnotations(true);
+        // renderAllAnnotations throws when the overlay renderer has not been
+        // initialised, and an uncaught throw here would skip the markup refresh
+        // entirely -- leaving the drawing overlay stale after every resize. The
+        // markup refresh is the more important of the two and must not be
+        // hostage to it.
+        try {
+            if (typeof renderAllAnnotations === 'function') {
+                renderAllAnnotations(true);
+            }
+        } catch (error) {
+            console.error('[FRONTEND] renderAllAnnotations failed after a resize:', error);
         }
         refreshMarkupFromAnnotations();
     }

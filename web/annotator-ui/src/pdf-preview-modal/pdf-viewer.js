@@ -627,13 +627,12 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 const displayWidth = baseViewport.width * fitScaleFactor * this.zoom;
                 const displayHeight = baseViewport.height * fitScaleFactor * this.zoom;
 
-                wrapper.style.width = `${displayWidth}px`;
-                wrapper.style.height = `${displayHeight}px`;
+                const box = this._applyFittedBox(wrapper, displayWidth, displayHeight);
 
                 canvas.width = viewport.width;
                 canvas.height = viewport.height;
-                canvas.style.width = `${displayWidth}px`;
-                canvas.style.height = `${displayHeight}px`;
+                canvas.style.width = `${box.width}px`;
+                canvas.style.height = `${box.height}px`;
 
                 this.pageViewports.set(pageNum, viewport);
 
@@ -1001,6 +1000,43 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
         // =====================================================================
 
         /**
+         * Size a page box, honouring any CSS clamp on its width.
+         *
+         * The wrapper's width is inline px, but CSS can still narrow it without
+         * JS: annotator-ui.css gives `.pdf-page-wrapper` a
+         * `max-width: calc(100% - 1rem)` under
+         * `.preview-fullscreen.split-panel-mode`, where the page canvas is also
+         * `max-width:100%; height:auto`. Writing the height that goes with the
+         * REQUESTED width then leaves the wrapper taller than the page it
+         * contains, and the drawing overlay -- 100% x 100% of the wrapper --
+         * inherits the surplus, so ink drifts further down the page the further
+         * down you draw. Re-derive the height from the width the browser
+         * actually used.
+         *
+         * @param {HTMLElement} wrapper
+         * @param {number} displayWidth  requested CSS width in px
+         * @param {number} displayHeight requested CSS height in px
+         * @returns {{width: number, height: number}} the box actually applied
+         */
+        _applyFittedBox(wrapper, displayWidth, displayHeight) {
+            wrapper.style.width = `${displayWidth}px`;
+            wrapper.style.height = `${displayHeight}px`;
+
+            let usedWidth = displayWidth;
+            if (typeof wrapper.getBoundingClientRect === 'function') {
+                const measured = wrapper.getBoundingClientRect().width;
+                if (measured > 0) usedWidth = measured;
+            }
+            if (displayWidth > 0 && Math.abs(usedWidth - displayWidth) > 0.5) {
+                const aspect = displayHeight / displayWidth;
+                displayHeight = usedWidth * aspect;
+                wrapper.style.height = `${displayHeight}px`;
+                displayWidth = usedWidth;
+            }
+            return { width: displayWidth, height: displayHeight };
+        }
+
+        /**
          * Resize the page boxes for a new container width WITHOUT rebuilding.
          *
          * A pure container-width change does not alter the PDF bitmap: `scale`
@@ -1124,15 +1160,14 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 const displayWidth = baseWidth * fitScaleFactor * zoom;
                 const displayHeight = baseHeight * fitScaleFactor * zoom;
 
-                wrapper.style.width = `${displayWidth}px`;
-                wrapper.style.height = `${displayHeight}px`;
+                const box = this._applyFittedBox(wrapper, displayWidth, displayHeight);
 
                 // Only the CSS size. Assigning canvas.width/height here would
                 // clear the bitmap and blank the page.
                 const pageCanvas = wrapper.querySelector('.pdf-page-canvas');
                 if (pageCanvas && pageCanvas.style.width !== '100%') {
-                    pageCanvas.style.width = `${displayWidth}px`;
-                    pageCanvas.style.height = `${displayHeight}px`;
+                    pageCanvas.style.width = `${box.width}px`;
+                    pageCanvas.style.height = `${box.height}px`;
                 }
             });
 
