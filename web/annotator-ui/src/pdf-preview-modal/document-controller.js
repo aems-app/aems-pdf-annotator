@@ -184,6 +184,14 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                 });
                 if (!_destroyed) _emit('onPageRendered', pageNum);
             });
+            // A non-destructive container reflow renders no page, so
+            // onPageRendered never fires and the px-positioned annotation
+            // markers would keep their pre-resize geometry. Re-use the existing
+            // onResizeComplete event, which the host already wires to
+            // renderAllAnnotations(true) + refreshMarkupFromAnnotations().
+            window.__pdfGradedViewer.onResizeComplete(function () {
+                if (!_destroyed) _emit('onResizeComplete', { viewer: 'graded' });
+            });
             window.__pdfGradedViewer.onSliderSync(function (viewer) {
                 if (!_destroyed) {
                     syncGradedPageSlider(viewer);

@@ -1228,6 +1228,15 @@
                 }
                 refreshMarkupFromAnnotations();
             });
+            // A non-destructive container reflow renders no page, so
+            // onPageRendered never fires and the px-positioned markers would
+            // keep their pre-resize geometry.
+            window.__pdfGradedViewer.onResizeComplete(() => {
+                if (typeof renderAllAnnotations === 'function') {
+                    renderAllAnnotations(true);
+                }
+                refreshMarkupFromAnnotations();
+            });
             window.__pdfGradedViewer.onSliderSync((viewer) => {
                 syncGradedPageSlider(viewer);
             });
