@@ -38,6 +38,7 @@ describe('pdf-viewer page jumps', () => {
   afterEach(() => {
     intersectionObserverCallback = null;
     vi.restoreAllMocks();
+    delete window.pdfjsLib;
   });
 
   it('renders the jumped-to page and its neighbors immediately', async () => {
@@ -311,5 +312,40 @@ describe('pdf-viewer page jumps', () => {
 
     expect(canvas.isConnected).toBe(false);
     expect(viewer.renderedPages.has(5)).toBe(false);
+  });
+
+  it('waits for the drawing-persistence guard before replacing the graded page DOM', async () => {
+    let releaseReplacement;
+    const replacementAllowed = new Promise((resolve) => {
+      releaseReplacement = resolve;
+    });
+    const beforeDocumentReplace = vi.fn(() => replacementAllowed);
+    window.pdfjsLib = {
+      getDocument: vi.fn(() => ({
+        promise: Promise.resolve({ numPages: 1 }),
+      })),
+    };
+
+    await import('../src/pdf-preview-modal/pdf-viewer.js');
+    const viewer = window.PdfPreviewModalViewer.createViewer(
+      'pdfGradedCanvas',
+      'pdfGradedContainer',
+      'pdfGradedLoading',
+      'pdfGradedControls',
+    );
+    viewer.beforeDocumentReplace(beforeDocumentReplace);
+    const renderSkeleton = vi.spyOn(viewer, 'renderSkeleton').mockResolvedValue();
+    vi.spyOn(viewer, 'renderSpecificPage').mockResolvedValue();
+
+    const loading = viewer.loadPDF('/replacement.pdf');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(beforeDocumentReplace, 'loadPDF bypassed the stroke-safety gate').toHaveBeenCalledOnce();
+    expect(renderSkeleton, 'loadPDF rebuilt the page DOM before strokes were safe').not.toHaveBeenCalled();
+
+    releaseReplacement();
+    await loading;
+    expect(renderSkeleton).toHaveBeenCalledOnce();
   });
 });

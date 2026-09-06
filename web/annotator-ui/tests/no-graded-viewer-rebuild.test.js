@@ -84,6 +84,38 @@ describe('no external rebuild of the graded viewer', () => {
     expect(codeOnly('  viewer.reRenderAllPages(true); // why\r')).toContain('reRenderAllPages');
   });
 
+  it('ensureModalViewers arms the document-replace guard', () => {
+    // Structural, deliberately: the call site sits inside ensureModalViewers,
+    // which is only reachable by opening the modal for real. A behavioural test
+    // of armDocumentReplaceGuard() proves the helper works but not that anything
+    // calls it -- deleting the call survived the whole suite.
+    const monolith = readFileSync(join(SRC, 'pdf-preview-modal.js'), 'utf8');
+    const fn = monolith.indexOf('function ensureModalViewers');
+    expect(fn, 'ensureModalViewers not found').toBeGreaterThan(-1);
+    const body = monolith.slice(fn, fn + 12000);
+    expect(
+      body,
+      'ensureModalViewers no longer arms the document-replace guard',
+    ).toContain('armDocumentReplaceGuard()');
+  });
+
+  it('both modal close paths reset the drawing-persistence bookkeeping', () => {
+    // Structural, because the shell close path runs only when a real modal is
+    // composed. The reset used to sit behind `if (_currentShell) return;`, so it
+    // never ran in production while its test passed on the fallback path. Two
+    // call sites are required: the fallback listener and the shell's onClose.
+    const monolith = readFileSync(join(SRC, 'pdf-preview-modal.js'), 'utf8');
+    // CALL sites only. Counting bare occurrences also counted the `function`
+    // declaration, so one call plus the definition satisfied a >= 2 check and
+    // deleting the shell-path call survived the whole suite.
+    const calls = (monolith.match(/(?<!function\s)resetDrawingPersistenceBookkeeping\(\);/g) || []).length;
+    expect(
+      calls,
+      'the reset must be CALLED from both the fallback and the shell close path',
+    ).toBeGreaterThanOrEqual(2);
+    expect(monolith).toContain('_currentShell.onClose(');
+  });
+
   it('the reflow method exists and the zoom path still rebuilds', () => {
     // Guards the escape hatch: if someone "fixes" the test above by deleting
     // the reflow, or routes zoom through it, this fails.

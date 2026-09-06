@@ -1033,7 +1033,156 @@
     // annotationsData that does not yet contain the stroke -- the ink the user
     // just drew would vanish. So the resize-complete guard waits for this too,
     // not only for the pointer.
-    let _pendingDrawingSaves = 0;
+    // Tokens, not a scalar. Close resets the bookkeeping, but a request from the
+    // CLOSED session still runs its .finally afterwards -- with one shared count
+    // that decrement belonged to nobody and could take a LIVE session's stroke
+    // below zero, declaring it safe and letting a destructive refresh clear ink
+    // that was never persisted. The reset REPLACES this set, so a token from a
+    // closed session is simply not in the live one and completing it is a no-op.
+    // A generation stamp was written here first and then removed: mutation
+    // testing showed no test could distinguish it from the set replacement,
+    // which is the definition of dead weight.
+    let _pendingDrawingSaveTokens = new Set();
+
+    // Injectable so the expiry path can be observed in a test without a DOM
+    // toast container. Defaults to the real showToast.
+    var _toastSink = null;
+
+    function notifyTeacher(kind, message) {
+        try {
+            if (typeof _toastSink === 'function') { _toastSink(kind, message); return; }
+            if (typeof showToast === 'function') showToast(kind, message);
+        } catch (error) {
+            console.error('[FRONTEND] could not surface a notice to the user:', error);
+        }
+    }
+
+    function beginDrawingSave() {
+        var token = {};
+        _pendingDrawingSaveTokens.add(token);
+        return token;
+    }
+
+    function endDrawingSave(token) {
+        if (token) _pendingDrawingSaveTokens.delete(token);
+    }
+    let _markupRefreshRetryTimer = null;
+    let _markupRefreshDeadline = 0;
+
+    function isDrawingPersistenceActive() {
+        return Boolean((DrawingCanvas
+            && typeof DrawingCanvas.isDrawingActive === 'function'
+            && DrawingCanvas.isDrawingActive()) || _pendingDrawingSaveTokens.size > 0);
+    }
+
+    // How long a destructive operation will wait for ink to become safe.
+    //
+    // The wait has to be BOUNDED. `fetch` has no default timeout, so a create
+    // request that never settles would leave a pending save token in the set
+    // forever -- and since loadPDF() awaits this guard, the graded PDF would
+    // never load again and refreshMarkupFromAnnotations() would never run again,
+    // with no recovery short of reloading the page. Losing at most the one
+    // in-flight stroke is a far better outcome than a permanently wedged viewer.
+    //
+    // 8s is MEASURED, not guessed. Eight strokes drawn through the real UI
+    // against https://api.aems.app on 2026-09-06, timing each create request
+    // from `request` to `requestfinished` -- the exact interval this guard waits
+    // on:
+    //
+    //     median 49.5 ms, p95 717 ms, max 717 ms
+    //     [44.9, 44.9, 46.1, 49.2, 49.8, 51.0, 53.7, 716.8]
+    //
+    // So the bound is 11x the worst observed save. It is a "something is wrong"
+    // threshold, not a normal-operation budget, and reaching it now changes the
+    // UI state rather than authorising ink loss: the markers reposition, the
+    // stroke store is left alone, and the teacher is told.
+    //
+    // Evidence: config/debug/2026-09-06_stroke_guards/save_latency.json in the
+    // AEMS repo. Re-measure with scratchpad/measure_save_latency.py if the
+    // deployment or the network path changes.
+    const DRAWING_PERSISTENCE_WAIT_MS = 8000;
+    const DRAWING_PERSISTENCE_RETRY_MS = 50;
+    // Counted in retries, not wall-clock: a Date.now() deadline silently depends
+    // on whether a caller's fake timers also mock the clock, and that dependency
+    // is invisible until something hangs.
+    const DRAWING_PERSISTENCE_MAX_RETRIES =
+        Math.ceil(DRAWING_PERSISTENCE_WAIT_MS / DRAWING_PERSISTENCE_RETRY_MS);
+
+    function waitForDrawingPersistence(timeoutMs) {
+        if (!isDrawingPersistenceActive()) return Promise.resolve();
+        const maxRetries = typeof timeoutMs === 'number'
+            ? Math.ceil(timeoutMs / DRAWING_PERSISTENCE_RETRY_MS)
+            : DRAWING_PERSISTENCE_MAX_RETRIES;
+        let attempts = 0;
+        return new Promise(function (resolve) {
+            function checkDrawingPersistence() {
+                if (!isDrawingPersistenceActive()) {
+                    resolve();
+                    return;
+                }
+                attempts += 1;
+                if (attempts >= maxRetries) {
+                    console.warn(
+                        '[FRONTEND] gave up waiting for drawing persistence after '
+                        + `${DRAWING_PERSISTENCE_WAIT_MS}ms; proceeding so the viewer `
+                        + 'cannot wedge. An in-flight stroke may be lost.'
+                    );
+                    resolve();
+                    return;
+                }
+                setTimeout(checkDrawingPersistence, DRAWING_PERSISTENCE_RETRY_MS);
+            }
+            setTimeout(checkDrawingPersistence, DRAWING_PERSISTENCE_RETRY_MS);
+        });
+    }
+
+    /**
+     * Drop the drawing-persistence bookkeeping when the modal closes.
+     *
+     * The pending-save tokens are module scope, so one that never settled would
+     * otherwise stay above zero and poison EVERY modal opened afterwards on this
+     * page: the guards would block a document swap, the markup refresh and the
+     * marker repositioning for a stroke that no longer exists. The retry timers
+     * self-reschedule at 20 Hz and would keep firing against a torn-down DOM.
+     *
+     * Called from BOTH close paths. The first version of this lived only in the
+     * monolith's `hidden.bs.modal` listener, which begins `if (_currentShell)
+     * return;` -- and the shell is always created in production, so the reset
+     * never ran where it mattered. The test passed because it exercised the
+     * fallback path. A guard on a path production does not take is not a guard.
+     */
+    function resetDrawingPersistenceBookkeeping() {
+        // REPLACE the set rather than clearing it. An in-flight request from
+        // the closed session still runs its .finally afterwards; with a shared
+        // COUNT that decrement belonged to nobody and could take a LIVE stroke
+        // below zero, declaring it safe. Against a fresh set its delete is a
+        // harmless no-op.
+        _pendingDrawingSaveTokens = new Set();
+        _markupRefreshDeadline = 0;
+        clearTimeout(_markupRefreshRetryTimer);
+        _markupRefreshRetryTimer = null;
+        clearTimeout(_reflowResizeRetryTimer);
+        _reflowResizeRetryTimer = null;
+    }
+
+    // Armed on EVERY ensureModalViewers, not only on construction: the graded
+    // viewer is a window-lifetime singleton and its destroy() nulls this
+    // callback, so arming it once would leave the document-swap guard inert for
+    // every modal opened after the first. Module scope, because the test seam
+    // below references it -- it was nested inside ensureModalViewers at first,
+    // which made that reference a ReferenceError that took the whole file down.
+    function armDocumentReplaceGuard() {
+        if (window.__pdfGradedViewer
+            && typeof window.__pdfGradedViewer.beforeDocumentReplace === 'function') {
+            window.__pdfGradedViewer.beforeDocumentReplace(waitForDrawingPersistence);
+        }
+        // Zoom is refused outright rather than deferred: it replaces the bitmap
+        // scale that stroke points are expressed in.
+        if (window.__pdfGradedViewer
+            && typeof window.__pdfGradedViewer.setDrawingBusyCheck === 'function') {
+            window.__pdfGradedViewer.setDrawingBusyCheck(isDrawingPersistenceActive);
+        }
+    }
 
     /**
      * Reposition markup after a resize settled -- once the pointer is up.
@@ -1048,14 +1197,13 @@
      * only one of them was guarded.
      */
     function onReflowComplete() {
-        const drawing = Boolean(DrawingCanvas
-            && typeof DrawingCanvas.isDrawingActive === 'function'
-            && DrawingCanvas.isDrawingActive());
-        if (drawing || _pendingDrawingSaves > 0) {
-            clearTimeout(_reflowResizeRetryTimer);
-            _reflowResizeRetryTimer = setTimeout(onReflowComplete, 50);
-            return;
-        }
+        // ONE guard, not two. refreshMarkupFromAnnotations() is the destructive
+        // boundary for the stroke store and guards itself centrally; duplicating
+        // that wait here made two 8s bounds run BACK TO BACK, so a stuck save
+        // froze the markup for 16s rather than 8. renderAllAnnotations() only
+        // repositions annotation markers and never touches pageStrokes, so it is
+        // safe to run immediately -- and running it promptly is the whole point
+        // of this callback.
         // renderAllAnnotations throws when the overlay renderer has not been
         // initialised, and an uncaught throw here would skip the markup refresh
         // entirely -- leaving the drawing overlay stale after every resize. The
@@ -1106,6 +1254,8 @@
             if (typeof stopAnnotationsPolling === 'function') {
                 stopAnnotationsPolling();
             }
+
+            resetDrawingPersistenceBookkeeping();
 
             // Cleanup markup state
             if (DrawingCanvas) DrawingCanvas.destroy();
@@ -1288,6 +1438,7 @@
                 syncGradedPageSlider(viewer);
             });
         }
+        armDocumentReplaceGuard();
         return true;
     }
 
@@ -3490,7 +3641,7 @@
                 var viewer = window.__pdfGradedViewer;
                 if (!viewer) return;
 
-                _pendingDrawingSaves += 1;
+                var saveToken = beginDrawingSave();
                 resolveDrawingViewport(viewer, stroke.pageIdx + 1).then(function (viewport) {
                     if (!viewport) return null;
 
@@ -3526,7 +3677,7 @@
                     console.error('Failed to save drawing stroke:', err);
                 })
                 .finally(function () {
-                    _pendingDrawingSaves = Math.max(0, _pendingDrawingSaves - 1);
+                    endDrawingSave(saveToken);
                 });
             };
         }
@@ -4599,7 +4750,77 @@
         return projected;
     }
 
+    // Distinguishes the guard's own retry from the many external callers.
+    var REFRESH_FROM_RETRY = { retry: true };
+
+    /**
+     * The non-destructive half of a markup refresh.
+     *
+     * Used when the drawing-persistence wait expires: text boxes are reloaded
+     * from annotationsData as usual, but the DRAWING store is left untouched,
+     * because reloading it would discard a stroke whose save has not landed.
+     */
+    function refreshTextboxesOnly() {
+        var wrappers = getMarkupPageWrappers();
+        if (TextboxModule) {
+            TextboxModule.loadTextboxesFromAnnotations(
+                projectTextboxAnnotationsForDom(), wrappers);
+        }
+    }
+
     function refreshMarkupFromAnnotations() {
+        // This is the destructive boundary for the in-memory stroke store.
+        // Guard it centrally as well as at asynchronous callers: a save for one
+        // stroke can resolve while the user is already drawing the next one.
+        //
+        // Bounded for the same reason as waitForDrawingPersistence: a stuck save
+        // must not mean the markup never repaints again. _markupRefreshDeadline
+        // is set on the first deferral and cleared once the refresh runs.
+        // `fromRetry` matters: this function is called from page renders,
+        // resizes and every create-POST .then(), and counting those against the
+        // budget let a busy page burn the whole 8s in a few hundred milliseconds
+        // and then force the destructive refresh early. Only the timer spends it.
+        var fromRetry = arguments[0] === REFRESH_FROM_RETRY;
+        if (isDrawingPersistenceActive()) {
+            if (fromRetry) _markupRefreshDeadline += 1;
+            if (_markupRefreshDeadline < DRAWING_PERSISTENCE_MAX_RETRIES) {
+                clearTimeout(_markupRefreshRetryTimer);
+                _markupRefreshRetryTimer = setTimeout(function () {
+                    refreshMarkupFromAnnotations(REFRESH_FROM_RETRY);
+                }, DRAWING_PERSISTENCE_RETRY_MS);
+                return;
+            }
+            // EXPIRY MUST NOT DESTROY INK. The first act below is
+            // DrawingCanvas.loadStrokesFromAnnotations(), whose first act is
+            // pageStrokes.clear(), repopulated from an annotationsData that does
+            // not contain the still-unsaved stroke -- so proceeding here would
+            // authorise exactly the loss this guard exists to prevent. Repaint
+            // what is safe and leave the stroke store alone: a stale marker
+            // layer is recoverable, deleted ink is not. The next successful save
+            // refreshes it properly.
+            console.warn(
+                '[FRONTEND] drawing persistence has not settled within '
+                + `${DRAWING_PERSISTENCE_WAIT_MS}ms. Repositioning markers but `
+                + 'KEEPING local ink; the stroke store is not being reloaded.'
+            );
+            // A console line is not a signal to a teacher. Unsaved ink that
+            // vanishes silently invites a redraw, and a redraw is how a silent
+            // loss becomes a visible duplicate on a student's paper.
+            notifyTeacher(
+                'warning',
+                'A pen stroke has not finished saving. It is still on screen but '
+                + 'not stored yet - please wait a moment before closing.'
+            );
+            clearTimeout(_markupRefreshRetryTimer);
+            _markupRefreshRetryTimer = null;
+            _markupRefreshDeadline = 0;
+            refreshTextboxesOnly();
+            return;
+        }
+        clearTimeout(_markupRefreshRetryTimer);
+        _markupRefreshRetryTimer = null;
+        _markupRefreshDeadline = 0;
+
         const wrappers = getMarkupPageWrappers();
 
         if (DrawingCanvas) {
@@ -8714,6 +8935,9 @@
                 if (typeof stopAnnotationsPolling === 'function') {
                     stopAnnotationsPolling();
                 }
+                // The live close path. Without this the reset only ever ran in
+                // the pre-shell fallback, i.e. never in production.
+                resetDrawingPersistenceBookkeeping();
                 // Sync compatibility variable
                 markupModeActive = false;
             });
@@ -8758,10 +8982,9 @@
                 annotatedPdfPolicy: state.options.annotatedPdfPolicy,
                 capabilities: state.options.capabilities,
                 isDrawingFn: function () {
-                    return Boolean(DrawingCanvas &&
-                        typeof DrawingCanvas.isDrawingActive === 'function' &&
-                        DrawingCanvas.isDrawingActive());
+                    return isDrawingPersistenceActive();
                 },
+                beforeDocumentReplaceFn: waitForDrawingPersistence,
             });
 
             // Wire document controller events to monolith functions
@@ -8908,6 +9131,7 @@
                 setSelectedAnnotation: function (sel) { selectedAnnotation = sel; },
                 getSplitPanelActive: function () { return splitPanelActive; },
                 getPreviewFullscreenActive: function () { return previewFullscreenActive; },
+                isDrawingFn: isDrawingPersistenceActive,
                 helpers: {
                     highlightAnnotationSelection: function (pageIdx, identifierValue) {
                         _annotationCtrlDelegating = true;
@@ -9014,6 +9238,7 @@
                 modeAdapter: state.options.modeAdapter,
                 submissionId: state.options.submissionId,
                 assignmentId: state.options.assignmentId,
+                isDrawingFn: isDrawingPersistenceActive,
             });
             _currentVersionSync.onExternalChange(function () {
                 // Reload annotations — the overlay renderer's xref-based cache
@@ -9177,6 +9402,7 @@
 
         try {
             // Load the PDF
+            await waitForDrawingPersistence();
             await viewer.loadPDF(url);
 
             // Update comparison mode page info
@@ -9196,8 +9422,25 @@
         return createPdfPreviewModal(normalizePackageOptions(options));
     };
     window.PdfPreviewModal.__test = {
-        setPendingDrawingSaves: function (n) { _pendingDrawingSaves = n; },
-        getPendingDrawingSaves: function () { return _pendingDrawingSaves; },
+        setPendingDrawingSaves: function (n) {
+            _pendingDrawingSaveTokens = new Set();
+            for (var i = 0; i < n; i += 1) beginDrawingSave();
+        },
+        beginDrawingSave: beginDrawingSave,
+        setToastSink: function (fn) { _toastSink = fn; },
+        endDrawingSave: endDrawingSave,
+        waitForDrawingPersistence: waitForDrawingPersistence,
+        resetDrawingPersistenceBookkeeping: resetDrawingPersistenceBookkeeping,
+        refreshMarkupFromAnnotations: refreshMarkupFromAnnotations,
+        getMarkupRefreshState: function () {
+            return {
+                deadline: _markupRefreshDeadline,
+                retryArmed: _markupRefreshRetryTimer !== null,
+            };
+        },
+        armDocumentReplaceGuard: armDocumentReplaceGuard,
+        isDrawingPersistenceActive: isDrawingPersistenceActive,
+        getPendingDrawingSaves: function () { return _pendingDrawingSaveTokens.size; },
         buildTaskPlacementBands,
         compareTaskPlacementEntries,
         buildDisplayOrderByPagePosition,

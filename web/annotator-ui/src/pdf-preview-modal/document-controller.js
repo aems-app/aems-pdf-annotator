@@ -94,6 +94,16 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
         var _gradedPdfLoadPromise = null;
         var _fullscreenResizeTimer = null;
         var _resizeCompleteRetry = null;
+        // Both retry loops below poll options.isDrawingFn(), which the host now
+        // sets to a predicate that includes PENDING SAVES, not just the pointer.
+        // Pointer-only was self-terminating; a stuck save is not, so these need
+        // the same bound as every other wait: warn and proceed, never block for
+        // ever. Counted in retries rather than wall-clock, because a Date.now()
+        // deadline silently depends on whether a caller's fake timers mock the
+        // clock.
+        var DRAWING_WAIT_RETRY_MS = 50;
+        var DRAWING_WAIT_MAX_RETRIES = Math.ceil(8000 / DRAWING_WAIT_RETRY_MS);
+        var _resizeCompleteAttempts = 0;
 
         // Handler references for cleanup (bound elements persist across modal opens)
         var _boundHandlers = {
@@ -154,11 +164,15 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
          */
         function emitResizeComplete() {
             if (_destroyed) return;
-            if (typeof options.isDrawingFn === 'function' && options.isDrawingFn()) {
+            if (typeof options.isDrawingFn === 'function' && options.isDrawingFn()
+                && _resizeCompleteAttempts < DRAWING_WAIT_MAX_RETRIES) {
+                _resizeCompleteAttempts += 1;
                 clearTimeout(_resizeCompleteRetry);
-                _resizeCompleteRetry = setTimeout(emitResizeComplete, 50);
+                _resizeCompleteRetry = setTimeout(
+                    emitResizeComplete, DRAWING_WAIT_RETRY_MS);
                 return;
             }
+            _resizeCompleteAttempts = 0;
             _emit('onResizeComplete', { viewer: 'graded' });
             if (_searchState.matches.length > 0 && _searchState.currentIndex >= 0) {
                 highlightSearchMatch(_searchState.matches[_searchState.currentIndex]);
@@ -192,6 +206,15 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                     'pdfGradedCanvas', 'pdfGradedContainer',
                     'pdfGradedLoading', 'pdfGradedControls'
                 );
+            }
+            // Both conditions matter. The first keeps host viewers that lack the
+            // method working; the second stops a controller created WITHOUT this
+            // option from overwriting an already-armed guard with undefined and
+            // silently disarming the only thing standing between a document swap
+            // and an unsaved stroke.
+            if (typeof window.__pdfGradedViewer.beforeDocumentReplace === 'function'
+                && typeof options.beforeDocumentReplaceFn === 'function') {
+                window.__pdfGradedViewer.beforeDocumentReplace(options.beforeDocumentReplaceFn);
             }
 
             // Always re-wire viewer callbacks to THIS controller instance.
@@ -240,11 +263,18 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
             var redrawAll = function () {
                 if (_destroyed) return Promise.resolve();
 
-                if (typeof options.isDrawingFn === 'function' && options.isDrawingFn()) {
-                    _fullscreenResizeTimer = setTimeout(redrawAll, 50);
-                    return Promise.resolve();
-                }
-
+                // GEOMETRY IS NEVER DEFERRED. relayoutPagesForContainer() below
+                // IS the geometry, and holding it back while the CSS box has
+                // already moved is precisely what made the reverted attempt land
+                // a stroke 3.4x further out. This used to wait, which only became
+                // possible when the host predicate widened from "pointer is down"
+                // to "pointer is down OR a save is pending" -- letting a FINISHED
+                // stroke hold the layout hostage.
+                //
+                // The reflow is non-destructive: it writes CSS boxes, never
+                // touches canvas.width, never replaces the overlay. Only the
+                // markup/reload half that follows may wait, and it does, inside
+                // emitResizeComplete.
                 _fullscreenResizeTimer = null;
 
                 var gradedViewer = window.__pdfGradedViewer;

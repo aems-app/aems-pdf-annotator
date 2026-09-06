@@ -140,7 +140,10 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             this._isDestroyed = false;
             this._skeletonBaseViewport = null;
             this._onResizeComplete = null;
+            this._beforeDocumentReplace = null;
+            this._isDrawingBusy = null;
             this._zoomInFlight = false;
+            this._isDrawingBusy = null;
 
             if (this.isGradedViewer && this.container && typeof ResizeObserver !== 'undefined') {
                 this._resizeObserver = new ResizeObserver(() => {
@@ -149,9 +152,19 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                     }
                     // Skip when container is hidden (e.g. modal closed)
                     if (!this.container?.clientWidth) return;
+                    // A dead-band is legitimate for DEBOUNCING and wrong for
+                    // CORRECTNESS. The old 16px skip meant a smaller shrink was
+                    // never reflowed at all -- and CSS can still narrow the
+                    // wrapper and page canvas on such a shrink while the inline
+                    // wrapper HEIGHT stays from the old width. The drawing
+                    // overlay is height:100% of that stale wrapper, so it stops
+                    // being congruent with the page the teacher sees, which is
+                    // the same class of defect as the 115px clamp-lift one.
+                    // Any real change is now reflowed; the timer below still
+                    // coalesces a burst into one pass.
                     const containerWidth = this.getEffectiveContainerWidth();
                     const previousWidth = this.lastRenderContainerWidth ?? 0;
-                    if (containerWidth <= 0 || Math.abs(containerWidth - previousWidth) < 16) {
+                    if (containerWidth <= 0 || containerWidth === previousWidth) {
                         return;
                     }
 
@@ -164,7 +177,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
 
                         const settledWidth = this.getEffectiveContainerWidth();
                         const lastWidth = this.lastRenderContainerWidth ?? 0;
-                        if (settledWidth <= 0 || Math.abs(settledWidth - lastWidth) < 16) {
+                        if (settledWidth <= 0 || settledWidth === lastWidth) {
                             return;
                         }
 
@@ -244,6 +257,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             this._onPageRendered = null;
             this._onSliderSync = null;
             this._onResizeComplete = null;
+            this._beforeDocumentReplace = null;
 
             // Release PDF document
             if (this.pdf) {
@@ -380,6 +394,17 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
         async loadPDF(url) {
             debugLog(`[FRONTEND] loadPDF called for ${this.containerId}, URL: ${url.substring(0, 50)}...`);
             try {
+                // Loading a document replaces every page wrapper.  The graded
+                // viewer may still contain a pointer-down stroke or a completed
+                // stroke whose create request has not reached annotationsData.
+                // Let the composition root hold this destructive boundary until
+                // both states are safe; unlike a CSS reflow, no geometry changes
+                // while this promise is pending.
+                if (typeof this._beforeDocumentReplace === 'function') {
+                    await this._beforeDocumentReplace(this);
+                    if (this._isDestroyed) return;
+                }
+
                 const lib = resolvePdfjsLib();
                 if (!lib) {
                     throw new Error('PDF.js library is not ready yet.');
@@ -868,6 +893,10 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             if (this.zoom >= 3.0) {
                 return;
             }
+            if (this._drawingBlocksZoom()) {
+                debugLog('[ZOOM] refused: a stroke is active or still saving');
+                return;
+            }
             try {
                 this.zoom = Math.min(this.zoom + 0.25, 3.0);
                 this.updateZoomLevel();
@@ -888,6 +917,10 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 return;
             }
             if (this.zoom <= 0.5) {
+                return;
+            }
+            if (this._drawingBlocksZoom()) {
+                debugLog('[ZOOM] refused: a stroke is active or still saving');
                 return;
             }
             try {
@@ -1251,6 +1284,49 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
          */
         onResizeComplete(callback) {
             this._onResizeComplete = callback;
+        }
+
+        /**
+         * Register a predicate that reports whether ink is unsafe to disturb --
+         * a stroke in progress, or one whose save has not landed.
+         *
+         * Used to REFUSE a zoom. A resize only moves the CSS box and is safe
+         * mid-stroke, which is the whole point of relayoutPagesForContainer().
+         * Zoom is different in kind: stroke points are bitmap coordinates and
+         * zoom replaces the bitmap scale, so an active stroke would end up
+         * holding points from two frames and a finished-but-unsaved one would be
+         * redrawn at the wrong scale or cleared before it is persisted.
+         *
+         * Refusing is deliberate rather than deferring: deferring half of a
+         * geometry change is what made the reverted attempt at #472 worse.
+         *
+         * @param {() => boolean} predicate
+         */
+        setDrawingBusyCheck(predicate) {
+            this._isDrawingBusy = predicate;
+        }
+
+        /**
+         * @returns {boolean} whether a zoom must be refused right now.
+         */
+        _drawingBlocksZoom() {
+            if (typeof this._isDrawingBusy !== 'function') return false;
+            try {
+                return Boolean(this._isDrawingBusy());
+            } catch (error) {
+                console.error('[FRONTEND] drawing-busy check failed:', error);
+                return false;
+            }
+        }
+
+        /**
+         * Register an async guard for operations that replace the page DOM.
+         * The graded annotator uses this to wait for active/persisting strokes.
+         *
+         * @param {(viewer: PDFViewer) => (void|Promise<void>)} callback
+         */
+        beforeDocumentReplace(callback) {
+            this._beforeDocumentReplace = callback;
         }
 
         async reRenderAllPages(force = false) {

@@ -740,6 +740,94 @@ describe('annotation-controller state ownership', () => {
     expect(document.getElementById('pdfGradedCommentsList').textContent).toContain('Loaded annotation');
   });
 
+  it('defers reload and its stroke-store refresh until drawing persistence is idle', async () => {
+    vi.useFakeTimers();
+    let drawingUnsafe = true;
+    document.body.innerHTML = '<div id="pdfGradedCommentsList"></div>';
+    const mod = await loadAnnotationControllerModule();
+    const listAnnotationsRequest = vi.fn().mockResolvedValue({
+      success: true,
+      annotations: {},
+    });
+    const refreshMarkupFromAnnotations = vi.fn();
+    const controller = mod.createAnnotationController({
+      annotationsState: {},
+      getAnnotationsData: () => ({}),
+      setAnnotationsData: vi.fn(),
+      getCurrentSubmissionId: () => 1001,
+      getCurrentAssignmentId: () => 501,
+      isDrawingFn: () => drawingUnsafe,
+      helpers: {
+        listAnnotationsRequest,
+        normalizeAnnotationsPayload: (data) => data,
+        refreshMarkupFromAnnotations,
+      },
+    });
+
+    const reload = controller.reload();
+    await Promise.resolve();
+
+    expect(listAnnotationsRequest, 'reload fetched and refreshed while ink was unsafe')
+      .not.toHaveBeenCalled();
+    expect(refreshMarkupFromAnnotations).not.toHaveBeenCalled();
+
+    drawingUnsafe = false;
+    await vi.advanceTimersByTimeAsync(50);
+    await reload;
+
+    expect(listAnnotationsRequest).toHaveBeenCalledOnce();
+    expect(refreshMarkupFromAnnotations).toHaveBeenCalledOnce();
+    controller.destroy();
+    vi.useRealTimers();
+  });
+
+  it('stops waiting for ink and reloads anyway if the stroke never settles', async () => {
+    // waitForDrawingIdle() resolved only when the predicate flipped or the
+    // controller was destroyed. A stroke whose create-POST never settles -- or a
+    // pointerup never delivered because capture was lost and the button came up
+    // over browser chrome -- leaves it true forever, and this wait sits at the
+    // TOP of loadAnnotations(), before the fetch. The comment list then never
+    // populates for the rest of the session, with no recovery but a page reload.
+    //
+    // Worse in combination: the markup refresh elsewhere IS bounded, so at its
+    // deadline it clears pageStrokes and repopulates from an annotationsData
+    // that this wedged reload can never refresh -- the bounded half causes the
+    // stroke loss while the unbounded half blocks recovery.
+    vi.useFakeTimers();
+    document.body.innerHTML = '<div id="pdfGradedCommentsList"></div>';
+    const mod = await loadAnnotationControllerModule();
+    const listAnnotationsRequest = vi.fn().mockResolvedValue({
+      success: true,
+      annotations: {},
+    });
+    const controller = mod.createAnnotationController({
+      annotationsState: {},
+      getAnnotationsData: () => ({}),
+      setAnnotationsData: vi.fn(),
+      getCurrentSubmissionId: () => 1001,
+      getCurrentAssignmentId: () => 501,
+      isDrawingFn: () => true,               // never becomes safe
+      helpers: {
+        listAnnotationsRequest,
+        normalizeAnnotationsPayload: (data) => data,
+        refreshMarkupFromAnnotations: vi.fn(),
+      },
+    });
+
+    const reload = controller.reload();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(listAnnotationsRequest, 'gave up so fast it is not a guard at all')
+      .not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(12000);
+    await reload;
+    expect(listAnnotationsRequest, 'the annotation list is wedged for the session')
+      .toHaveBeenCalledOnce();
+
+    controller.destroy();
+    vi.useRealTimers();
+  });
+
   it('destroy clears controller-owned state from the annotations slice', async () => {
     const mod = await loadAnnotationControllerModule();
     const annotationsState = {

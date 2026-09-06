@@ -10,10 +10,45 @@ window.PdfPreviewModalVersionSync = window.PdfPreviewModalVersionSync || {};
         var _pollInterval = null;
         var _currentVersion = null;
         var _skipNextCycle = false;
+        var _pendingExternalChange = null;
+        var _externalChangeRetry = null;
         var POLL_MS = (options && options.pollIntervalMs) || 10000;
+        var EXTERNAL_CHANGE_MAX_RETRIES = Math.ceil(8000 / 50);
 
         function _emit(name, data) {
             (_callbacks[name] || []).forEach(function (cb) { cb(data); });
+        }
+
+        function _emitExternalChangeWhenSafe(data) {
+            if (_destroyed) return;
+            _pendingExternalChange = data;
+
+            if (typeof options.isDrawingFn === 'function' && options.isDrawingFn()) {
+                if (!_externalChangeRetry) {
+                    // Bounded in retries: unbounded, a stroke that never settles
+                    // means an external annotation change is never surfaced, so
+                    // the viewer silently shows stale annotations forever.
+                    var attempts = 0;
+                    _externalChangeRetry = setTimeout(function retryExternalChange() {
+                        _externalChangeRetry = null;
+                        if (_destroyed) return;
+                        attempts += 1;
+                        if (attempts < EXTERNAL_CHANGE_MAX_RETRIES
+                            && typeof options.isDrawingFn === 'function'
+                            && options.isDrawingFn()) {
+                            _externalChangeRetry = setTimeout(retryExternalChange, 50);
+                            return;
+                        }
+                        var pending = _pendingExternalChange;
+                        _pendingExternalChange = null;
+                        if (pending) _emit('onExternalChange', pending);
+                    }, 50);
+                }
+                return;
+            }
+
+            _pendingExternalChange = null;
+            _emit('onExternalChange', data);
         }
 
         function checkVersion() {
@@ -40,7 +75,7 @@ window.PdfPreviewModalVersionSync = window.PdfPreviewModalVersionSync || {};
                 }
                 if (!version) return;
                 if (_currentVersion !== null && version !== _currentVersion) {
-                    _emit('onExternalChange', { previousVersion: _currentVersion, newVersion: version });
+                    _emitExternalChangeWhenSafe({ previousVersion: _currentVersion, newVersion: version });
                 }
                 _currentVersion = version;
                 if (syncState) {
@@ -79,6 +114,11 @@ window.PdfPreviewModalVersionSync = window.PdfPreviewModalVersionSync || {};
                 if (_destroyed) return;
                 _destroyed = true;
                 handle.stop();
+                if (_externalChangeRetry) {
+                    clearTimeout(_externalChangeRetry);
+                    _externalChangeRetry = null;
+                }
+                _pendingExternalChange = null;
                 _callbacks.onExternalChange = [];
             },
             // For testing

@@ -231,6 +231,94 @@ let gradedPageRenderedHandler;
     }
   });
 
+  it('reflows geometry IMMEDIATELY, never waiting on ink', async () => {
+    // This test used to assert the opposite, and that was the reverted arbiter
+    // rebuilt by hand: relayoutPagesForContainer() IS the geometry, and deferring
+    // it while the CSS box has already moved is exactly what made the earlier
+    // attempt land a stroke 3.4x further out. Waiting became possible only when
+    // the host predicate widened from "pointer is down" to "pointer is down OR a
+    // save is pending", so a FINISHED stroke could hold the layout hostage.
+    //
+    // Only the destructive markup/reload half may wait. Geometry never does.
+    vi.useFakeTimers();
+    try {
+      const controllerModule = await loadDocumentControllerModule();
+      const controller = controllerModule.createDocumentController({}, {
+        isDrawingFn: () => true,             // never becomes safe
+      });
+
+      controller.handleResize();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(
+        window.__pdfGradedViewer.relayoutPagesForContainer,
+        'geometry was deferred behind ink -- this is the reverted arbiter',
+      ).toHaveBeenCalled();
+      expect(window.__pdfGradedViewer.reRenderAllPages).not.toHaveBeenCalled();
+      controller.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops waiting before emitting resize-complete if a save never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const controllerModule = await loadDocumentControllerModule();
+      const controller = controllerModule.createDocumentController({}, {
+        isDrawingFn: () => true,
+      });
+      const seen = [];
+      controller.onResizeComplete(() => seen.push(1));
+      window.PdfPreviewModalViewer = {
+        PDFViewer: function FakeOriginalViewer() {},
+        resolvePdfjsLib: () => ({}),
+      };
+      controller.ensureViewers();
+      expect(typeof gradedResizeCompleteHandler).toBe('function');
+
+      gradedResizeCompleteHandler();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(seen, 'gave up so fast it is not a guard').toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(seen, 'markers never reposition again after a resize').toEqual([1]);
+      controller.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never disarms an already-armed document-replace guard', async () => {
+    // The guard is what stands between a document swap and an unsaved stroke.
+    // A controller created WITHOUT beforeDocumentReplaceFn used to re-register
+    // `undefined` over it, silently disarming it for the rest of the session.
+    const armed = vi.fn();
+    window.__pdfGradedViewer.beforeDocumentReplace = vi.fn();
+    const controllerModule = await loadDocumentControllerModule();
+
+    const withGuard = controllerModule.createDocumentController({}, {
+      beforeDocumentReplaceFn: armed,
+    });
+    window.PdfPreviewModalViewer = {
+      PDFViewer: function FakeOriginalViewer() {},
+      resolvePdfjsLib: () => ({}),
+    };
+    withGuard.ensureViewers();
+    expect(window.__pdfGradedViewer.beforeDocumentReplace).toHaveBeenCalledWith(armed);
+    withGuard.destroy();
+
+    window.__pdfGradedViewer.beforeDocumentReplace.mockClear();
+    const withoutGuard = controllerModule.createDocumentController({}, {});
+    withoutGuard.ensureViewers();
+
+    expect(
+      window.__pdfGradedViewer.beforeDocumentReplace,
+      'a controller with no guard overwrote the armed one',
+    ).not.toHaveBeenCalled();
+    withoutGuard.destroy();
+  });
+
   it('holds the resize-complete event while a stroke is in progress', async () => {
     // The event's consumers end in refreshMarkupFromAnnotations(), which does an
     // unconditional DrawingCanvas pageStrokes.clear() and repaints only from
@@ -269,7 +357,13 @@ let gradedPageRenderedHandler;
     }
   });
 
-  it('defers the fullscreen reflow until an active drawing stroke finishes', async () => {
+  it('reflows during a stroke but holds the markup refresh until it ends', async () => {
+    // I wrote this test asserting the reflow was DEFERRED while drawing, and
+    // that was wrong: relayoutPagesForContainer() is the geometry, and the
+    // reverted attempt at #472 failed precisely by holding geometry back while
+    // the CSS box moved. The correct split is geometry now, destructive markup
+    // later -- the reflow only writes CSS boxes and never replaces the overlay,
+    // so there is nothing about it to defer.
     vi.useFakeTimers();
     try {
       let drawing = true;
@@ -277,14 +371,21 @@ let gradedPageRenderedHandler;
       const controller = controllerModule.createDocumentController({}, {
         isDrawingFn: () => drawing,
       });
+      const seen = [];
+      controller.onResizeComplete(() => seen.push(1));
 
       controller.handleResize();
       await vi.advanceTimersByTimeAsync(400);
-      expect(window.__pdfGradedViewer.relayoutPagesForContainer).not.toHaveBeenCalled();
+      expect(
+        window.__pdfGradedViewer.relayoutPagesForContainer,
+        'geometry waited on ink',
+      ).toHaveBeenCalledTimes(1);
+      expect(seen, 'the destructive markup refresh ran mid-stroke').toEqual([]);
 
       drawing = false;
-      await vi.advanceTimersByTimeAsync(50);
-      expect(window.__pdfGradedViewer.relayoutPagesForContainer).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(seen, 'the markup refresh never arrived after the stroke ended')
+        .not.toEqual([]);
       expect(window.__pdfGradedViewer.reRenderAllPages).not.toHaveBeenCalled();
       controller.destroy();
     } finally {

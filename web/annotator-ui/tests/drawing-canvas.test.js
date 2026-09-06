@@ -66,6 +66,41 @@ describe('drawing-canvas stroke rendering', () => {
     vi.restoreAllMocks();
   });
 
+  it('ignores a stroke load that arrives after destroy', async () => {
+    // loadStrokesFromAnnotations() begins with an unconditional
+    // pageStrokes.clear(). Several callers now DEFER it behind a drawing guard,
+    // so one can fire after the modal closed -- wiping the store of whatever
+    // session is open by then, which is the exact loss #472 is about.
+    const module = await loadDrawingCanvasModule();
+    module.loadStrokesFromAnnotations([
+      { type: 'drawing', page_index: 0, points: [[1, 2], [3, 4]], drawing_style: 'pen' },
+    ]);
+    expect(module.getPageStrokes(0)).toHaveLength(1);
+
+    module.destroy();
+
+    // The late call carries strokes, so "ignored" and "applied" differ: without
+    // the guard these land in a destroyed module's store.
+    module.loadStrokesFromAnnotations([
+      { type: 'drawing', page_index: 0, points: [[5, 6], [7, 8]], drawing_style: 'pen' },
+      { type: 'drawing', page_index: 1, points: [[9, 9], [10, 10]], drawing_style: 'pen' },
+    ]);
+    expect(module.getPageStrokes(0), 'a destroyed module accepted a stroke load')
+      .toHaveLength(0);
+    expect(module.getPageStrokes(1), 'a destroyed module accepted a stroke load')
+      .toHaveLength(0);
+
+    // Re-init is what a reopened modal does; the store must be usable again.
+    if (typeof module.init === 'function') module.init();
+    module.loadStrokesFromAnnotations([
+      { type: 'drawing', page_index: 0, points: [[5, 6], [7, 8]], drawing_style: 'pen' },
+    ]);
+    expect(
+      module.getPageStrokes(0),
+      'the module stayed refusing work after re-init',
+    ).toHaveLength(1);
+  });
+
   it('draws pen strokes with a contrast underlay plus the final colored stroke', async () => {
     const module = await loadDrawingCanvasModule();
     const ctx = createMockContext();
@@ -328,5 +363,44 @@ describe('drawing-canvas stroke rendering', () => {
       { x: 60, y: 80 },
       { x: 120, y: 160 },
     ]);
+  });
+
+  it('persists an active stroke before modal teardown clears the local store', async () => {
+    const ctx = createMockContext();
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx);
+    const wrapper = document.createElement('div');
+    const pdfCanvas = document.createElement('canvas');
+    pdfCanvas.width = 600;
+    pdfCanvas.height = 800;
+    wrapper.appendChild(pdfCanvas);
+    document.body.appendChild(wrapper);
+
+    const module = await loadDrawingCanvasModule();
+    module.setActiveTool('pen');
+    const { canvas } = module.ensureCanvasForPage(0, wrapper);
+    canvas.getBoundingClientRect = () => ({
+      left: 10, top: 20, right: 310, bottom: 420, width: 300, height: 400,
+    });
+    canvas.setPointerCapture = vi.fn();
+    canvas.releasePointerCapture = vi.fn();
+    const completed = vi.fn();
+    module.onStrokeComplete = completed;
+
+    const pointerDown = new MouseEvent('pointerdown', {
+      bubbles: true, button: 0, clientX: 40, clientY: 60,
+    });
+    Object.defineProperty(pointerDown, 'pointerId', { value: 7 });
+    canvas.dispatchEvent(pointerDown);
+
+    module.destroy();
+
+    expect(completed, 'destroy discarded the active stroke without starting persistence')
+      .toHaveBeenCalledOnce();
+    expect(completed.mock.calls[0][1].points).toEqual([
+      { x: 60, y: 80 },
+      { x: 60, y: 80 },
+    ]);
+    expect(module.isDrawingActive()).toBe(false);
+    expect(module.getPageStrokes(0)).toEqual([]);
   });
 });

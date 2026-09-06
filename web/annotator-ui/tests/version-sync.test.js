@@ -49,6 +49,72 @@ describe('version-sync', () => {
         sync.destroy();
     });
 
+    it('defers an external-change reload signal until drawing persistence is idle', async () => {
+        vi.useFakeTimers();
+        let drawingUnsafe = true;
+        const mod = await loadModule();
+        const adapter = {
+            getAnnotationsVersion: vi.fn()
+                .mockResolvedValueOnce({ success: true, version: 'v1' })
+                .mockResolvedValueOnce({ success: true, version: 'v2' })
+        };
+        const sync = mod.createVersionSync({}, {
+            modeAdapter: adapter,
+            submissionId: 1,
+            assignmentId: 1,
+            isDrawingFn: () => drawingUnsafe,
+        });
+        const cb = vi.fn();
+        sync.onExternalChange(cb);
+
+        await sync._checkVersion();
+        await sync._checkVersion();
+
+        expect(cb, 'external annotation reload was emitted while ink was unsafe').not.toHaveBeenCalled();
+
+        drawingUnsafe = false;
+        await vi.advanceTimersByTimeAsync(50);
+        expect(cb).toHaveBeenCalledOnce();
+        expect(cb).toHaveBeenCalledWith({ previousVersion: 'v1', newVersion: 'v2' });
+
+        sync.destroy();
+        vi.useRealTimers();
+    });
+
+    it('emits an external change eventually even if ink never becomes safe', async () => {
+        // Unbounded, a stroke that never settles means an external annotation
+        // change is never surfaced and the viewer silently shows stale data for
+        // the rest of the session.
+        vi.useFakeTimers();
+        const mod = await loadModule();
+        const adapter = {
+            getAnnotationsVersion: vi.fn()
+                .mockResolvedValueOnce({ success: true, version: 'v1' })
+                .mockResolvedValueOnce({ success: true, version: 'v2' })
+        };
+        const sync = mod.createVersionSync({}, {
+            modeAdapter: adapter,
+            submissionId: 1,
+            assignmentId: 1,
+            isDrawingFn: () => true,          // never becomes safe
+        });
+        const cb = vi.fn();
+        sync.onExternalChange(cb);
+
+        await sync._checkVersion();
+        await sync._checkVersion();
+
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(cb, 'gave up so fast it is not a guard').not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(12000);
+        expect(cb, 'the external change is never surfaced: stale forever')
+            .toHaveBeenCalledOnce();
+
+        sync.destroy();
+        vi.useRealTimers();
+    });
+
     it('skips one cycle after markLocalChange()', async () => {
         const mod = await loadModule();
         const { createVersionSync } = mod;

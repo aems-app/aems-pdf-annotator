@@ -77,6 +77,7 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
     var currentStroke = null;
 
     /** @type {boolean} Whether user is currently drawing */
+    var moduleDestroyed = false;
     var isDrawing = false;
 
     /** @type {boolean} Whether Shift key is held (straight line mode) */
@@ -130,6 +131,8 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
     }
 
     exports.init = function init() {
+
+        moduleDestroyed = false;
         if (keyListenersAttached) return;
         document.addEventListener('keydown', handleKeyDown);
         document.addEventListener('keyup', handleKeyUp);
@@ -570,19 +573,13 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
         appendPointerPoint(e, getStrokeCoords(e));
     }
 
-    /**
-     * Handle pointerup - finalize stroke and store it.
-     *
-     * @param {PointerEvent} e
-     */
-    function handlePointerUp(e) {
-        if (!isDrawing || !currentStroke) return;
-        if (e.pointerId !== activeStrokePointerId) return;
-
+    /** Finalize, store, and publish the active stroke without requiring an event. */
+    function finishActiveStroke() {
+        if (!isDrawing || !currentStroke) return null;
         var canvas = activeStrokeCanvas;
         if (canvas && typeof canvas.releasePointerCapture === 'function') {
             try {
-                canvas.releasePointerCapture(e.pointerId);
+                canvas.releasePointerCapture(activeStrokePointerId);
             } catch (_error) {
                 // Detaching a captured element implicitly releases capture.
             }
@@ -623,9 +620,23 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
             if (typeof exports.onStrokeComplete === 'function') {
                 exports.onStrokeComplete(pageIdx, finalStroke);
             }
+            return finalStroke;
         } else {
             resetActiveStroke();
         }
+        return null;
+    }
+
+    /**
+     * Handle pointerup - finalize stroke and store it.
+     *
+     * @param {PointerEvent} e
+     */
+    function handlePointerUp(e) {
+        if (!isDrawing || !currentStroke) return;
+        if (e.pointerId !== activeStrokePointerId) return;
+
+        finishActiveStroke();
 
         e.preventDefault();
     }
@@ -777,6 +788,10 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
      * @param {Array<Object>} annotationsData - Array of annotation objects from API
      */
     exports.loadStrokesFromAnnotations = function loadStrokesFromAnnotations(annotationsData) {
+        // A deferred caller can fire after the modal closed. This function's
+        // first act is pageStrokes.clear(), so a late call would wipe the
+        // store of whatever session is open by then.
+        if (moduleDestroyed) return;
         if (!Array.isArray(annotationsData)) return;
 
         pageStrokes.clear();
@@ -1060,6 +1075,17 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
      * event listeners. Call this when the modal is destroyed.
      */
     exports.destroy = function destroy() {
+        moduleDestroyed = true;
+        // Closing the modal must stay immediate, but an Escape/close arriving
+        // while the pointer is down must not silently discard that stroke.
+        // Finalization invokes onStrokeComplete synchronously, which starts the
+        // existing asynchronous create request before the local store is cleared.
+        try {
+            finishActiveStroke();
+        } catch (error) {
+            console.error('Failed to persist active drawing stroke during teardown:', error);
+        }
+
         // Remove all canvases
         pageCanvases.forEach(function (entry, _pageIdx) {
             entry.canvas.removeEventListener('pointerdown', handlePointerDown);

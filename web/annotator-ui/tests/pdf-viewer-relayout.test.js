@@ -119,6 +119,39 @@ function expectedDisplay(viewer) {
   return { w: baseW * fit * viewer.zoom, h: baseH * fit * viewer.zoom };
 }
 
+
+// THE ORACLE THAT WAS MISSING.
+//
+// Every instrument I built graded a stroke against the OVERLAY's own rectangle,
+// which is what the production code maps through -- so it verified conformance
+// to the overlay contract and could never ask whether the overlay is congruent
+// with the page the teacher can see. It read 0.0 px error while the overlay sat
+// ~115 bitmap px away from the page. An external review named this: anchor on
+// the rendered .pdf-page-canvas instead.
+//
+// The overlay is width:100%/height:100% of the wrapper, so wrapper box == page
+// canvas box is the same statement as overlay box == page canvas box, and it is
+// checkable without a stroke, an export, or a pixel comparison.
+function expectOverlayCongruentWithPage(wrapper, tolerance = 0.5) {
+  const canvas = wrapper.querySelector('.pdf-page-canvas');
+  expect(canvas, 'no page canvas to compare against').toBeTruthy();
+
+  // A skeleton canvas is sized in percentages and follows the wrapper for free.
+  if (canvas.style.width === '100%') return;
+
+  const w = { w: parseFloat(wrapper.style.width), h: parseFloat(wrapper.style.height) };
+  const c = { w: parseFloat(canvas.style.width), h: parseFloat(canvas.style.height) };
+  expect(Number.isFinite(w.w) && Number.isFinite(c.w), 'boxes not measurable').toBe(true);
+  expect(
+    Math.abs(w.w - c.w),
+    `overlay is ${Math.abs(w.w - c.w).toFixed(1)}px wider/narrower than the page`,
+  ).toBeLessThanOrEqual(tolerance);
+  expect(
+    Math.abs(w.h - c.h),
+    `overlay is ${Math.abs(w.h - c.h).toFixed(1)}px taller/shorter than the page`,
+  ).toBeLessThanOrEqual(tolerance);
+}
+
 describe('pdf-viewer non-destructive container reflow', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -604,6 +637,83 @@ describe('pdf-viewer non-destructive container reflow', () => {
     // The unrendered page falls back to page 1's base, as renderSkeleton does.
     expect(w3.style.width).toBe(p1.wrapper.style.width);
     expect(w3.style.height).toBe(p1.wrapper.style.height);
+  });
+
+  // ---- Zoom is a coordinate-frame change, not a resize ---------------------
+
+  it('refuses to zoom while a stroke is active or still saving', async () => {
+    // Stroke points are BITMAP coordinates, and zoom replaces the bitmap scale
+    // (canvas.width = viewport.width at scale*zoom). An active stroke would then
+    // hold points from two different frames, and a finished-but-unsaved stroke
+    // would be redrawn at the wrong scale or cleared before it reaches
+    // annotationsData. The reflow is safe to run mid-stroke because it only
+    // moves the CSS box; zoom is not, because it moves the frame itself.
+    const cw = { value: 816 };
+    const viewer = await makeViewer(cw);
+    await viewer.renderSkeleton();
+    await viewer.renderSpecificPage(1);
+    const zoomPath = vi.spyOn(viewer, 'zoomResizeAndRenderVisible').mockResolvedValue();
+
+    let inkBusy = true;
+    viewer.setDrawingBusyCheck(() => inkBusy);
+
+    await viewer.zoomIn();
+    expect(
+      zoomPath,
+      'zoom changed the stroke coordinate frame while ink was unsafe',
+    ).not.toHaveBeenCalled();
+    expect(viewer.zoom, 'zoom level moved even though the zoom was refused').toBe(1);
+
+    inkBusy = false;
+    await viewer.zoomIn();
+    expect(zoomPath).toHaveBeenCalledTimes(1);
+    expect(viewer.zoom).toBeCloseTo(1.25, 5);
+  });
+
+  // ---- Congruence, the invariant that was missing --------------------------
+
+  it('keeps the overlay congruent with the page across a clamped reflow', async () => {
+    const cw = { value: 616 };
+    const viewer = await makeViewer(cw);
+    const before = expectedDisplay(viewer);
+    const { wrapper } = buildRenderedPage(viewer, 1, before.w, before.h);
+    const CAP = 480;
+    wrapper.getBoundingClientRect = () => ({
+      top: 0, left: 0,
+      width: Math.min(parseFloat(wrapper.style.width || '0'), CAP),
+      height: parseFloat(wrapper.style.height || '0'),
+    });
+
+    cw.value = 816;
+    await viewer.relayoutPagesForContainer();
+    expectOverlayCongruentWithPage(wrapper);
+
+    cw.value = 516;
+    await viewer.relayoutPagesForContainer();
+    expectOverlayCongruentWithPage(wrapper);
+  });
+
+  it('keeps them congruent through a SUB-16px shrink, which the observer skips', async () => {
+    // The ResizeObserver ignores width deltas under 16px. On a small shrink CSS
+    // can still narrow the wrapper and canvas while the inline wrapper HEIGHT
+    // stays from the old width -- and the overlay is height:100% of that stale
+    // wrapper. A dead-band is fine for debouncing and wrong for correctness.
+    const cw = { value: 816 };
+    const viewer = await makeViewer(cw);
+    const before = expectedDisplay(viewer);
+    const { wrapper, overlay } = buildRenderedPage(viewer, 1, before.w, before.h);
+    viewer._skeletonBaseViewport = { width: PAGE_W * viewer.scale, height: PAGE_H * viewer.scale };
+    viewer.lastRenderContainerWidth = viewer.getEffectiveContainerWidth();
+
+    cw.value = 806;                       // 10px: under the dead-band
+    resizeObserverCallback([]);
+    await vi.waitFor(
+      () => expect(parseFloat(wrapper.style.width)).toBeLessThan(before.w),
+      { timeout: 2000 },
+    );
+
+    expectOverlayCongruentWithPage(wrapper);
+    expect(overlay.isConnected).toBe(true);
   });
 
   // ---- The CSS clamp -------------------------------------------------------

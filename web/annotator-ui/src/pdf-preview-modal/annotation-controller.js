@@ -338,6 +338,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
      * @param {Function} options.setSelectedAnnotation    - (sel) => void
      * @param {Function} options.getSplitPanelActive      - () => boolean
      * @param {Function} options.getPreviewFullscreenActive - () => boolean
+     * @param {Function} [options.isDrawingFn]             - () => active or persisting stroke
      * @param {Object}   options.helpers                  - bag of helper functions
      * @returns {Object} Annotation controller handle
      */
@@ -409,6 +410,54 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         var _pendingListFrame = null;
         var _annotationVisibilityScrollHandler = null;
         var _scheduleUpdateTimer = null;
+        var _drawingIdleRetryTimer = null;
+        var _drawingIdlePromise = null;
+        var _resolveDrawingIdle = null;
+
+        // Bounded, in RETRIES rather than wall-clock: a Date.now() deadline
+        // silently depends on whether a caller's fake timers also mock the
+        // clock. Unbounded, a stroke that never settles -- a create-POST that
+        // never resolves, or a pointerup never delivered because capture was
+        // lost and the button came up over browser chrome -- wedges
+        // loadAnnotations() for the rest of the session, since this wait sits at
+        // its very top, before the fetch. Losing at most one in-flight stroke is
+        // a far better outcome than a comment list that never populates again.
+        var DRAWING_IDLE_RETRY_MS = 50;
+        var DRAWING_IDLE_MAX_RETRIES = Math.ceil(8000 / DRAWING_IDLE_RETRY_MS);
+
+        function waitForDrawingIdle() {
+            if (typeof options.isDrawingFn !== 'function' || !options.isDrawingFn()) {
+                return Promise.resolve();
+            }
+            if (_drawingIdlePromise) return _drawingIdlePromise;
+
+            var attempts = 0;
+            _drawingIdlePromise = new Promise(function (resolve) {
+                _resolveDrawingIdle = resolve;
+                function checkDrawingIdle() {
+                    _drawingIdleRetryTimer = null;
+                    attempts += 1;
+                    if (attempts >= DRAWING_IDLE_MAX_RETRIES) {
+                        console.warn(
+                            '[FRONTEND] reloading annotations despite drawing being '
+                            + 'active; the wait deadline passed. An in-flight stroke '
+                            + 'may be lost.'
+                        );
+                    }
+                    if (_destroyed || attempts >= DRAWING_IDLE_MAX_RETRIES
+                        || !options.isDrawingFn()) {
+                        var finish = _resolveDrawingIdle;
+                        _resolveDrawingIdle = null;
+                        _drawingIdlePromise = null;
+                        if (finish) finish();
+                        return;
+                    }
+                    _drawingIdleRetryTimer = setTimeout(checkDrawingIdle, DRAWING_IDLE_RETRY_MS);
+                }
+                _drawingIdleRetryTimer = setTimeout(checkDrawingIdle, DRAWING_IDLE_RETRY_MS);
+            });
+            return _drawingIdlePromise;
+        }
 
         // -----------------------------------------------------------------
         // Event system
@@ -1991,6 +2040,13 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 return Promise.resolve();
             }
 
+            // The eventual markup refresh clears DrawingCanvas.pageStrokes and
+            // rebuilds it from annotationsData.  Wait before even fetching so an
+            // external reload cannot race either a pointer-down stroke or the
+            // create request that publishes a just-finished stroke.
+            await waitForDrawingIdle();
+            if (_destroyed) return Promise.resolve();
+
             var sub = submissionId || _getCurrentSubmissionId();
             var asgn = assignmentId || _getCurrentAssignmentId();
             var listEl = _getCommentsListElement();
@@ -3217,6 +3273,16 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             destroy: function () {
                 if (_destroyed) return;
                 _destroyed = true;
+
+                if (_drawingIdleRetryTimer) {
+                    clearTimeout(_drawingIdleRetryTimer);
+                    _drawingIdleRetryTimer = null;
+                }
+                if (_resolveDrawingIdle) {
+                    _resolveDrawingIdle();
+                    _resolveDrawingIdle = null;
+                    _drawingIdlePromise = null;
+                }
 
                 // Stop polling
                 stopPolling();
