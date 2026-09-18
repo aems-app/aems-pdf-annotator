@@ -18,6 +18,7 @@ async function createUndoHarness({
   createAnnotation = vi.fn().mockResolvedValue({ success: true }),
   updateAnnotation = vi.fn().mockResolvedValue({ success: true }),
   visibilityController = null,
+  annotationControllerFactory = null,
 } = {}) {
   let modalHelpers;
   let overlayHelpers;
@@ -37,6 +38,7 @@ async function createUndoHarness({
   window.PdfPreviewModalAnnotationController = {
     createAnnotationController: (options) => {
       modalHelpers = options.helpers;
+      if (annotationControllerFactory) return annotationControllerFactory(options);
       return {
         peekUndoOperation: () => controllerUndoStack.at(-1) || null,
         popUndoOperation: () => controllerUndoStack.pop() || null,
@@ -64,6 +66,7 @@ async function createUndoHarness({
           onOverlayDblClicked: () => {},
           onOverlayReady: () => {},
           renderPage: visibilityController.renderPage || vi.fn(),
+          renderAnnotations: vi.fn(),
           destroy: () => {},
         };
       },
@@ -151,6 +154,92 @@ function createMarker({
   document.body.appendChild(marker);
 
   return { marker, label };
+}
+
+// Real list renderers and annotation model, with only the host API/PDF viewer stubbed.
+async function createSplitOwnershipHarness({ source = 'AI', updateResult = null } = {}) {
+  await import('../src/pdf-preview-modal/utils.js');
+  await import('../src/pdf-preview-modal/annotation-helpers.js');
+  await import('../src/pdf-preview-modal/sidebar-panel.js');
+  await import('../src/pdf-preview-modal/annotation-controller.js');
+  const factory = window.PdfPreviewModalAnnotationController.createAnnotationController;
+  const annotation = {
+    id: 'owned-comment', stable_id: 'owned-comment', xref: 42, page_index: 0,
+    type: 'Highlight', content: 'Teacher feedback', source, original_source: 'AI',
+    grader_name: 'Artem Kulachenko', rect: [50, 50, 150, 70],
+    quads: [[50, 50, 150, 70]], anchor_text: 'answer text',
+  };
+  const updateAnnotation = vi.fn(async (_assignment, _submission, _id, body) => (
+    updateResult || { success: true, annotation: {
+      ...annotation, ...body, page_index: body.page_index ?? 0,
+    } }
+  ));
+  let controller;
+  let options;
+  const renderPage = vi.fn(() => {
+    // Simulate the overlay render and visibility notification after page changes.
+    const entry = Object.values(options.getAnnotationsData()).flat()[0];
+    const currentMarker = document.querySelector('.annotation-marker');
+    if (currentMarker && entry) {
+      currentMarker.dataset.annotationPage = String(entry.page_index);
+      currentMarker.dataset.annotationSource = entry.source;
+      controller.renderList();
+    }
+  });
+  const harness = await createUndoHarness({
+    updateAnnotation,
+    visibilityController: { renderPage },
+    annotationControllerFactory: (opts) => {
+      options = opts;
+      opts.setAnnotationsData({ 0: [{ ...annotation }] });
+      controller = factory({ ...opts, getSplitPanelActive: () => true });
+      return controller;
+    },
+  });
+  const container = document.getElementById('pdfGradedContainer');
+  container.innerHTML = `
+    <div class="pdf-page-wrapper" data-page-num="1">
+      <canvas class="pdf-page-canvas"></canvas><div class="pdf-annotation-overlay">
+        <div class="annotation-marker source-${source.toLowerCase()}"
+          data-annotation-page="0" data-annotation-xref="42"
+          data-annotation-request-id="owned-comment" data-annotation-source="${source}"></div>
+      </div>
+    </div>`;
+  const marker = container.querySelector('.annotation-marker');
+  container.getBoundingClientRect = () => ({ left: 0, top: 0, right: 612, bottom: 792, width: 612, height: 792 });
+  marker.getBoundingClientRect = () => ({ left: 60, top: 60, right: 160, bottom: 80, width: 100, height: 20 });
+  const viewport = { width: 612, height: 792, scale: 1, convertToPdfPoint: (x, y) => [x, 792 - y] };
+  window.__pdfGradedViewer.getViewportForPage = () => viewport;
+  window.__pdfGradedViewer.pdf = { getPage: async () => ({ view: [0, 0, 612, 792] }) };
+  window.__pdfGradedViewer.currentPage = 1;
+  const secondPage = container.firstElementChild.cloneNode(true);
+  secondPage.dataset.pageNum = '2';
+  secondPage.querySelector('.annotation-marker').remove();
+  container.appendChild(secondPage);
+  container.querySelectorAll('canvas').forEach((canvas) => {
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 612, height: 792 });
+  });
+  Object.defineProperties(marker, {
+    offsetLeft: { value: 60 }, offsetTop: { value: 60 },
+    offsetWidth: { value: 100 }, offsetHeight: { value: 20 },
+  });
+  controller.addVisibleMarker(options.helpers.buildAnnotationVisibilityKey(0, { annotation }));
+  controller.renderList();
+  const aiList = document.getElementById('pdfGradedAICommentsList');
+  const humanList = document.getElementById('pdfGradedCommentsList');
+  return {
+    ...harness, annotation, marker, controller, options, updateAnnotation,
+    expectBucket(expectedSource) {
+      const target = expectedSource === 'AI' ? aiList : humanList;
+      const other = expectedSource === 'AI' ? humanList : aiList;
+      expect(target.querySelectorAll('.list-group-item')).toHaveLength(1);
+      expect(other.querySelectorAll('.list-group-item')).toHaveLength(0);
+      expect(target.textContent).toContain('A.K.');
+      const entries = Object.values(options.getAnnotationsData()).flat();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ source: expectedSource, grader_name: annotation.grader_name });
+    },
+  };
 }
 
 async function loadOverlayRendererModule() {
@@ -272,6 +361,114 @@ describe('pdf-preview-modal placement helpers', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it.each([null, { success: true }])('re-buckets an anchored source-only transfer with response %j', async (updateResult) => {
+    const h = await createSplitOwnershipHarness({ updateResult });
+    h.expectBucket('AI');
+    h.marker.dataset.annotationSource = 'HUMAN'; // optimistic mouseup state
+    await window.PdfPreviewModal.__test.persistAnchoredOwnershipTransfer(h.marker, 'owned-comment');
+    expect(h.updateAnnotation.mock.calls[0][3]).toEqual({ source: 'HUMAN' });
+    h.expectBucket('HUMAN');
+    h.handle.destroy();
+  });
+
+  it('keeps a rejected anchored transfer in the AI list', async () => {
+    const h = await createSplitOwnershipHarness({ updateResult: { success: false } });
+    h.marker.dataset.annotationSource = 'HUMAN';
+    await window.PdfPreviewModal.__test.persistAnchoredOwnershipTransfer(h.marker, 'owned-comment');
+    h.expectBucket('AI');
+    expect(h.marker.dataset.annotationSource).toBe('AI');
+    h.handle.destroy();
+  });
+
+  it('re-buckets a same-page move undo back to AI without reopening', async () => {
+    const h = await createSplitOwnershipHarness({ source: 'HUMAN' });
+    h.expectBucket('HUMAN');
+    h.controller.pushUndoOperation({
+      type: 'move', identifier: 'owned-comment', requestId: 'owned-comment', xref: '42',
+      oldPageIdx: 0, newPageIdx: 0, oldRect: h.annotation.rect, newRect: [60, 60, 160, 80],
+      oldSource: 'AI', newSource: 'HUMAN', isOwnershipTransfer: true,
+    });
+    h.dispatchUndo();
+    await vi.advanceTimersByTimeAsync(350);
+    expect(h.updateAnnotation.mock.calls[0][3].source).toBe('AI');
+    h.expectBucket('AI');
+    h.handle.destroy();
+  });
+
+  it.each([0, 1])('re-buckets a regular move to page %i and its undo', async (targetPage) => {
+    const h = await createSplitOwnershipHarness();
+    h.expectBucket('AI');
+    await window.PdfPreviewModal.__test.updateAnnotationPosition(0, targetPage, 'owned-comment', h.marker, true);
+    expect(h.updateAnnotation.mock.calls[0][3].source).toBe('HUMAN');
+    h.expectBucket('HUMAN');
+    h.dispatchUndo();
+    await vi.advanceTimersByTimeAsync(350);
+    expect(h.updateAnnotation.mock.calls[1][3].source).toBe('AI');
+    h.expectBucket('AI');
+    h.handle.destroy();
+  });
+
+  it('places reloaded persisted HUMAN feedback in the teacher list', async () => {
+    vi.stubGlobal('IntersectionObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const h = await createSplitOwnershipHarness();
+    h.expectBucket('AI');
+    h.options.helpers.listAnnotationsRequest = vi.fn().mockResolvedValue({
+      success: true, annotations: { 0: [{ ...h.annotation, source: 'HUMAN' }] },
+    });
+    await h.controller.loadAnnotations();
+    h.controller.renderList();
+    h.expectBucket('HUMAN');
+    h.handle.destroy();
+    vi.unstubAllGlobals();
+  });
+
+  it.each([120, 220])('re-buckets highlight resize to width %i and its undo', async (right) => {
+    const h = await createSplitOwnershipHarness();
+    await h.controller.persistHighlightExtend(h.marker, h.annotation, {
+      pageIdx: 0, quadsPdf: [[50, 722, right, 742]], anchorText: 'resized answer text',
+    });
+    expect(h.updateAnnotation.mock.calls[0][3].source).toBe('HUMAN');
+    h.expectBucket('HUMAN');
+    await h.controller.performHighlightExtendUndo(h.controller.peekUndoOperation());
+    expect(h.updateAnnotation.mock.calls[1][3].source).toBe('AI');
+    h.expectBucket('AI');
+    h.handle.destroy();
+  });
+
+  it('re-buckets an inline text edit when the server transfers ownership', async () => {
+    const h = await createSplitOwnershipHarness();
+    const label = document.createElement('div');
+    label.className = 'annotation-label label-expanded label-editing';
+    label.dataset.fullText = h.annotation.content;
+    h.marker.appendChild(label);
+    h.updateAnnotation.mockResolvedValueOnce({
+      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: 'Edited inline' },
+    });
+    await window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline');
+    expect(h.updateAnnotation.mock.calls[0][3]).toEqual({ content: 'Edited inline' });
+    h.expectBucket('HUMAN');
+    h.handle.destroy();
+  });
+
+  it('re-buckets a sidebar text edit when the server transfers ownership', async () => {
+    const h = await createSplitOwnershipHarness();
+    h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
+    const textarea = document.getElementById('edit-annotation-text-owned-comment');
+    expect(textarea).not.toBeNull();
+    textarea.value = 'Edited feedback';
+    h.updateAnnotation.mockResolvedValueOnce({
+      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: textarea.value },
+    });
+    await h.controller.saveAnnotationEdit('owned-comment');
+    expect(h.updateAnnotation.mock.calls[0][3]).toEqual({ content: 'Edited feedback' });
+    h.expectBucket('HUMAN');
+    h.handle.destroy();
   });
 
   it('derives the task group key from task id, check id, or label text', async () => {

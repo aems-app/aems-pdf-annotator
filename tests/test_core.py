@@ -370,6 +370,58 @@ class TestPDFAnnotator:
             assert ann["original_source"] == "AI"
             assert ann["grader_name"] == "Reader Grader"
 
+    @pytest.mark.parametrize("kind,cross_page,explicit_source,move", [
+        (AnnotationType.TEXT, False, False, True),
+        (AnnotationType.TEXT, False, True, True),
+        (AnnotationType.TEXT, True, False, True),
+        (AnnotationType.TEXT, True, True, True),
+        (AnnotationType.HIGHLIGHT, False, False, True),
+        (AnnotationType.HIGHLIGHT, False, True, True),
+        (AnnotationType.HIGHLIGHT, False, True, False),
+        (AnnotationType.TEXT, False, False, False),
+    ])
+    def test_ownership_move_roundtrip_preserves_teacher_author(
+        self, sample_pdf, tmp_path, kind, cross_page, explicit_source, move,
+    ):
+        with PDFAnnotator(sample_pdf) as annotator:
+            annotator.doc.new_page(width=612, height=792)
+            annotator.add_annotation(PDFAnnotation(
+                id="ownership-roundtrip", page_index=0,
+                bbox=BBox(x0=50, y0=50, x1=200, y1=80),
+                kind=kind, color=AnnotationColor.GREEN,
+                comment="Teacher feedback", grader_name="Artem Kulachenko",
+                source=AnnotationSource.AI,
+            ))
+            page = annotator.doc[0]
+            pdf_annotation = next(page.annots())
+            original_author = pdf_annotation.info["title"]
+            assert original_author == "Artem Kulachenko"
+            old_rect = tuple(pdf_annotation.rect)
+            kwargs = {}
+            if move:
+                kwargs["new_rect"] = tuple(value + 10 for value in old_rect)
+            elif not explicit_source:
+                kwargs["new_rect"] = old_rect
+            if cross_page:
+                kwargs["new_page_index"] = 1
+            if explicit_source:
+                kwargs["new_source"] = "HUMAN"
+            result = annotator.update_annotation("ownership-roundtrip", **kwargs)
+            assert result[0] if isinstance(result, tuple) else result
+            output = tmp_path / "ownership-roundtrip.pdf"
+            annotator.doc.save(str(output))
+
+        with PDFAnnotator(output) as reopened:
+            target_page = 1 if cross_page else 0
+            entry = reopened.get_annotations_on_page(target_page)[0]
+            expected_source = "HUMAN" if move or explicit_source else "AI"
+            assert entry["source"] == expected_source
+            if expected_source == "HUMAN":
+                assert entry["original_source"] == "AI"
+            assert entry["grader_name"] == original_author
+            page = reopened.doc[target_page]
+            assert next(page.annots()).info["title"] == original_author
+
     def test_delete_annotation_refreshes_by_xref_with_load_annot(self, sample_pdf):
         """Deletion should reload by xref directly instead of scanning all annotations."""
         with PDFAnnotator(sample_pdf) as annotator:

@@ -4160,9 +4160,9 @@
                             }
                         }
 
-                        // For same-page undo, update marker position in-place
-                        // to avoid destroying IntersectionObserver tracking
-                        if (isSamePageUndo) {
+                        // Position-only undo can preserve the existing marker/list.
+                        // Ownership undo must refresh source badges and both buckets.
+                        if (isSamePageUndo && !operation.isOwnershipTransfer) {
                             _suppressSidebarRender = true;
                             const pageNum = operation.oldPageIdx + 1;
                             const container = document.getElementById('pdfGradedContainer');
@@ -4180,11 +4180,12 @@
                                 }
                             }
                             setTimeout(() => { _suppressSidebarRender = false; }, 300);
-                            // Sidebar content unchanged for same-page undo
                         } else {
-                            renderAnnotationsList();
                             renderAnnotationsForPage(operation.oldPageIdx + 1, true);
-                            renderAnnotationsForPage(operation.newPageIdx + 1, true);
+                            if (!isSamePageUndo) {
+                                renderAnnotationsForPage(operation.newPageIdx + 1, true);
+                            }
+                            renderAnnotationsList();
                         }
                     }
 
@@ -5829,7 +5830,22 @@
             const data = await updateAnnotationRequest(apiIdentifier, { source: 'HUMAN' });
             if (!data || !data.success) {
                 revertAnchoredOwnership(marker);
+                return;
             }
+            // The optimistic marker source is not the sidebar's model. Commit
+            // the persisted ownership before asking the lists to re-bucket it.
+            const pageIdx = parseInt(marker.dataset.annotationPage, 10);
+            const annIdx = findAnnotationIndex(pageIdx, identifier);
+            if (annIdx >= 0) {
+                const previous = annotationsData[pageIdx][annIdx];
+                annotationsData[pageIdx][annIdx] = enhanceAnnotationEntry(data.annotation || {
+                    ...previous,
+                    source: 'HUMAN',
+                    original_source: previous.original_source || 'AI',
+                });
+            }
+            markLocalAnnotationChange();
+            renderAnnotationsList();
         } catch (err) {
             debugLog('[TETHER] Failed to persist ownership transfer:', err);
             revertAnchoredOwnership(marker);
@@ -9422,6 +9438,9 @@
         return createPdfPreviewModal(normalizePackageOptions(options));
     };
     window.PdfPreviewModal.__test = {
+        saveAndCollapseInlineLabel,
+        persistAnchoredOwnershipTransfer,
+        updateAnnotationPosition,
         setPendingDrawingSaves: function (n) {
             _pendingDrawingSaveTokens = new Set();
             for (var i = 0; i < n; i += 1) beginDrawingSave();

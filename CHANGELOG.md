@@ -2,6 +2,12 @@
 
 All notable changes to `aems-pdf-annotator` are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/) and the project uses [SemVer](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- Split-view comments now move to the teacher panel after a text-anchored ownership transfer, and back to the AI panel when undoing a same-page ownership move. PDF author naming is unchanged.
+
 ## 0.3.0 — 2026-05-21
 
 Sidebar action wiring + PDF render reliability fixes uncovered during the hosted-Canvas live verification on `api.aems.app`. All changes are in the `web/annotator-ui` bundle; the Python rendering API is unchanged.
