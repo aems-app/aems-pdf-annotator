@@ -138,6 +138,37 @@ def _pymupdf_rect_to_pdf(
     return (rect.x0, page_height - rect.y1, rect.x1, page_height - rect.y0)
 
 
+# A note icon's CENTRE stays within this fraction of the page width from either edge.
+# AEMS's grading-quality ruler measures a marker at its icon centre and requires it
+# in [0.05, 0.95]; placing the icon's corner at 0.95 left the centre at ~0.965.
+NOTE_ICON_CENTRE_MARGIN = 0.05
+
+
+def _keep_note_icon_centre_on_page(page: Any, annot: Any) -> None:
+    """Shift a just-created note so its icon centre lies inside the page's x margins.
+
+    Uses the icon rect PyMuPDF actually drew, so it holds for any page size and icon
+    size. Only unrotated pages: on a rotated page the rect and the page's visual
+    width are in different spaces. A note already inside the margins is untouched.
+    """
+    if getattr(page, "rotation", 0):
+        return
+    rect = annot.rect
+    width = float(page.rect.width)
+    if width <= 0:
+        return
+    half = (rect.x1 - rect.x0) / 2.0
+    centre = rect.x0 + half
+    # Half a point inside each bound: the rect is stored at PDF float precision.
+    low = NOTE_ICON_CENTRE_MARGIN * width + 0.5
+    high = (1.0 - NOTE_ICON_CENTRE_MARGIN) * width - 0.5
+    target = min(max(centre, low), high)
+    if abs(target - centre) < 1e-6:
+        return
+    shift = target - centre
+    annot.set_rect(fitz.Rect(rect.x0 + shift, rect.y0, rect.x1 + shift, rect.y1))
+
+
 def _pdf_rect_to_pymupdf(
     rect: Sequence[float],
     page_height: float,
@@ -502,6 +533,7 @@ class PDFAnnotator:
                     annotation.format_comment(),
                     icon=icon,  # Add icon parameter
                 )
+                _keep_note_icon_centre_on_page(page, annot)
                 # Set color for text notes to match the requested priority
                 annot.set_colors(stroke=rgb)
 

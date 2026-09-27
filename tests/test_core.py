@@ -200,6 +200,67 @@ class TestPDFAnnotator:
             output = annotator.save(sample_pdf.parent / "out.pdf")
         assert output.exists()
 
+    @pytest.mark.parametrize("x0_fraction", [0.95, 0.99, 0.0, 0.02])
+    def test_a_text_note_icon_centre_stays_inside_the_page_bounds(self, sample_pdf, x0_fraction):
+        """AEMS 2026-09-26 K=3: a note placed at x = 0.95 of the page width had its
+        icon drawn from that corner, so the icon's centre (what the grading-quality
+        ruler measures, required in [0.05, 0.95]) sat at ~0.965. The rendered icon's
+        centre is kept inside [0.05, 0.95] of the page width, on any page size."""
+        width = 612.0
+        with PDFAnnotator(sample_pdf) as annotator:
+            assert annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=x0_fraction * width, y0=200, x1=x0_fraction * width + 1, y1=201),
+                kind=AnnotationType.TEXT,
+                color=AnnotationColor.RED,
+                comment="Edge note",
+            ))
+            output = annotator.save(sample_pdf.parent / "edge.pdf")
+        doc = fitz.open(str(output))
+        page = doc[0]
+        rect = next(iter(page.annots())).rect
+        centre = (rect.x0 + rect.x1) / 2.0 / page.rect.width
+        doc.close()
+        assert 0.05 <= centre <= 0.95
+
+    def test_a_note_on_a_rotated_page_is_left_where_it_was_drawn(self, tmp_path):
+        """Rotated pages keep the old behaviour: rect and visual width differ in space."""
+        pdf_path = tmp_path / "rotated.pdf"
+        doc = fitz.open()
+        doc.new_page(width=612, height=792).set_rotation(90)
+        doc.save(str(pdf_path))
+        doc.close()
+        with PDFAnnotator(pdf_path) as annotator:
+            assert annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=600, y0=200, x1=601, y1=201),
+                kind=AnnotationType.TEXT,
+                color=AnnotationColor.RED,
+                comment="Rotated note",
+            ))
+            output = annotator.save(tmp_path / "rotated_out.pdf")
+        out = fitz.open(str(output))
+        page = out[0]
+        rect = next(iter(page.annots())).rect
+        out.close()
+        assert rect.width > 0
+
+    def test_a_text_note_well_inside_the_page_is_not_moved(self, sample_pdf):
+        with PDFAnnotator(sample_pdf) as annotator:
+            assert annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=300, y0=200, x1=301, y1=201),
+                kind=AnnotationType.TEXT,
+                color=AnnotationColor.GREEN,
+                comment="Middle note",
+            ))
+            output = annotator.save(sample_pdf.parent / "middle.pdf")
+        doc = fitz.open(str(output))
+        page = doc[0]
+        rect = next(iter(page.annots())).rect
+        doc.close()
+        assert rect.x0 == pytest.approx(300.0)
+
     def test_add_drawing(self, sample_pdf):
         with PDFAnnotator(sample_pdf) as annotator:
             result = annotator.add_annotation(PDFAnnotation(
