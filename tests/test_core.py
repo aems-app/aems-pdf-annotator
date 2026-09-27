@@ -223,8 +223,8 @@ class TestPDFAnnotator:
         doc.close()
         assert 0.05 <= centre <= 0.95
 
-    def test_a_note_on_a_rotated_page_is_left_where_it_was_drawn(self, tmp_path):
-        """Rotated pages keep the old behaviour: rect and visual width differ in space."""
+    def test_a_note_on_a_rotated_page_is_left_as_drawn(self, tmp_path):
+        """Known limitation: rotated pages are not clamped yet (see the helper's docstring)."""
         pdf_path = tmp_path / "rotated.pdf"
         doc = fitz.open()
         doc.new_page(width=612, height=792).set_rotation(90)
@@ -233,7 +233,8 @@ class TestPDFAnnotator:
         with PDFAnnotator(pdf_path) as annotator:
             assert annotator.add_annotation(PDFAnnotation(
                 page_index=0,
-                bbox=BBox(x0=600, y0=200, x1=601, y1=201),
+                # On a 90-degree page visual x = 792 - y: y = 2 is the right visual edge.
+                bbox=BBox(x0=300, y0=2, x1=301, y1=3),
                 kind=AnnotationType.TEXT,
                 color=AnnotationColor.RED,
                 comment="Rotated note",
@@ -243,7 +244,44 @@ class TestPDFAnnotator:
         page = out[0]
         rect = next(iter(page.annots())).rect
         out.close()
-        assert rect.width > 0
+        assert rect.x0 == pytest.approx(300.0)
+
+    def test_moving_a_note_to_the_page_edge_keeps_its_centre_inside(self, sample_pdf):
+        """A review-UI move sets the rect directly (Codex review): it is clamped too."""
+        with PDFAnnotator(sample_pdf) as annotator:
+            assert annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=300, y0=200, x1=301, y1=201),
+                kind=AnnotationType.TEXT,
+                color=AnnotationColor.RED,
+                comment="Moved note",
+            ))
+            page = annotator.doc[0]
+            xref = next(iter(page.annots())).xref
+            assert annotator.update_annotation(str(xref), new_rect=(600.0, 200.0, 616.0, 216.0))
+            output = annotator.save(sample_pdf.parent / "moved.pdf")
+        doc = fitz.open(str(output))
+        page = doc[0]
+        rect = next(iter(page.annots())).rect
+        centre = (rect.x0 + rect.x1) / 2.0 / page.rect.width
+        doc.close()
+        assert 0.05 <= centre <= 0.95
+
+    def test_a_highlight_is_never_moved_by_the_note_clamp(self, sample_pdf):
+        with PDFAnnotator(sample_pdf) as annotator:
+            assert annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=560, y0=60, x1=611, y1=80),
+                kind=AnnotationType.HIGHLIGHT,
+                color=AnnotationColor.GREEN,
+                comment="Edge highlight",
+            ))
+            output = annotator.save(sample_pdf.parent / "hl.pdf")
+        doc = fitz.open(str(output))
+        page = doc[0]
+        rect = next(iter(page.annots())).rect
+        doc.close()
+        assert rect.x1 > 600
 
     def test_a_text_note_well_inside_the_page_is_not_moved(self, sample_pdf):
         with PDFAnnotator(sample_pdf) as annotator:

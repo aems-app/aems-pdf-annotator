@@ -145,12 +145,17 @@ NOTE_ICON_CENTRE_MARGIN = 0.05
 
 
 def _keep_note_icon_centre_on_page(page: Any, annot: Any) -> None:
-    """Shift a just-created note so its icon centre lies inside the page's x margins.
+    """Shift a text note so its icon centre lies inside the page's visual x margins.
 
-    Uses the icon rect PyMuPDF actually drew, so it holds for any page size and icon
-    size. Only unrotated pages: on a rotated page the rect and the page's visual
-    width are in different spaces. A note already inside the margins is untouched.
+    Called wherever a note is created or its rect is set (render, review-UI move,
+    cross-page move). Uses the icon rect PyMuPDF actually drew, so it holds for any
+    page size and icon size. Rotated pages are left as drawn: PyMuPDF's note rect on
+    a rotated page does not map through rotation_matrix as a plain rect (measured
+    2026-09-27), so a shift there is not yet verified. Other annotation kinds and
+    notes already inside the margins are untouched.
     """
+    if getattr(annot, "type", (None,))[0] != fitz.PDF_ANNOT_TEXT:
+        return
     if getattr(page, "rotation", 0):
         return
     rect = annot.rect
@@ -1568,6 +1573,7 @@ class PDFAnnotator:
             if new_rect is not None:
                 x0, y0, x1, y1 = new_rect
                 annot.set_rect(fitz.Rect(x0, y0, x1, y1))
+                _keep_note_icon_centre_on_page(page, annot)
                 annot.update()
 
             # Update color if provided
@@ -1863,6 +1869,7 @@ class PDFAnnotator:
                 position = fitz.Point(rect.x0, rect.y0)
                 icon = subject_metadata.get("icon") or "Note"
                 new_annot = target_page.add_text_annot(position, content, icon=icon)
+                _keep_note_icon_centre_on_page(target_page, new_annot)
                 source_opacity = getattr(annot, "opacity", None)
                 if source_opacity is not None:
                     try:
@@ -1927,6 +1934,7 @@ class PDFAnnotator:
             else:
                 position = fitz.Point(rect.x0, rect.y0)
                 new_annot = target_page.add_text_annot(position, content)
+                _keep_note_icon_centre_on_page(target_page, new_annot)
 
             if not new_annot:
                 logger.error("Failed to create annotation on target page")
