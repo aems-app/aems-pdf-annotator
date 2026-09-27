@@ -154,16 +154,28 @@ def _keep_note_icon_centre_on_page(page: Any, annot: Any) -> None:
     2026-09-27), so a shift there is not yet verified. Other annotation kinds and
     notes already inside the margins are untouched.
     """
-    if getattr(annot, "type", (None,))[0] != fitz.PDF_ANNOT_TEXT:
+    annot_type = getattr(annot, "type", None)
+    if not isinstance(annot_type, (tuple, list)) or not annot_type:
+        return
+    if annot_type[0] != fitz.PDF_ANNOT_TEXT:
         return
     if getattr(page, "rotation", 0):
         return
     rect = annot.rect
-    width = float(page.rect.width)
-    if width <= 0:
+    # Duck-typed: callers (and tests that patch ``fitz``) may hand in a stand-in whose
+    # rect is not a real fitz.Rect; anything without numeric edges is left alone.
+    try:
+        x0, x1 = float(rect.x0), float(rect.x1)
+    except (AttributeError, TypeError, ValueError):
         return
-    half = (rect.x1 - rect.x0) / 2.0
-    centre = rect.x0 + half
+    try:
+        width = float(page.rect.width)
+    except (AttributeError, TypeError, ValueError):
+        return
+    if x1 < x0 or width <= 0:
+        return
+    half = (x1 - x0) / 2.0
+    centre = x0 + half
     # Half a point inside each bound: the rect is stored at PDF float precision.
     low = NOTE_ICON_CENTRE_MARGIN * width + 0.5
     high = (1.0 - NOTE_ICON_CENTRE_MARGIN) * width - 0.5
