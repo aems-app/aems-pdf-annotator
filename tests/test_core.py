@@ -562,3 +562,73 @@ class TestPDFAnnotator:
             points = annotator._extract_ink_points_pdf(annot, 100)
 
             assert points == [[10.0, 80.0], [30.0, 60.0]]
+
+def _raw_note_rect(path: Path) -> tuple[float, float, float, float]:
+    """The note's /Rect as stored (viewers draw this; PyMuPDF reports a fixed 16 pt)."""
+    doc = fitz.open(str(path))
+    annot = next(iter(doc[0].annots()))
+    raw = doc.xref_get_key(annot.xref, "Rect")[1].strip("[]").split()
+    doc.close()
+    return tuple(float(value) for value in raw)
+
+
+@pytest.fixture
+def photo_page_pdf(tmp_path) -> Path:
+    """A phone-photo page: 2566 x 3919 pt, as AEMS receives from phone uploads."""
+    pdf_path = tmp_path / "photo.pdf"
+    doc = fitz.open()
+    doc.new_page(width=2566, height=3919)
+    doc.save(str(pdf_path))
+    doc.close()
+    return pdf_path
+
+
+class TestNoteIconScale:
+    """AEMS 2026-10-04: on a 2566 pt phone-photo page the fixed 16 pt note icon was a 4 px dot
+    in Chrome's PDF viewer at fit-to-page; on a scanned A4 it is ~2.2% of the page width."""
+
+    def _add_note(self, path: Path, x0: float, y0: float) -> Path:
+        with PDFAnnotator(path) as annotator:
+            assert annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=x0, y0=y0, x1=x0 + 1, y1=y0 + 1),
+                kind=AnnotationType.TEXT,
+                color=AnnotationColor.GREEN,
+                comment="Note",
+            ))
+            return annotator.save(path.parent / "noted.pdf")
+
+    def test_a_note_on_a_photo_page_is_drawn_in_proportion_to_the_page(self, photo_page_pdf):
+        output = self._add_note(photo_page_pdf, 1000.0, 1200.0)
+        x0, y0, x1, y1 = _raw_note_rect(output)
+        assert (x1 - x0) == pytest.approx(16.0 * 2566 / 720, abs=0.5)
+        assert (y1 - y0) == pytest.approx(x1 - x0, abs=0.01)
+        doc = fitz.open(str(output))
+        reported = next(iter(doc[0].annots())).rect
+        doc.close()
+        # The anchor (top-left, what the grading ruler measures) does not move.
+        assert reported.x0 == pytest.approx(1000.0, abs=0.5)
+        assert reported.y0 == pytest.approx(1200.0, abs=0.5)
+
+    def test_a_note_on_a_letter_page_keeps_the_native_size(self, sample_pdf):
+        x0, _, x1, _ = _raw_note_rect(self._add_note(sample_pdf, 100.0, 200.0))
+        assert (x1 - x0) == pytest.approx(16.0, abs=0.5)
+
+    def test_a_scaled_icon_stays_on_the_page_at_the_bottom_right(self, photo_page_pdf):
+        x0, y0, x1, y1 = _raw_note_rect(self._add_note(photo_page_pdf, 2560.0, 3915.0))
+        assert x1 <= 2566.0 + 0.01 and y0 >= -0.01
+
+    def test_a_moved_note_keeps_its_scaled_size(self, photo_page_pdf):
+        with PDFAnnotator(photo_page_pdf) as annotator:
+            assert annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=500, y0=500, x1=501, y1=501),
+                kind=AnnotationType.TEXT,
+                color=AnnotationColor.RED,
+                comment="Moved",
+            ))
+            xref = next(iter(annotator.doc[0].annots())).xref
+            assert annotator.update_annotation(str(xref), new_rect=(800.0, 900.0, 816.0, 916.0))
+            output = annotator.save(photo_page_pdf.parent / "moved_photo.pdf")
+        x0, _, x1, _ = _raw_note_rect(output)
+        assert (x1 - x0) == pytest.approx(16.0 * 2566 / 720, abs=0.5)
