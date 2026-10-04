@@ -635,3 +635,37 @@ class TestNoteIconScale:
             output = annotator.save(photo_page_pdf.parent / "moved_photo.pdf")
         x0, _, x1, _ = _raw_note_rect(output)
         assert (x1 - x0) == pytest.approx(16.0 * 2566 / 720, abs=0.5)
+
+    def test_a_note_on_a_standard_page_is_left_exactly_as_placed(self, tmp_path):
+        """AEMS full suite 2026-10-04: on an A4 page the save-time pass rewrote a note that a
+        caller had sized itself, shrinking it and moving its anchor by 0.005 pt (two-decimal
+        /Rect). Pages up to the reference width are never touched."""
+        pdf_path = tmp_path / "a4.pdf"
+        doc = fitz.open()
+        doc.new_page(width=595, height=842)
+        doc.save(str(pdf_path))
+        doc.close()
+        x0, y0 = 0.845 * 595, 0.761 * 842
+        with PDFAnnotator(pdf_path) as annotator:
+            assert annotator.add_annotation(PDFAnnotation(
+                page_index=0,
+                bbox=BBox(x0=x0, y0=y0, x1=x0 + 1, y1=y0 + 1),
+                kind=AnnotationType.TEXT,
+                color=AnnotationColor.RED,
+                comment="Sized by the caller",
+            ))
+            page = annotator.doc[0]
+            note = next(iter(page.annots()))
+            note.set_rect(fitz.Rect(x0, y0, x0 + 20, y0 + 20))
+            output = annotator.save(tmp_path / "a4_out.pdf")
+        rx0, ry0, rx1, ry1 = _raw_note_rect(output)
+        assert rx1 - rx0 == pytest.approx(20.0, abs=1e-3)
+        assert rx0 == pytest.approx(x0, abs=1e-4)
+        assert ry1 == pytest.approx(842 - y0, abs=1e-4)
+
+    def test_a_scaled_note_keeps_its_anchor_to_a_ten_thousandth_of_a_point(self, photo_page_pdf):
+        x0, y0 = 1234.5678, 2345.6789
+        output = self._add_note(photo_page_pdf, x0, y0)
+        rx0, _, _, ry1 = _raw_note_rect(output)
+        assert rx0 == pytest.approx(x0, abs=1e-3)
+        assert ry1 == pytest.approx(3919 - y0, abs=1e-3)
