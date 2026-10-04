@@ -165,23 +165,22 @@ def _scale_note_icons(doc: Any) -> None:
         if getattr(page, "rotation", 0):
             continue
         page_rect = page.rect
-        size = max(
-            NOTE_ICON_SIZE, NOTE_ICON_SIZE * float(page_rect.width) / NOTE_ICON_REFERENCE_WIDTH
-        )
+        scale = float(page_rect.width) / NOTE_ICON_REFERENCE_WIDTH
+        if scale <= 1.0:
+            continue  # standard pages keep every note exactly as placed
         for annot in page.annots() or []:
             if annot.type[0] != fitz.PDF_ANNOT_TEXT:
                 continue
             rect = annot.rect
+            # Scale from the note's own size, so a caller-sized note keeps its proportion.
+            size = max(float(rect.width), NOTE_ICON_SIZE) * scale
             x0 = min(max(float(rect.x0), float(page_rect.x0)), float(page_rect.x1) - size)
             y0 = min(max(float(rect.y0), float(page_rect.y0)), float(page_rect.y1) - size)
-            target = fitz.Rect(x0, y0, x0 + size, y0 + size)
-            if abs(size - NOTE_ICON_SIZE) < 0.01 and target == rect:
-                continue
-            pdf_rect = target * ~page.transformation_matrix
+            pdf_rect = fitz.Rect(x0, y0, x0 + size, y0 + size) * ~page.transformation_matrix
             doc.xref_set_key(
                 annot.xref,
                 "Rect",
-                f"[{pdf_rect.x0:.2f} {pdf_rect.y0:.2f} {pdf_rect.x1:.2f} {pdf_rect.y1:.2f}]",
+                f"[{pdf_rect.x0:.4f} {pdf_rect.y0:.4f} {pdf_rect.x1:.4f} {pdf_rect.y1:.4f}]",
             )
 
 
