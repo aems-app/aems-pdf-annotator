@@ -566,7 +566,8 @@ class TestPDFAnnotator:
 def _raw_note_rect(path: Path) -> tuple[float, float, float, float]:
     """The note's /Rect as stored (viewers draw this; PyMuPDF reports a fixed 16 pt)."""
     doc = fitz.open(str(path))
-    annot = next(iter(doc[0].annots()))
+    page = doc[0]  # the page must outlive its annotation (PyMuPDF)
+    annot = next(iter(page.annots()))
     raw = doc.xref_get_key(annot.xref, "Rect")[1].strip("[]").split()
     doc.close()
     return tuple(float(value) for value in raw)
@@ -604,7 +605,8 @@ class TestNoteIconScale:
         assert (x1 - x0) == pytest.approx(16.0 * 2566 / 720, abs=0.5)
         assert (y1 - y0) == pytest.approx(x1 - x0, abs=0.01)
         doc = fitz.open(str(output))
-        reported = next(iter(doc[0].annots())).rect
+        page = doc[0]
+        reported = next(iter(page.annots())).rect
         doc.close()
         # The anchor (top-left, what the grading ruler measures) does not move.
         assert reported.x0 == pytest.approx(1000.0, abs=0.5)
@@ -627,7 +629,8 @@ class TestNoteIconScale:
                 color=AnnotationColor.RED,
                 comment="Moved",
             ))
-            xref = next(iter(annotator.doc[0].annots())).xref
+            page = annotator.doc[0]
+            xref = next(iter(page.annots())).xref
             assert annotator.update_annotation(str(xref), new_rect=(800.0, 900.0, 816.0, 916.0))
             output = annotator.save(photo_page_pdf.parent / "moved_photo.pdf")
         x0, _, x1, _ = _raw_note_rect(output)

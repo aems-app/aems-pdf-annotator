@@ -144,6 +144,47 @@ def _pymupdf_rect_to_pdf(
 NOTE_ICON_CENTRE_MARGIN = 0.05
 
 
+# A note icon is drawn at NOTE_ICON_SIZE points on a page this wide (a scanned A4 sheet);
+# wider pages (phone photos, 1700-2600 pt) get a proportionally larger icon so it keeps the
+# same share of the page in viewers that scale annotations with the page (Chrome's PDF
+# viewer draws a fixed 16 pt icon as a 4 px dot on a 2566 pt page at fit-to-page).
+NOTE_ICON_SIZE = 16.0
+NOTE_ICON_REFERENCE_WIDTH = 720.0
+
+
+def _scale_note_icons(doc: Any) -> None:
+    """Store every text note's /Rect in proportion to its page, anchored at its top-left.
+
+    PyMuPDF keeps a note's reported rect at its native icon size and rewrites /Rect on
+    update, so this runs just before saving. The appearance stream is unchanged: viewers
+    map its bounding box onto /Rect. The anchor (top-left, what the grading ruler reads)
+    does not move unless the enlarged icon would leave the page. Rotated pages are left
+    as drawn, as in _keep_note_icon_centre_on_page.
+    """
+    for page in doc:
+        if getattr(page, "rotation", 0):
+            continue
+        page_rect = page.rect
+        size = max(
+            NOTE_ICON_SIZE, NOTE_ICON_SIZE * float(page_rect.width) / NOTE_ICON_REFERENCE_WIDTH
+        )
+        for annot in page.annots() or []:
+            if annot.type[0] != fitz.PDF_ANNOT_TEXT:
+                continue
+            rect = annot.rect
+            x0 = min(max(float(rect.x0), float(page_rect.x0)), float(page_rect.x1) - size)
+            y0 = min(max(float(rect.y0), float(page_rect.y0)), float(page_rect.y1) - size)
+            target = fitz.Rect(x0, y0, x0 + size, y0 + size)
+            if abs(size - NOTE_ICON_SIZE) < 0.01 and target == rect:
+                continue
+            pdf_rect = target * ~page.transformation_matrix
+            doc.xref_set_key(
+                annot.xref,
+                "Rect",
+                f"[{pdf_rect.x0:.2f} {pdf_rect.y0:.2f} {pdf_rect.x1:.2f} {pdf_rect.y1:.2f}]",
+            )
+
+
 def _keep_note_icon_centre_on_page(page: Any, annot: Any) -> None:
     """Shift a text note so its icon centre lies inside the page's visual x margins.
 
@@ -2159,6 +2200,7 @@ class PDFAnnotator:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
+            _scale_note_icons(self.doc)
             output_resolved = output_path.resolve()
             source_resolved = self.pdf_path.resolve()
             # Use incremental save if overwriting, or full save if new file
