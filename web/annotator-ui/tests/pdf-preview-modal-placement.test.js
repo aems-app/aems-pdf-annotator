@@ -2787,5 +2787,112 @@ describe('pdf-preview-modal placement helpers', () => {
 
       expect(deleteAnnotation).toHaveBeenCalledTimes(2);
     });
+
+    // Review finding 1: a history step that started on one submission must neither send its request to, nor
+    // apply its answer on, another submission opened while it was in flight.
+    async function openOtherSubmission(h) {
+      h.handle.close();
+      const next = window.PdfPreviewModal.createPdfPreviewModal({
+        assignmentId: 'assignment-1', submissionId: 'submission-2', modeAdapter: h.adapter,
+      });
+      opened.push(next);
+      await next.open();
+      return next;
+    }
+
+    const pending = (request) => {
+      let finish;
+      request.mockImplementationOnce(() => new Promise((done) => { finish = done; }));
+      return (answer) => finish(answer);
+    };
+
+    const submissionsOf = (request) => request.mock.calls.map(([, submission]) => submission);
+
+    it('an undo answered after another submission opened changes nothing there', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      await settle();
+      const finishUndo = pending(h.updateAnnotation);
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+
+      const next = await openOtherSubmission(h);
+      const otherPage = next.getAnnotations();
+      finishUndo({ success: true, annotation: { ...h.annotation, content: 'Text of submission 1' } });
+      await settle();
+
+      expect(next.getAnnotations()).toEqual(otherPage);
+      expect(h.getUndoStacks()).toEqual({ local: [], controller: [] });
+      h.dispatchRedo();
+      await settle();
+      h.dispatchUndo();
+      await settle();
+      expect(submissionsOf(h.updateAnnotation)).toEqual(['submission-1', 'submission-1']);
+    });
+
+    it('a redo answered after another submission opened changes nothing there', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+      const finishRedo = pending(h.updateAnnotation);
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
+
+      const next = await openOtherSubmission(h);
+      const otherPage = next.getAnnotations();
+      finishRedo({ success: true, annotation: { ...h.annotation, content: 'Text of submission 1' } });
+      await settle();
+
+      expect(next.getAnnotations()).toEqual(otherPage);
+      expect(h.getUndoStacks()).toEqual({ local: [], controller: [] });
+      h.dispatchUndo();
+      await settle();
+      expect(submissionsOf(h.updateAnnotation)).toEqual(['submission-1', 'submission-1', 'submission-1']);
+    });
+
+    it('a highlight undo answered after another submission opened changes nothing there', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await h.controller.persistHighlightExtend(h.marker, h.annotation, {
+        pageIdx: 0, quadsPdf: [[50, 722, 220, 742]], anchorText: 'resized answer text',
+      });
+      await settle();
+      const finishUndo = pending(h.updateAnnotation);
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+
+      const next = await openOtherSubmission(h);
+      const otherPage = next.getAnnotations();
+      finishUndo({ success: true, annotation: { ...h.annotation, anchor_text: 'phrase of submission 1' } });
+      await settle();
+
+      expect(next.getAnnotations()).toEqual(otherPage);
+      expect(h.getUndoStacks()).toEqual({ local: [], controller: [] });
+      h.dispatchRedo();
+      await settle();
+      expect(submissionsOf(h.updateAnnotation)).toEqual(['submission-1', 'submission-1']);
+    });
+
+    it('a move undo still converting its geometry when another submission opens sends nothing', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await window.PdfPreviewModal.__test.updateAnnotationPosition(0, 0, 'owned-comment', h.marker, true);
+      await settle();
+      let finishPage;
+      window.__pdfGradedViewer.pdf.getPage = vi.fn(() => new Promise((done) => { finishPage = done; }));
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(window.__pdfGradedViewer.pdf.getPage).toHaveBeenCalled());
+
+      await openOtherSubmission(h);
+      finishPage({ view: [0, 0, 612, 792] });
+      await settle();
+
+      expect(submissionsOf(h.updateAnnotation)).toEqual(['submission-1']);
+      expect(h.getUndoStacks()).toEqual({ local: [], controller: [] });
+    });
   });
 });
