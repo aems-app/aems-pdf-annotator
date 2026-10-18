@@ -522,6 +522,73 @@ describe('pdf-preview-modal placement helpers', () => {
     h.handle.destroy();
   });
 
+  // Codex review of the #462 fix, round 2: overlapping sidebar and inline saves of one edit. The undo entry is
+  // decided when the response arrives, against the entry as it stands then, so whichever save lands second
+  // pushes nothing, and every Ctrl+Z restores a distinct earlier text.
+  function persistedEntry(h) {
+    return Object.values(h.options.getAnnotationsData()).flat()[0];
+  }
+
+  function pendingUpdate(h) {
+    let resolve;
+    h.updateAnnotation.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    return (content) => resolve({ success: true, annotation: { ...h.annotation, source: 'HUMAN', content } });
+  }
+
+  function stackedEdits() {
+    const { local, controller } = window.PdfPreviewModal.__test.getUndoStacks();
+    return [...local, ...controller].filter((op) => op.type === 'edit');
+  }
+
+  it('an inline save that lands after a sidebar save of the same edit pushes no second entry', async () => {
+    const h = await createSplitOwnershipHarness();
+    const label = inlineLabelFor(h, 'Teacher feedback');
+    const finishInline = pendingUpdate(h);
+    const inline = window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Second edit');
+    // The sidebar Save lands first and stores the same text.
+    const index = h.options.getAnnotationsData()[0].indexOf(persistedEntry(h));
+    h.options.getAnnotationsData()[0][index] = {
+      ...persistedEntry(h), content: 'Second edit', _originalContent: 'Second edit',
+    };
+    finishInline('Second edit');
+    await inline;
+    expect(stackedEdits()).toEqual([]);
+    h.handle.destroy();
+  });
+
+  it('a sidebar save that lands after an inline save of the same edit pushes no second entry', async () => {
+    const h = await createSplitOwnershipHarness();
+    h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
+    document.getElementById('edit-annotation-text-owned-comment').value = 'Second edit';
+    const finishSidebar = pendingUpdate(h);
+    const sidebar = h.controller.saveAnnotationEdit('owned-comment');
+    await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(1));
+    // The inline save lands first and stores the same text.
+    const index = h.options.getAnnotationsData()[0].indexOf(persistedEntry(h));
+    h.options.getAnnotationsData()[0][index] = {
+      ...persistedEntry(h), content: 'Second edit', _originalContent: 'Second edit',
+    };
+    finishSidebar('Second edit');
+    await sidebar;
+    expect(stackedEdits()).toEqual([]);
+    h.handle.destroy();
+  });
+
+  it('Ctrl+Z after a sidebar save restores the persisted text, not an unsaved draft', async () => {
+    const h = await createSplitOwnershipHarness();
+    h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
+    persistedEntry(h).content = 'Edited feedback'; // a draft kept in content, as the priority path does
+    document.getElementById('edit-annotation-text-owned-comment').value = 'Edited feedback';
+    h.updateAnnotation.mockResolvedValueOnce({
+      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: 'Edited feedback' },
+    });
+    await h.controller.saveAnnotationEdit('owned-comment');
+    h.dispatchUndo();
+    await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+    expect(h.updateAnnotation.mock.calls[1][3].content).toBe('Teacher feedback');
+    h.handle.destroy();
+  });
+
   it('Ctrl+Z restores a sidebar text edit and its source', async () => {
     const h = await createSplitOwnershipHarness();
     h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
