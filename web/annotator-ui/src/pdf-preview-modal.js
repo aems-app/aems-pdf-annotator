@@ -4111,7 +4111,9 @@
     const HISTORY_APPLIED = 'applied'; // done: the operation moves to the other stack
     const HISTORY_FAILED = 'failed'; // not done but may work later: the operation stays where it was
     const HISTORY_DROPPED = 'dropped'; // cannot be done, e.g. its annotation is gone: the operation is discarded
-    const HISTORY_STALE = 'stale'; // began on a document that is no longer open: nothing of it is kept
+    // Began on a document that is no longer open. performUndo and performRedo act on no other outcome than
+    // applied and failed, so nothing of a stale step is kept: that document's history went with it.
+    const HISTORY_STALE = 'stale';
 
     const STALE_HISTORY_STEP = new Error('The history step belongs to a document that is no longer open.');
 
@@ -4736,10 +4738,6 @@
 
         try {
             const outcome = await undoOperation(entry.operation, step);
-            if (outcome === HISTORY_STALE) {
-                // Its document closed meanwhile; that document's history went with it.
-                return;
-            }
             if (outcome === HISTORY_FAILED) {
                 // Push operation back onto the stacks it came from if failed
                 restoreUndoEntry(entry);
@@ -4775,10 +4773,6 @@
         try {
             // Only operations canRedoOperation admitted are on the redo stack.
             const outcome = await REDO_STEPS[entry.operation.type].redo(entry.operation, step);
-            if (outcome === HISTORY_STALE) {
-                // Its document closed meanwhile; that document's history went with it.
-                return;
-            }
             if (outcome === HISTORY_APPLIED) {
                 restoreUndoEntry(entry);
             } else if (outcome === HISTORY_FAILED && !step.overtaken()) {
