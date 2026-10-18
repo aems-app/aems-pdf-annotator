@@ -4449,8 +4449,7 @@
             return HISTORY_APPLIED;
         } catch (fieldErr) {
             console.error(`Failed to ${verb} ${operation.type}:`, fieldErr);
-            showToast('error', failureMessage);
-            return HISTORY_FAILED;
+            return historyRequestFailure(fieldErr, failureMessage);
         }
     }
 
@@ -4540,8 +4539,7 @@
             return HISTORY_APPLIED;
         } catch (redoErr) {
             console.error('Failed to redo delete-markup:', redoErr);
-            showToast('error', 'Failed to redo deletion');
-            return HISTORY_FAILED;
+            return historyRequestFailure(redoErr, 'Failed to redo deletion');
         }
     }
 
