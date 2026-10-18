@@ -496,7 +496,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         // Undo
         // -----------------------------------------------------------------
 
-        function pushUndoOperation(operation) {
+        // options.preserveRedo marks a redo putting its operation back (issue #540): the host mirror must keep
+        // its redo history, which any other push clears.
+        function pushUndoOperation(operation, options) {
             if (_isUndoing) return;
             if (operation && !operation.undoTimestamp) {
                 operation.undoTimestamp = Date.now();
@@ -507,7 +509,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
             _syncAnnotationsState({ undoStack: _undoStack.slice() });
             if (typeof _h.pushUndoOperation === 'function') {
-                _h.pushUndoOperation(operation);
+                _h.pushUndoOperation(operation, options);
             }
         }
 
@@ -534,6 +536,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         function clearUndoStack() {
             _undoStack = [];
             _syncAnnotationsState({ undoStack: [] });
+            // Nothing undone can be redone once the history it came from is gone.
+            if (typeof _h.clearRedoStack === 'function') {
+                _h.clearRedoStack();
+            }
         }
 
         function _cloneRect(rect) {
@@ -854,11 +860,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 ? _h.resolveAnnotationSource(annotation)
                 : ((annotation && annotation.source) || 'HUMAN');
 
-            var data = await _h.updateAnnotationRequest(apiIdentifier, {
+            var requestBody = {
                 quads: payload.quadsPdf,
                 anchor_text: payload.anchorText,
                 source: 'HUMAN',
-            });
+            };
+            var data = await _h.updateAnnotationRequest(apiIdentifier, requestBody);
             if (!data || !data.success) {
                 return data || { success: false };
             }
@@ -910,6 +917,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 oldSource: oldSource,
                 newSource: 'HUMAN',
                 isOwnershipTransfer: oldSource === 'AI',
+                // Redo replays this exact request: the PDF-space quads it sent are not recoverable from
+                // newQuads, which hold the response's top-left quads when the server echoed them.
+                redoBody: _cloneHighlightRequest(requestBody),
             });
 
             var operation = peekUndoOperation();
@@ -927,9 +937,40 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             return data;
         }
 
-        async function performHighlightExtendUndo(operation) {
-            if (!operation || operation.type !== 'highlight-extend') {
-                throw new Error('Invalid highlight extend undo operation.');
+        // The request and the resulting local state for one step through a highlight extend's history: undo
+        // restores the recorded pre-extend state, redo replays the recorded extend request (issue #540).
+        function _cloneHighlightRequest(body) {
+            return Object.assign({}, body, { quads: _cloneQuads(body.quads) });
+        }
+
+        async function _highlightExtendStep(operation, isRedo) {
+            // The highlight as the operation recorded it after the extend (redo) or before it (undo).
+            var side = isRedo ? 'new' : 'old';
+            var targetState = {
+                quads: _cloneQuads(operation[side + 'Quads']),
+                anchor_text: operation[side + 'AnchorText'],
+                rect: _cloneRect(operation[side + 'Rect']),
+                source: operation[side + 'Source'],
+            };
+            if (isRedo) {
+                return { updateData: _cloneHighlightRequest(operation.redoBody), targetState: targetState };
+            }
+            var updateData = {
+                quads: await _convertTopLeftQuadsToPdf(operation.oldQuads, operation.pageIdx),
+                anchor_text: operation.oldAnchorText,
+                rect: await _convertTopLeftRectToPdf(operation.oldRect, operation.pageIdx),
+            };
+            if (operation.oldSource) {
+                updateData.source = operation.oldSource;
+            }
+            return { updateData: updateData, targetState: targetState };
+        }
+
+        async function _applyHighlightExtendStep(operation, isRedo) {
+            var direction = isRedo ? 'redo' : 'undo';
+            // A redo needs the request it replays; an extend recorded without one cannot be redone.
+            if (!operation || operation.type !== 'highlight-extend' || (isRedo && !operation.redoBody)) {
+                throw new Error('Invalid highlight extend ' + direction + ' operation.');
             }
             if (!_h.buildApiAnnotationIdentifier || !_h.updateAnnotationRequest) {
                 throw new Error('Annotation update helpers are unavailable.');
@@ -937,32 +978,17 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
             // A highlight PUT deletes and recreates the PDF annotation. Resolve
             // against live state now: operation.xref may already be obsolete
-            // after a newer extend, undo, move, or delete-undo.
+            // after a newer extend, undo, redo, move, or delete-undo.
             var currentTarget = _resolveCurrentUndoTarget(operation.pageIdx, operation);
             if (!currentTarget) {
                 return _dropMissingHighlightUndo();
             }
 
-            var oldQuadsPdf = await _convertTopLeftQuadsToPdf(
-                operation.oldQuads,
-                operation.pageIdx
-            );
-            var oldRectPdf = await _convertTopLeftRectToPdf(
-                operation.oldRect,
-                operation.pageIdx
-            );
-            var updateData = {
-                quads: oldQuadsPdf,
-                anchor_text: operation.oldAnchorText,
-                rect: oldRectPdf,
-            };
-            if (operation.oldSource) {
-                updateData.source = operation.oldSource;
-            }
+            var step = await _highlightExtendStep(operation, isRedo);
 
             var data;
             try {
-                data = await _h.updateAnnotationRequest(currentTarget.apiIdentifier, updateData);
+                data = await _h.updateAnnotationRequest(currentTarget.apiIdentifier, step.updateData);
             } catch (error) {
                 if (_isMissingAnnotationFailure(error)) {
                     return _dropMissingHighlightUndo();
@@ -973,36 +999,38 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 if (_isMissingAnnotationFailure(data)) {
                     return _dropMissingHighlightUndo();
                 }
-                throw new Error((data && data.error) || 'Highlight extend undo failed.');
+                throw new Error((data && data.error) || 'Highlight extend ' + direction + ' failed.');
             }
 
-            var fallbackState = {
-                quads: _cloneQuads(operation.oldQuads),
-                anchor_text: operation.oldAnchorText,
-                rect: _cloneRect(operation.oldRect),
-                source: operation.oldSource,
-            };
             var updatedAnnotation = _replaceAnnotationFromResponse(
                 operation.pageIdx,
                 operation,
                 data.annotation || null,
-                fallbackState
+                step.targetState
             );
             _updateHighlightMarkerSource(
                 operation,
                 updatedAnnotation,
-                operation.oldSource || 'HUMAN'
+                step.targetState.source || 'HUMAN'
             );
             markLocalChange();
             _renderAfterMutation({ forceRender: true });
 
-            if (operation.isOwnershipTransfer && _h.showToast) {
+            if (!isRedo && operation.isOwnershipTransfer && _h.showToast) {
                 var message = _h.translatePdfPreviewText
                     ? _h.translatePdfPreviewText('Ownership reverted to AI')
                     : 'Ownership reverted to AI';
                 _h.showToast('success', message);
             }
             return data;
+        }
+
+        async function performHighlightExtendUndo(operation) {
+            return _applyHighlightExtendStep(operation, false);
+        }
+
+        async function performHighlightExtendRedo(operation) {
+            return _applyHighlightExtendStep(operation, true);
         }
 
         // -----------------------------------------------------------------
@@ -3191,6 +3219,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             clearUndoStack: clearUndoStack,
             persistHighlightExtend: persistHighlightExtend,
             performHighlightExtendUndo: performHighlightExtendUndo,
+            performHighlightExtendRedo: performHighlightExtendRedo,
 
             // --- Polling ---
             markLocalChange: markLocalChange,

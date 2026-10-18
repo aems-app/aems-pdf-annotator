@@ -3299,6 +3299,11 @@
     const MAX_UNDO_STACK_SIZE = 50;
     let undoStack = [];
     let isUndoing = false; // Flag to prevent adding undo entries during undo operation
+    // Redo stack (issue #540): the operations undone since the last new one, as { operation, fromController }.
+    // fromController records that undo took the operation from the annotation controller's stack, so redo puts
+    // it back there as well as here and the two undo stacks keep agreeing. Capped like the undo stack.
+    let redoStack = [];
+    let isRedoing = false;
     const pdfSearchState = {
         term: '',
         matches: [],
@@ -3417,25 +3422,52 @@
     }
 
     // Undo functionality
-    function pushUndoOperation(operation) {
-        if (isUndoing) {
-            // Don't record undo operations while we're undoing
+    // options.preserveRedo marks a redo putting its operation back. Any other push is a new operation, after
+    // which the undone operations no longer follow from the current state, so it clears the redo history.
+    function pushUndoOperation(operation, options) {
+        const preserveRedo = !!(options && options.preserveRedo);
+        if (isUndoing || (isRedoing && !preserveRedo)) {
+            // Don't record undo operations while an undo or a redo is applying one
             return;
+        }
+        if (!preserveRedo) {
+            clearRedoStack();
         }
         if (operation && !operation.undoTimestamp) {
             operation.undoTimestamp = Date.now();
         }
 
-        undoStack.push(operation);
-
-        // Limit stack size to prevent memory issues
-        if (undoStack.length > MAX_UNDO_STACK_SIZE) {
-            undoStack.shift();
-        }
-
+        pushBounded(undoStack, operation);
     }
 
-    function getNextUndoOperation() {
+    // Ctrl+Z undoes; Ctrl+Y and Ctrl+Shift+Z redo (issue #540); Cmd stands in for Ctrl on macOS. With Shift
+    // held some browsers report the key in upper case, so redo matches either case.
+    function resolveHistoryShortcut(event) {
+        if (!(event.ctrlKey || event.metaKey)) {
+            return null;
+        }
+        const key = String(event.key || '');
+        const lowerKey = key.toLowerCase();
+        if ((lowerKey === 'z' && event.shiftKey) || (lowerKey === 'y' && !event.shiftKey)) {
+            return 'redo';
+        }
+        return key === 'z' && !event.shiftKey ? 'undo' : null;
+    }
+
+    // Push onto a history stack, dropping its oldest entry past the size limit to prevent memory issues.
+    function pushBounded(stack, entry) {
+        stack.push(entry);
+        if (stack.length > MAX_UNDO_STACK_SIZE) {
+            stack.shift();
+        }
+    }
+
+    function clearRedoStack() {
+        redoStack = [];
+    }
+
+    // The next operation to undo, from whichever stack holds the newer one, as { operation, fromController }.
+    function takeNextUndoEntry() {
         const localOperation = undoStack.length > 0 ? undoStack[undoStack.length - 1] : null;
         const controllerOperation = _currentAnnotationCtrl && !_annotationCtrlDelegating &&
             _currentAnnotationCtrl.peekUndoOperation
@@ -3463,15 +3495,19 @@
             if (localOperation && isSameUndoOperation(localOperation, controllerOperation)) {
                 undoStack.pop();
             }
-            return _currentAnnotationCtrl.popUndoOperation
+            const operation = _currentAnnotationCtrl.popUndoOperation
                 ? _currentAnnotationCtrl.popUndoOperation()
                 : controllerOperation;
+            return { operation, fromController: true };
         }
 
-        if (controllerOperation && isSameUndoOperation(localOperation, controllerOperation) && _currentAnnotationCtrl.popUndoOperation) {
+        const consumesControllerCopy = !!(controllerOperation
+            && isSameUndoOperation(localOperation, controllerOperation)
+            && _currentAnnotationCtrl.popUndoOperation);
+        if (consumesControllerCopy) {
             _currentAnnotationCtrl.popUndoOperation();
         }
-        return undoStack.pop();
+        return { operation: undoStack.pop(), fromController: consumesControllerCopy };
     }
 
     function findAnnotationIndexByUndoOperation(pageIdx, operation) {
@@ -4045,13 +4081,488 @@
         });
     })();
 
+    // Outcomes of applying one step of annotation history, an undo or a redo.
+    const HISTORY_APPLIED = 'applied'; // done: the operation moves to the other stack
+    const HISTORY_FAILED = 'failed'; // not done but may work later: the operation stays where it was
+    const HISTORY_DROPPED = 'dropped'; // cannot be done, e.g. its annotation is gone: the operation is discarded
+
+    // A failed request of a history step: dropped when its annotation no longer exists, kept otherwise.
+    function historyRequestFailure(error, message) {
+        if (isMissingAnnotationFailure(error)) {
+            dropMissingHighlightUndo();
+            return HISTORY_DROPPED;
+        }
+        showToast('error', message);
+        return HISTORY_FAILED;
+    }
+
+    // A copy of a recorded request body that later changes to either side cannot reach.
+    function cloneHistoryBody(body) {
+        const copy = Object.assign({}, body);
+        if (Array.isArray(copy.rect)) copy.rect = copy.rect.slice();
+        if (Array.isArray(copy.quads)) copy.quads = cloneHighlightQuads(copy.quads);
+        return copy;
+    }
+
+    // Where an annotation a history step recreated now lives, in the shape resolveCurrentUndoTarget looks up.
+    function recreatedHistoryTarget(annotation, pageIdx) {
+        return {
+            identifier: annotation.identifier,
+            requestId: annotation.requestIdentifier,
+            xref: annotation.xref != null ? String(annotation.xref) : null,
+            pageIdx,
+        };
+    }
+
+    // The identity of an annotation the server recreated by moving it to another page: PyMuPDF assigns a new
+    // xref there, and the stable id from the response is the one that survives (issue #30).
+    function crossPageMoveIdentity(annotation, fallbackXref) {
+        return {
+            identifier: annotation.stable_id || annotation.id || String(annotation.xref),
+            xref: annotation.xref ? String(annotation.xref) : fallbackXref,
+            requestId: annotation.stable_id || annotation.id,
+        };
+    }
+
+    function rerenderAnnotationPage(pageIdx) {
+        // Re-render the page first so visibility-tracked sidebars see the
+        // marker change before they re-evaluate display rules.
+        renderAnnotationsForPage(pageIdx + 1, true);
+        try {
+            syncVisibleAnnotationMarkersFromDom();
+        } catch (_error) {
+            // Visibility sync is best-effort; the observer will catch up.
+        }
+        renderAnnotationsList();
+        markLocalAnnotationChange(); // Prevent polling from reloading
+    }
+
+    async function undoDeleteOperation(operation) {
+        const isQuadHighlight =
+            String(operation.annotation.type || '').toLowerCase() === 'highlight' &&
+            Array.isArray(operation.annotation.quads) &&
+            operation.annotation.quads.length > 0 &&
+            operation.annotation.quads.every((quad) => Array.isArray(quad) && quad.length === 4);
+        // Delete snapshots store rect and quads in viewer/PyMuPDF top-left
+        // space. Reuse the shared converters rather than re-deriving the
+        // flip here: the two paths drifted once already, and converting
+        // quads inside the rect's validity check meant a malformed rect
+        // silently left perfectly good quads unconverted.
+        const apiRect = await convertHighlightTopLeftRectToPdf(
+            operation.annotation.rect,
+            operation.pageIdx,
+        );
+        const apiQuads = isQuadHighlight
+            ? await convertHighlightTopLeftQuadsToPdf(
+                  operation.annotation.quads,
+                  operation.pageIdx,
+              )
+            : null;
+
+        // Recreate the deleted annotation
+        const annotationData = {
+            content: operation.annotation.content || '',
+            type: operation.annotation.type || 'Text',
+            rect: apiRect,
+            color: operation.annotation.priority || 'amber',  // Use priority string, not color dict
+            page_index: operation.pageIdx,
+            source: operation.annotation.source || 'HUMAN',  // Preserve original source
+        };
+
+        if (isQuadHighlight) {
+            annotationData.quads = apiQuads;
+            annotationData.anchor_text = operation.annotation.anchor_text;
+            annotationData.check_id = operation.annotation.check_id;
+            annotationData.task_id = operation.annotation.task_id;
+            annotationData.stable_id = operation.annotation.stable_id;
+        }
+
+        // Call the API to recreate the annotation
+        try {
+            const data = await createAnnotationRequest(annotationData);
+
+            // CRITICAL FIX: Add annotation directly instead of reloading all annotations
+            if (data.success && data.annotation) {
+                const responsePageIdx = data.annotation.page_index;
+                if (!annotationsData[responsePageIdx]) {
+                    annotationsData[responsePageIdx] = [];
+                }
+                const newAnn = enhanceAnnotationEntry(data.annotation);
+                annotationsData[responsePageIdx].push(newAnn);
+                // Redo deletes the annotation this undo recreated.
+                operation.redoTarget = recreatedHistoryTarget(newAnn, responsePageIdx);
+            }
+
+            rerenderAnnotationPage(operation.pageIdx);
+            return HISTORY_APPLIED;
+        } catch (undoErr) {
+            console.error('Failed to recreate annotation:', undoErr);
+            showToast('error', 'Failed to undo deletion');
+            return HISTORY_FAILED;
+        }
+    }
+
+    // Redo of a delete: the same delete request, for the annotation the undo recreated.
+    async function redoDeleteOperation(operation) {
+        const target = operation.redoTarget;
+        const currentTarget = resolveCurrentUndoTarget(target.pageIdx, target);
+        if (!currentTarget) {
+            dropMissingHighlightUndo();
+            return HISTORY_DROPPED;
+        }
+
+        try {
+            const data = await deleteAnnotationRequest(currentTarget.apiIdentifier);
+            if (!data || !data.success) {
+                return historyRequestFailure(data || {}, 'Failed to redo deletion');
+            }
+            const pageAnnotations = annotationsData[target.pageIdx] || [];
+            const annotationIdx = pageAnnotations.indexOf(currentTarget.annotation);
+            if (annotationIdx >= 0) {
+                pageAnnotations.splice(annotationIdx, 1);
+            }
+            rerenderAnnotationPage(target.pageIdx);
+            return HISTORY_APPLIED;
+        } catch (redoErr) {
+            console.error('Failed to redo deletion:', redoErr);
+            return historyRequestFailure(redoErr, 'Failed to redo deletion');
+        }
+    }
+
+    // Undo moves the annotation back from where the move put it; redo replays the move's own request from there.
+    async function applyMoveOperation(operation, isRedo) {
+        const verb = isRedo ? 'redo' : 'undo';
+        const fromPageIdx = isRedo ? operation.oldPageIdx : operation.newPageIdx;
+        const toPageIdx = isRedo ? operation.newPageIdx : operation.oldPageIdx;
+        const isSamePageMove = operation.oldPageIdx === operation.newPageIdx;
+        // A cross-page undo recreated the annotation on its old page; the redo finds it by that identity.
+        const identity = isRedo && operation.redoTarget ? operation.redoTarget : operation;
+        const currentTarget = resolveCurrentUndoTarget(fromPageIdx, identity);
+        const apiIdentifier = currentTarget?.apiIdentifier || null;
+
+        if (!apiIdentifier) {
+            console.error(`Unable to resolve annotation identifier for ${verb}`);
+            dropMissingHighlightUndo();
+            return HISTORY_DROPPED;
+        }
+
+        let updateData;
+        if (isRedo) {
+            updateData = cloneHistoryBody(operation.redoBody);
+        } else {
+            // oldRect is in PyMuPDF top-left format (from annotationsData),
+            // but the API expects PDF bottom-left format and converts internally.
+            // Convert PyMuPDF → PDF to avoid double-conversion.
+            let apiRect = operation.oldRect;
+            const viewer = window.__pdfGradedViewer;
+            if (apiRect && viewer && viewer.pdf) {
+                try {
+                    const pg = await viewer.pdf.getPage(operation.oldPageIdx + 1);
+                    const pageHeight = pg.view[3] - pg.view[1];
+                    apiRect = [apiRect[0], pageHeight - apiRect[3], apiRect[2], pageHeight - apiRect[1]];
+                } catch (_e) { /* fallback to raw rect */ }
+            }
+
+            updateData = {
+                page_index: operation.oldPageIdx,
+                rect: apiRect,
+            };
+
+            // Revert source if this was an ownership transfer
+            if (operation.isOwnershipTransfer && operation.oldSource) {
+                updateData.source = operation.oldSource;
+            }
+        }
+
+        try {
+            const data = await updateAnnotationRequest(apiIdentifier, updateData);
+
+            // CRITICAL FIX: Update annotation directly instead of reloading all annotations
+            if (data.success && data.annotation) {
+                const updatedAnn = enhanceAnnotationEntry(data.annotation);
+                const lookupIdentifier = identity.identifier || identity.requestId;
+
+                if (isSamePageMove) {
+                    // Same-page step: update rect in-place (no splice+push on same array)
+                    const idx = findAnnotationIndex(fromPageIdx, lookupIdentifier);
+                    if (idx >= 0) {
+                        annotationsData[fromPageIdx][idx] = updatedAnn;
+                    }
+                } else {
+                    // Cross-page step: remove from the page it is on, add to the other page
+                    if (annotationsData[fromPageIdx]) {
+                        const fromIdx = findAnnotationIndex(fromPageIdx, lookupIdentifier);
+                        if (fromIdx >= 0) {
+                            annotationsData[fromPageIdx].splice(fromIdx, 1);
+                        }
+                    }
+                    if (annotationsData[toPageIdx]) {
+                        annotationsData[toPageIdx].push(updatedAnn);
+                    } else {
+                        annotationsData[toPageIdx] = [updatedAnn];
+                    }
+                    // The server recreated it on the other page, so the next step finds it by its new identity.
+                    const recreated = crossPageMoveIdentity(data.annotation, identity.xref);
+                    if (isRedo) {
+                        Object.assign(operation, recreated);
+                    } else {
+                        operation.redoTarget = recreated;
+                    }
+                }
+
+                // Position-only steps can preserve the existing marker/list.
+                // Ownership steps must refresh source badges and both buckets.
+                if (isSamePageMove && !operation.isOwnershipTransfer) {
+                    _suppressSidebarRender = true;
+                    const pageNum = toPageIdx + 1;
+                    const container = document.getElementById('pdfGradedContainer');
+                    const wrapper = container ? container.querySelector('.pdf-page-wrapper[data-page-num="' + pageNum + '"]') : null;
+                    const overlay = wrapper ? wrapper.querySelector('.pdf-annotation-overlay') : null;
+                    if (overlay) {
+                        const xref = normalizeAnnotationIdentifierValue(currentTarget.annotation?.xref);
+                        const markers = overlay.querySelectorAll('.annotation-marker');
+                        for (const m of markers) {
+                            if (m.dataset.annotationXref === xref ||
+                                m.dataset.annotationRequestId === lookupIdentifier) {
+                                updateMarkerPositionInPlace(m, updatedAnn, toPageIdx);
+                                break;
+                            }
+                        }
+                    }
+                    setTimeout(() => { _suppressSidebarRender = false; }, 300);
+                } else {
+                    renderAnnotationsForPage(toPageIdx + 1, true);
+                    if (!isSamePageMove) {
+                        renderAnnotationsForPage(fromPageIdx + 1, true);
+                    }
+                    renderAnnotationsList();
+                }
+            }
+
+            markLocalAnnotationChange(); // Prevent polling from reloading
+
+            // Show toast for ownership revert
+            if (!isRedo && operation.isOwnershipTransfer) {
+                showToast('success', translatePdfPreviewText('Ownership reverted to AI'));
+            }
+            return HISTORY_APPLIED;
+        } catch (moveErr) {
+            console.error(`Failed to ${verb} move:`, moveErr);
+            return historyRequestFailure(moveErr, `Failed to ${verb} move`);
+        }
+    }
+
+    async function applyHighlightExtendOperation(operation, isRedo) {
+        const verb = isRedo ? 'redo' : 'undo';
+        const controllerStep = isRedo ? 'performHighlightExtendRedo' : 'performHighlightExtendUndo';
+        try {
+            const result = _currentAnnotationCtrl && typeof _currentAnnotationCtrl[controllerStep] === 'function'
+                ? await _currentAnnotationCtrl[controllerStep](operation)
+                : await applyHighlightExtendFallback(operation, isRedo);
+            // A highlight that no longer exists has already been reported; its operation is discarded.
+            return result && result.missing ? HISTORY_DROPPED : HISTORY_APPLIED;
+        } catch (highlightErr) {
+            console.error(`Failed to ${verb} highlight extend/shorten:`, highlightErr);
+            showToast('error', `Failed to ${verb} highlight change`);
+            return HISTORY_FAILED;
+        }
+    }
+
+    // Edit and priority steps. Undo restores the old value and, after an ownership transfer, the old source; redo
+    // replays the original request, which carried only the new value: the server applies the same ownership
+    // transfer to it as it did to the original.
+    const FIELD_HISTORY = {
+        edit: { field: 'content', oldKey: 'oldContent', newKey: 'newContent', label: 'edit' },
+        priority: { field: 'color', oldKey: 'oldColor', newKey: 'newColor', label: 'priority change' },
+    };
+
+    async function applyFieldOperation(operation, isRedo) {
+        const spec = FIELD_HISTORY[operation.type];
+        const verb = isRedo ? 'redo' : 'undo';
+        const failureMessage = `Failed to ${verb} ${spec.label}`;
+        const apiIdentifier = buildApiAnnotationIdentifier({
+            identifier: operation.identifier,
+            xref: operation.xref,
+            requestId: operation.requestId,
+        });
+
+        if (!apiIdentifier) {
+            console.error(`Unable to resolve annotation identifier for ${verb} ${operation.type}`);
+            showToast('error', failureMessage);
+            return HISTORY_FAILED;
+        }
+
+        const updateData = { [spec.field]: operation[isRedo ? spec.newKey : spec.oldKey] };
+        // Revert source if this was an ownership transfer
+        if (!isRedo && operation.isOwnershipTransfer && operation.oldSource) {
+            updateData.source = operation.oldSource;
+        }
+
+        try {
+            const data = await updateAnnotationRequest(apiIdentifier, updateData);
+
+            // CRITICAL FIX: Update annotation directly instead of reloading all annotations
+            if (data.success && data.annotation) {
+                const responsePageIdx = data.annotation.page_index;
+                if (annotationsData[responsePageIdx]) {
+                    const annIdx = findAnnotationIndex(responsePageIdx, operation.identifier || operation.requestId);
+                    if (annIdx >= 0) {
+                        const updatedAnn = enhanceAnnotationEntry(data.annotation);
+                        annotationsData[responsePageIdx][annIdx] = updatedAnn;
+                    }
+                }
+            }
+
+            // Only re-render the affected page, don't reload all annotations
+            renderAnnotationsList();
+            renderAnnotationsForPage(operation.pageIdx + 1, true);
+            markLocalAnnotationChange(); // Prevent polling from reloading
+
+            if (!isRedo && operation.isOwnershipTransfer) {
+                showToast('success', translatePdfPreviewText('Ownership reverted to AI'));
+            }
+            return HISTORY_APPLIED;
+        } catch (fieldErr) {
+            console.error(`Failed to ${verb} ${operation.type}:`, fieldErr);
+            showToast('error', failureMessage);
+            return HISTORY_FAILED;
+        }
+    }
+
+    // Recreate a HUMAN markup (textbox or stroke) that was deleted via
+    // the Delete-key gesture on the selection overlay. The snapshot
+    // payload was captured at delete time before the entry was
+    // discarded.
+    async function undoDeleteMarkupOperation(operation) {
+        const snap = operation.snapshot || {};
+        if (!snap || (!snap.rect && !snap.points)) {
+            console.warn('delete-markup undo: no snapshot data to recreate from');
+            return HISTORY_DROPPED;
+        }
+        const body = {
+            page_index: operation.pageIdx,
+            content: snap.content || '',
+            type: snap.type || 'textbox',
+            color: snap.color || 'amber',
+            source: 'HUMAN',
+        };
+        if (snap.stroke_color_rgb) body.stroke_color_rgb = snap.stroke_color_rgb;
+        if (snap.rect) body.rect = snap.rect;
+        if (snap.points) {
+            const viewer = window.__pdfGradedViewer;
+            const viewport = viewer && viewer.getViewportForPage
+                ? viewer.getViewportForPage(operation.pageIdx + 1)
+                : null;
+            body.points = snap.points.map(function (pt) {
+                if (Array.isArray(pt)) {
+                    return pt;
+                }
+                if (viewport && typeof viewport.convertToPdfPoint === 'function') {
+                    return viewport.convertToPdfPoint(pt.x, pt.y);
+                }
+                return [pt.x, pt.y];
+            });
+        }
+        try {
+            const data = await createAnnotationRequest(body);
+            if (data.success && data.annotation) {
+                const respPg = data.annotation.page_index;
+                // upsert (not push) so re-runs of an undo can't double-insert
+                upsertAnnotationEntryLocal(data.annotation, respPg);
+                // Redo deletes the recreated markup by the id its creation path uses.
+                operation.redoTarget = {
+                    identifier: data.annotation.stable_id || data.annotation.xref,
+                    pageIdx: respPg ?? operation.pageIdx,
+                };
+                // Refresh the markup layer so the recreated textbox/stroke
+                // becomes visible in the open modal immediately. The create
+                // and update paths already call this; the prior undo path
+                // only re-rendered the overlay (renderAnnotationsForPage)
+                // and sidebar (renderAnnotationsList), leaving the
+                // TextboxModule/DrawingCanvas DOM out of sync until the
+                // modal was reopened.
+                refreshMarkupFromAnnotations();
+                renderAnnotationsForPage(respPg + 1, true);
+                renderAnnotationsList();
+                markLocalAnnotationChange();
+            }
+            return HISTORY_APPLIED;
+        } catch (undoErr) {
+            console.error('Failed to undo delete-markup:', undoErr);
+            showToast('error', 'Failed to undo deletion');
+            return HISTORY_FAILED;
+        }
+    }
+
+    // Redo of a markup delete: the same delete request and local removal as the Delete-key gesture, for the
+    // markup the undo recreated.
+    async function redoDeleteMarkupOperation(operation) {
+        const { identifier, pageIdx } = operation.redoTarget;
+        try {
+            await deleteAnnotationRequest(buildApiAnnotationIdentifier({ identifier }) || identifier);
+            removeAnnotationEntryLocal(pageIdx, identifier);
+            refreshMarkupFromAnnotations();
+            renderAnnotationsForPage(pageIdx + 1, true);
+            renderAnnotationsList();
+            markLocalAnnotationChange();
+            return HISTORY_APPLIED;
+        } catch (redoErr) {
+            console.error('Failed to redo delete-markup:', redoErr);
+            showToast('error', 'Failed to redo deletion');
+            return HISTORY_FAILED;
+        }
+    }
+
+    function undoOperation(operation) {
+        switch (operation.type) {
+        case 'delete':
+            return undoDeleteOperation(operation);
+        case 'move':
+            return applyMoveOperation(operation, false);
+        case 'highlight-extend':
+            return applyHighlightExtendOperation(operation, false);
+        case 'edit':
+        case 'priority':
+            return applyFieldOperation(operation, false);
+        case 'delete-markup':
+            return undoDeleteMarkupOperation(operation);
+        default:
+            // Recorded but not undoable (create-drawing, create-textbox): consumed silently.
+            return HISTORY_DROPPED;
+        }
+    }
+
+    // The redo of each operation type that has one, and whether an undone operation has what that redo needs
+    // recorded by the original action or by its undo. Types without an entry, such as create-drawing and
+    // create-textbox (whose undo is a no-op), never reach the redo stack.
+    const REDO_STEPS = {
+        edit: { isReady: () => true, redo: (operation) => applyFieldOperation(operation, true) },
+        priority: { isReady: () => true, redo: (operation) => applyFieldOperation(operation, true) },
+        move: {
+            isReady: (operation) => !!operation.redoBody
+                && (operation.oldPageIdx === operation.newPageIdx || !!operation.redoTarget),
+            redo: (operation) => applyMoveOperation(operation, true),
+        },
+        'highlight-extend': {
+            isReady: (operation) => !!operation.redoBody,
+            redo: (operation) => applyHighlightExtendOperation(operation, true),
+        },
+        delete: { isReady: (operation) => !!operation.redoTarget, redo: redoDeleteOperation },
+        'delete-markup': { isReady: (operation) => !!operation.redoTarget, redo: redoDeleteMarkupOperation },
+    };
+
+    function canRedoOperation(operation) {
+        const step = REDO_STEPS[operation.type];
+        return !!step && step.isReady(operation);
+    }
+
     async function performUndo() {
-        if (isUndoing) {
+        if (isUndoing || isRedoing) {
             return;
         }
 
-        const operation = getNextUndoOperation();
-        if (!operation) {
+        const entry = takeNextUndoEntry();
+        if (!entry) {
             // No operations to undo; silently ignore to keep flow smooth
             return;
         }
@@ -4059,364 +4570,64 @@
         isUndoing = true;
 
         try {
-            if (operation.type === 'delete') {
-                const isQuadHighlight =
-                    String(operation.annotation.type || '').toLowerCase() === 'highlight' &&
-                    Array.isArray(operation.annotation.quads) &&
-                    operation.annotation.quads.length > 0 &&
-                    operation.annotation.quads.every((quad) => Array.isArray(quad) && quad.length === 4);
-                // Delete snapshots store rect and quads in viewer/PyMuPDF top-left
-                // space. Reuse the shared converters rather than re-deriving the
-                // flip here: the two paths drifted once already, and converting
-                // quads inside the rect's validity check meant a malformed rect
-                // silently left perfectly good quads unconverted.
-                const apiRect = await convertHighlightTopLeftRectToPdf(
-                    operation.annotation.rect,
-                    operation.pageIdx,
-                );
-                const apiQuads = isQuadHighlight
-                    ? await convertHighlightTopLeftQuadsToPdf(
-                          operation.annotation.quads,
-                          operation.pageIdx,
-                      )
-                    : null;
-
-                // Recreate the deleted annotation
-                const annotationData = {
-                    content: operation.annotation.content || '',
-                    type: operation.annotation.type || 'Text',
-                    rect: apiRect,
-                    color: operation.annotation.priority || 'amber',  // Use priority string, not color dict
-                    page_index: operation.pageIdx,
-                    source: operation.annotation.source || 'HUMAN',  // Preserve original source
-                };
-
-                if (isQuadHighlight) {
-                    annotationData.quads = apiQuads;
-                    annotationData.anchor_text = operation.annotation.anchor_text;
-                    annotationData.check_id = operation.annotation.check_id;
-                    annotationData.task_id = operation.annotation.task_id;
-                    annotationData.stable_id = operation.annotation.stable_id;
-                }
-
-                // Call the API to recreate the annotation
-                try {
-                    const data = await createAnnotationRequest(annotationData);
-
-                    // CRITICAL FIX: Add annotation directly instead of reloading all annotations
-                    if (data.success && data.annotation) {
-                        const responsePageIdx = data.annotation.page_index;
-                        if (!annotationsData[responsePageIdx]) {
-                            annotationsData[responsePageIdx] = [];
-                        }
-                        const newAnn = enhanceAnnotationEntry(data.annotation);
-                        annotationsData[responsePageIdx].push(newAnn);
-                    }
-
-                    // Re-render the page first so visibility-tracked sidebars see
-                    // the recreated marker before they re-evaluate display rules.
-                    renderAnnotationsForPage(operation.pageIdx + 1, true);
-                    try {
-                        syncVisibleAnnotationMarkersFromDom();
-                    } catch (_error) {
-                        // Visibility sync is best-effort; the observer will catch up.
-                    }
-                    renderAnnotationsList();
-                    markLocalAnnotationChange(); // Prevent polling from reloading
-                } catch (undoErr) {
-                    console.error('Failed to recreate annotation:', undoErr);
-                    showToast('error', 'Failed to undo deletion');
-                    // Push operation back to stack if failed
-                    undoStack.push(operation);
-                }
-
-            } else if (operation.type === 'move') {
-                // Move the annotation back to its original position
-                const currentTarget = resolveCurrentUndoTarget(operation.newPageIdx, operation);
-                const apiIdentifier = currentTarget?.apiIdentifier || null;
-
-                if (!apiIdentifier) {
-                    console.error('Unable to resolve annotation identifier for undo');
-                    dropMissingHighlightUndo();
-                    return;
-                }
-
-                // oldRect is in PyMuPDF top-left format (from annotationsData),
-                // but the API expects PDF bottom-left format and converts internally.
-                // Convert PyMuPDF → PDF to avoid double-conversion.
-                let apiRect = operation.oldRect;
-                const viewer = window.__pdfGradedViewer;
-                if (apiRect && viewer && viewer.pdf) {
-                    try {
-                        const pg = await viewer.pdf.getPage(operation.oldPageIdx + 1);
-                        const pageHeight = pg.view[3] - pg.view[1];
-                        apiRect = [apiRect[0], pageHeight - apiRect[3], apiRect[2], pageHeight - apiRect[1]];
-                    } catch (_e) { /* fallback to raw rect */ }
-                }
-
-                const updateData = {
-                    page_index: operation.oldPageIdx,
-                    rect: apiRect,
-                };
-
-                // Revert source if this was an ownership transfer
-                if (operation.isOwnershipTransfer && operation.oldSource) {
-                    updateData.source = operation.oldSource;
-                }
-
-                try {
-                    const data = await updateAnnotationRequest(apiIdentifier, updateData);
-
-                    // CRITICAL FIX: Update annotation directly instead of reloading all annotations
-                    if (data.success && data.annotation) {
-                        const updatedAnn = enhanceAnnotationEntry(data.annotation);
-                        const isSamePageUndo = operation.oldPageIdx === operation.newPageIdx;
-
-                        if (isSamePageUndo) {
-                            // Same-page undo: update rect in-place (no splice+push on same array)
-                            const idx = findAnnotationIndex(operation.newPageIdx, operation.identifier || operation.requestId);
-                            if (idx >= 0) {
-                                annotationsData[operation.newPageIdx][idx] = updatedAnn;
-                            }
-                        } else {
-                            // Cross-page undo: remove from new page, add to old page
-                            if (annotationsData[operation.newPageIdx]) {
-                                const newIdx = findAnnotationIndex(operation.newPageIdx, operation.identifier || operation.requestId);
-                                if (newIdx >= 0) {
-                                    annotationsData[operation.newPageIdx].splice(newIdx, 1);
-                                }
-                            }
-                            if (annotationsData[operation.oldPageIdx]) {
-                                annotationsData[operation.oldPageIdx].push(updatedAnn);
-                            } else {
-                                annotationsData[operation.oldPageIdx] = [updatedAnn];
-                            }
-                        }
-
-                        // Position-only undo can preserve the existing marker/list.
-                        // Ownership undo must refresh source badges and both buckets.
-                        if (isSamePageUndo && !operation.isOwnershipTransfer) {
-                            _suppressSidebarRender = true;
-                            const pageNum = operation.oldPageIdx + 1;
-                            const container = document.getElementById('pdfGradedContainer');
-                            const wrapper = container ? container.querySelector('.pdf-page-wrapper[data-page-num="' + pageNum + '"]') : null;
-                            const overlay = wrapper ? wrapper.querySelector('.pdf-annotation-overlay') : null;
-                            if (overlay) {
-                                const xref = normalizeAnnotationIdentifierValue(currentTarget.annotation?.xref);
-                                const markers = overlay.querySelectorAll('.annotation-marker');
-                                for (const m of markers) {
-                                    if (m.dataset.annotationXref === xref ||
-                                        m.dataset.annotationRequestId === (operation.identifier || operation.requestId)) {
-                                        updateMarkerPositionInPlace(m, updatedAnn, operation.oldPageIdx);
-                                        break;
-                                    }
-                                }
-                            }
-                            setTimeout(() => { _suppressSidebarRender = false; }, 300);
-                        } else {
-                            renderAnnotationsForPage(operation.oldPageIdx + 1, true);
-                            if (!isSamePageUndo) {
-                                renderAnnotationsForPage(operation.newPageIdx + 1, true);
-                            }
-                            renderAnnotationsList();
-                        }
-                    }
-
-                    markLocalAnnotationChange(); // Prevent polling from reloading
-
-                    // Show toast for ownership revert
-                    if (operation.isOwnershipTransfer) {
-                        showToast('success', translatePdfPreviewText('Ownership reverted to AI'));
-                    }
-                } catch (undoErr) {
-                    console.error('Failed to undo move:', undoErr);
-                    if (isMissingAnnotationFailure(undoErr)) {
-                        dropMissingHighlightUndo();
-                    } else {
-                        showToast('error', 'Failed to undo move');
-                        undoStack.push(operation);
-                    }
-                }
-
-            } else if (operation.type === 'highlight-extend') {
-                try {
-                    if (_currentAnnotationCtrl &&
-                        typeof _currentAnnotationCtrl.performHighlightExtendUndo === 'function') {
-                        await _currentAnnotationCtrl.performHighlightExtendUndo(operation);
-                    } else {
-                        await performHighlightExtendUndoFallback(operation);
-                    }
-                } catch (undoErr) {
-                    console.error('Failed to undo highlight extend/shorten:', undoErr);
-                    showToast('error', 'Failed to undo highlight change');
-                    undoStack.push(operation);
-                }
-
-            } else if (operation.type === 'edit') {
-                // Restore content AND source for edit operations
-                const apiIdentifier = buildApiAnnotationIdentifier({
-                    identifier: operation.identifier,
-                    xref: operation.xref,
-                    requestId: operation.requestId,
-                });
-
-                if (!apiIdentifier) {
-                    console.error('Unable to resolve annotation identifier for undo edit');
-                    showToast('error', 'Failed to undo edit');
-                    undoStack.push(operation);
-                    return;
-                }
-
-                const updateData = { content: operation.oldContent };
-                // Revert source if this was an ownership transfer
-                if (operation.isOwnershipTransfer && operation.oldSource) {
-                    updateData.source = operation.oldSource;
-                }
-
-                try {
-                    const data = await updateAnnotationRequest(apiIdentifier, updateData);
-
-                    // CRITICAL FIX: Update annotation directly instead of reloading all annotations
-                    if (data.success && data.annotation) {
-                        const responsePageIdx = data.annotation.page_index;
-                        if (annotationsData[responsePageIdx]) {
-                            const annIdx = findAnnotationIndex(responsePageIdx, operation.identifier || operation.requestId);
-                            if (annIdx >= 0) {
-                                const updatedAnn = enhanceAnnotationEntry(data.annotation);
-                                annotationsData[responsePageIdx][annIdx] = updatedAnn;
-                            }
-                        }
-                    }
-
-                    // Only re-render the affected page, don't reload all annotations
-                    renderAnnotationsList();
-                    renderAnnotationsForPage(operation.pageIdx + 1, true);
-                    markLocalAnnotationChange(); // Prevent polling from reloading
-
-                    if (operation.isOwnershipTransfer) {
-                        showToast('success', translatePdfPreviewText('Ownership reverted to AI'));
-                    }
-                } catch (undoErr) {
-                    console.error('Failed to undo edit:', undoErr);
-                    showToast('error', 'Failed to undo edit');
-                    undoStack.push(operation);
-                }
-
-            } else if (operation.type === 'priority') {
-                // Restore color AND source for priority operations
-                const apiIdentifier = buildApiAnnotationIdentifier({
-                    identifier: operation.identifier,
-                    xref: operation.xref,
-                    requestId: operation.requestId,
-                });
-
-                if (!apiIdentifier) {
-                    console.error('Unable to resolve annotation identifier for undo priority');
-                    showToast('error', 'Failed to undo priority change');
-                    undoStack.push(operation);
-                    return;
-                }
-
-                const updateData = { color: operation.oldColor };
-                // Revert source if this was an ownership transfer
-                if (operation.isOwnershipTransfer && operation.oldSource) {
-                    updateData.source = operation.oldSource;
-                }
-
-                try {
-                    const data = await updateAnnotationRequest(apiIdentifier, updateData);
-
-                    // CRITICAL FIX: Update annotation directly instead of reloading all annotations
-                    if (data.success && data.annotation) {
-                        const responsePageIdx = data.annotation.page_index;
-                        if (annotationsData[responsePageIdx]) {
-                            const annIdx = findAnnotationIndex(responsePageIdx, operation.identifier || operation.requestId);
-                            if (annIdx >= 0) {
-                                const updatedAnn = enhanceAnnotationEntry(data.annotation);
-                                annotationsData[responsePageIdx][annIdx] = updatedAnn;
-                            }
-                        }
-                    }
-
-                    // Only re-render the affected page, don't reload all annotations
-                    renderAnnotationsList();
-                    renderAnnotationsForPage(operation.pageIdx + 1, true);
-                    markLocalAnnotationChange(); // Prevent polling from reloading
-
-                    if (operation.isOwnershipTransfer) {
-                        showToast('success', translatePdfPreviewText('Ownership reverted to AI'));
-                    }
-                } catch (undoErr) {
-                    console.error('Failed to undo priority:', undoErr);
-                    showToast('error', 'Failed to undo priority change');
-                    undoStack.push(operation);
-                }
-            } else if (operation.type === 'delete-markup') {
-                // Recreate a HUMAN markup (textbox or stroke) that was deleted via
-                // the Delete-key gesture on the selection overlay. The snapshot
-                // payload was captured at delete time before the entry was
-                // discarded.
-                const snap = operation.snapshot || {};
-                if (!snap || (!snap.rect && !snap.points)) {
-                    console.warn('delete-markup undo: no snapshot data to recreate from');
-                    return;
-                }
-                const body = {
-                    page_index: operation.pageIdx,
-                    content: snap.content || '',
-                    type: snap.type || 'textbox',
-                    color: snap.color || 'amber',
-                    source: 'HUMAN',
-                };
-                if (snap.stroke_color_rgb) body.stroke_color_rgb = snap.stroke_color_rgb;
-                if (snap.rect) body.rect = snap.rect;
-                if (snap.points) {
-                    const viewer = window.__pdfGradedViewer;
-                    const viewport = viewer && viewer.getViewportForPage
-                        ? viewer.getViewportForPage(operation.pageIdx + 1)
-                        : null;
-                    body.points = snap.points.map(function (pt) {
-                        if (Array.isArray(pt)) {
-                            return pt;
-                        }
-                        if (viewport && typeof viewport.convertToPdfPoint === 'function') {
-                            return viewport.convertToPdfPoint(pt.x, pt.y);
-                        }
-                        return [pt.x, pt.y];
-                    });
-                }
-                try {
-                    const data = await createAnnotationRequest(body);
-                    if (data.success && data.annotation) {
-                        const respPg = data.annotation.page_index;
-                        // upsert (not push) so re-runs of an undo can't double-insert
-                        upsertAnnotationEntryLocal(data.annotation, respPg);
-                        // Refresh the markup layer so the recreated textbox/stroke
-                        // becomes visible in the open modal immediately. The create
-                        // and update paths already call this; the prior undo path
-                        // only re-rendered the overlay (renderAnnotationsForPage)
-                        // and sidebar (renderAnnotationsList), leaving the
-                        // TextboxModule/DrawingCanvas DOM out of sync until the
-                        // modal was reopened.
-                        refreshMarkupFromAnnotations();
-                        renderAnnotationsForPage(respPg + 1, true);
-                        renderAnnotationsList();
-                        markLocalAnnotationChange();
-                    }
-                } catch (undoErr) {
-                    console.error('Failed to undo delete-markup:', undoErr);
-                    showToast('error', 'Failed to undo deletion');
-                    undoStack.push(operation);
-                }
+            const outcome = await undoOperation(entry.operation);
+            if (outcome === HISTORY_FAILED) {
+                // Push operation back to stack if failed
+                undoStack.push(entry.operation);
+            } else if (outcome === HISTORY_APPLIED && canRedoOperation(entry.operation)) {
+                pushBounded(redoStack, entry);
             }
         } catch (error) {
             console.error('Error during undo:', error);
             showToast('error', translatePdfPreviewText('Undo operation failed'));
             // Push operation back to stack if error occurred
-            undoStack.push(operation);
+            undoStack.push(entry.operation);
         } finally {
             isUndoing = false;
         }
+    }
+
+    // Redo (issue #540): re-apply the last undone operation with the same persistence call as the original
+    // action, then put it back on the undo stack it came from, keeping the rest of the redo history.
+    async function performRedo() {
+        if (isUndoing || isRedoing) {
+            return;
+        }
+
+        const entry = redoStack.pop();
+        if (!entry) {
+            // Nothing to redo; silently ignore, like undo
+            return;
+        }
+
+        isRedoing = true;
+
+        try {
+            // Only operations canRedoOperation admitted are on the redo stack.
+            const outcome = await REDO_STEPS[entry.operation.type].redo(entry.operation);
+            if (outcome === HISTORY_APPLIED) {
+                restoreUndoEntry(entry);
+            } else if (outcome === HISTORY_FAILED) {
+                redoStack.push(entry);
+            }
+        } catch (error) {
+            console.error('Error during redo:', error);
+            showToast('error', translatePdfPreviewText('Redo operation failed'));
+            redoStack.push(entry);
+        } finally {
+            isRedoing = false;
+        }
+    }
+
+    function restoreUndoEntry(entry) {
+        const options = { preserveRedo: true };
+        if (entry.fromController && _currentAnnotationCtrl
+            && typeof _currentAnnotationCtrl.pushUndoOperation === 'function') {
+            // The controller mirrors the push into this modal's stack, as it does for a new operation.
+            _currentAnnotationCtrl.pushUndoOperation(entry.operation, options);
+            return;
+        }
+        pushUndoOperation(entry.operation, options);
     }
 
     // =========================================================================
@@ -5984,11 +6195,12 @@
             const oldRect = cloneHighlightRect(ann && ann.rect);
             const oldSource = resolveAnnotationSource(ann || {});
             // Any human edit transfers ownership; send new quads + anchor phrase.
-            const data = await updateAnnotationRequest(apiIdentifier, {
+            const requestBody = {
                 quads: payload.quadsPdf,
                 anchor_text: payload.anchorText,
                 source: 'HUMAN',
-            });
+            };
+            const data = await updateAnnotationRequest(apiIdentifier, requestBody);
             if (data && data.success) {
                 const responseAnn = data.annotation || null;
                 const undoXref = responseAnn && responseAnn.xref != null
@@ -6035,6 +6247,8 @@
                     oldSource: oldSource,
                     newSource: 'HUMAN',
                     isOwnershipTransfer: oldSource === 'AI',
+                    // Redo replays this exact request (issue #540).
+                    redoBody: cloneHistoryBody(requestBody),
                 });
 
                 marker.classList.remove('source-ai');
@@ -6117,30 +6331,45 @@
         return converted;
     }
 
-    async function performHighlightExtendUndoFallback(operation) {
+    // The modal's own undo or redo of a highlight extend, for when the annotation controller cannot: undo
+    // restores the recorded pre-extend state, redo replays the recorded extend request (issue #540).
+    async function applyHighlightExtendFallback(operation, isRedo) {
         // A highlight PUT deletes and recreates the PDF annotation. Resolve
         // against live state now: operation.xref may already be obsolete after
-        // a newer extend, undo, move, or delete-undo.
+        // a newer extend, undo, redo, move, or delete-undo.
         const currentTarget = resolveCurrentUndoTarget(operation.pageIdx, operation);
         if (!currentTarget) {
             return dropMissingHighlightUndo();
         }
 
-        const oldQuadsPdf = await convertHighlightTopLeftQuadsToPdf(
-            operation.oldQuads,
-            operation.pageIdx
-        );
-        const oldRectPdf = await convertHighlightTopLeftRectToPdf(
-            operation.oldRect,
-            operation.pageIdx
-        );
-        const updateData = {
-            quads: oldQuadsPdf,
-            anchor_text: operation.oldAnchorText,
-            rect: oldRectPdf,
+        // The highlight as the operation recorded it after the extend (redo) or before it (undo).
+        const side = isRedo ? 'new' : 'old';
+        const targetState = {
+            quads: cloneHighlightQuads(operation[side + 'Quads']),
+            anchor_text: operation[side + 'AnchorText'],
+            rect: cloneHighlightRect(operation[side + 'Rect']),
+            source: operation[side + 'Source'],
         };
-        if (operation.oldSource) {
-            updateData.source = operation.oldSource;
+        let updateData;
+        if (isRedo) {
+            updateData = cloneHistoryBody(operation.redoBody);
+        } else {
+            const oldQuadsPdf = await convertHighlightTopLeftQuadsToPdf(
+                operation.oldQuads,
+                operation.pageIdx
+            );
+            const oldRectPdf = await convertHighlightTopLeftRectToPdf(
+                operation.oldRect,
+                operation.pageIdx
+            );
+            updateData = {
+                quads: oldQuadsPdf,
+                anchor_text: operation.oldAnchorText,
+                rect: oldRectPdf,
+            };
+            if (operation.oldSource) {
+                updateData.source = operation.oldSource;
+            }
         }
 
         let data;
@@ -6156,7 +6385,7 @@
             if (isMissingAnnotationFailure(data)) {
                 return dropMissingHighlightUndo();
             }
-            throw new Error((data && data.error) || 'Highlight extend undo failed.');
+            throw new Error((data && data.error) || `Highlight extend ${isRedo ? 'redo' : 'undo'} failed.`);
         }
 
         const pageAnns = annotationsData[operation.pageIdx] || [];
@@ -6165,12 +6394,7 @@
             if (data.annotation) {
                 pageAnns[annotationIdx] = enhanceAnnotationEntry(data.annotation);
             } else {
-                pageAnns[annotationIdx] = Object.assign({}, pageAnns[annotationIdx], {
-                    quads: cloneHighlightQuads(operation.oldQuads),
-                    anchor_text: operation.oldAnchorText,
-                    rect: cloneHighlightRect(operation.oldRect),
-                    source: operation.oldSource,
-                });
+                pageAnns[annotationIdx] = Object.assign({}, pageAnns[annotationIdx], targetState);
             }
         }
 
@@ -6181,7 +6405,7 @@
             renderAnnotationsForPage(operation.pageIdx + 1, true);
         }
         markLocalAnnotationChange();
-        if (operation.isOwnershipTransfer) {
+        if (!isRedo && operation.isOwnershipTransfer) {
             showToast('success', translatePdfPreviewText('Ownership reverted to AI'));
         }
         return data;
@@ -7528,25 +7752,21 @@
 
                     // Push to undo stack AFTER modifying data
                     // FIX Issue #30: For cross-page moves, use the NEW xref and NEW stable_id from API response
-                    // because PyMuPDF assigns new IDs when moving to a different page
-                    const undoXref = isCrossPageMove && data.annotation.xref
-                        ? String(data.annotation.xref)
-                        : marker?.dataset?.annotationXref;
-
-                    // For cross-page moves, use the NEW stable_id from API response for undo
-                    // The old requestId won't work because the annotation was recreated with new IDs
-                    const undoRequestId = isCrossPageMove
-                        ? (data.annotation.stable_id || data.annotation.id)
-                        : marker?.dataset?.annotationRequestId;
-                    const undoIdentifier = isCrossPageMove
-                        ? (data.annotation.stable_id || data.annotation.id || String(data.annotation.xref))
-                        : targetIdentifier;
+                    // because PyMuPDF assigns new IDs when moving to a different page.
+                    // The old requestId won't work because the annotation was recreated with new IDs.
+                    const undoIdentity = isCrossPageMove
+                        ? crossPageMoveIdentity(data.annotation, marker?.dataset?.annotationXref)
+                        : {
+                            identifier: targetIdentifier,
+                            xref: marker?.dataset?.annotationXref,
+                            requestId: marker?.dataset?.annotationRequestId,
+                        };
 
                     pushUndoOperation({
                         type: 'move',
-                        identifier: undoIdentifier,
-                        xref: undoXref,
-                        requestId: undoRequestId,
+                        identifier: undoIdentity.identifier,
+                        xref: undoIdentity.xref,
+                        requestId: undoIdentity.requestId,
                         oldPageIdx: originalPage,
                         newPageIdx: responsePageIdx,
                         oldRect: originalRect,
@@ -7554,6 +7774,8 @@
                         oldSource: isOwnershipTransfer ? 'AI' : (originalAnn?.source || resolveAnnotationSource(originalAnn || {})),
                         newSource: isOwnershipTransfer ? 'HUMAN' : (originalAnn?.source || resolveAnnotationSource(originalAnn || {})),
                         isOwnershipTransfer: isOwnershipTransfer,
+                        // Redo replays this exact request (issue #540).
+                        redoBody: cloneHistoryBody(requestBody),
                     });
 
                     const normalizedAnn = enhanceAnnotationEntry(data.annotation);
@@ -8275,8 +8497,12 @@
         }
 
         const modal = new bootstrap.Modal(modalElement);
-        currentSubmissionId = submissionId;
         const resolvedAssignmentId = assignmentId ?? openContext.assignmentId ?? null;
+        // A redo must never replay an operation into another document (issue #540).
+        if (submissionId !== currentSubmissionId || resolvedAssignmentId !== currentAssignmentId) {
+            clearRedoStack();
+        }
+        currentSubmissionId = submissionId;
         currentAssignmentId = resolvedAssignmentId;
         currentCanvasUserName = openContext.canvasUserName || currentCanvasUserName || null;
         _annotationAdapter = openContext.modeAdapter || null;
@@ -8523,23 +8749,24 @@
         document.addEventListener('keydown', preventModalCloseOnEscape, true);
         modalElement._preventEscapeHandler = preventModalCloseOnEscape;
 
-        // Add Ctrl+Z undo functionality
+        // Add Ctrl+Z undo and Ctrl+Y / Ctrl+Shift+Z redo functionality
         const handleUndo = async (e) => {
-            // Check for Ctrl+Z (Windows/Linux) or Cmd+Z (Mac)
-            if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+            // Ctrl (Windows/Linux) or Cmd (Mac)
+            const action = resolveHistoryShortcut(e);
+            if (action) {
                 const target = e.target;
                 const isTextInput = target instanceof HTMLInputElement && target.type !== 'number';
                 const isTextarea = target instanceof HTMLTextAreaElement;
                 const isEditableNode = !!target?.isContentEditable;
-                // Keep native undo inside real text editors, but still allow
-                // modal-wide undo when focus is on the page-number navigator.
+                // Keep native undo/redo inside real text editors, but still allow
+                // modal-wide undo/redo when focus is on the page-number navigator.
                 if (isTextInput || isTextarea || isEditableNode) {
                     return;
                 }
 
                 e.preventDefault();
                 e.stopPropagation();
-                await performUndo();
+                await (action === 'redo' ? performRedo() : performUndo());
             }
         };
         document.addEventListener('keydown', handleUndo, true);
@@ -9228,6 +9455,7 @@
                     toggleAnnotationVerdict: toggleAnnotationVerdict,
                     updateAnnotationPriority: updateAnnotationPriority,
                     pushUndoOperation: pushUndoOperation,
+                    clearRedoStack: clearRedoStack,
                     collapseInlineLabel: collapseInlineLabel,
                     expandInlineLabelEdit: expandInlineLabelEdit,
                     setupTextareaAutoResize: setupTextareaAutoResize,

@@ -4,6 +4,10 @@ All notable changes to `aems-pdf-annotator` are recorded here. Format follows [K
 
 ## Unreleased
 
+### Added
+
+- Redo in the review modal (issue #540). Ctrl+Y and Ctrl+Shift+Z (Cmd+Y and Cmd+Shift+Z on macOS) re-apply the last undone edit, priority change, move, highlight resize, delete or pen-stroke delete, with the same request as the original action, so the annotation, its ownership included, returns to its post-action state. Any new operation, clearing the undo history, and opening another document clear the redo history. Inside text fields the browser keeps its own redo. A redo whose request fails stays queued, and one whose annotation no longer exists is dropped.
+
 ### Fixed
 
 - Split-view comments now move to the teacher panel after a text-anchored ownership transfer, and back to the AI panel when undoing a same-page ownership move. PDF author naming is unchanged.
