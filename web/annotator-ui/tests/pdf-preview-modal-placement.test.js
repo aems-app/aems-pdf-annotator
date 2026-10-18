@@ -3211,5 +3211,28 @@ describe('pdf-preview-modal placement helpers', () => {
       expect(m.server.deleteAnnotation).toHaveBeenCalledTimes(deleteRequests);
       expect(m.server.createAnnotation).toHaveBeenCalledTimes(1);
     });
+
+    it('an undo that fails after another submission opened leaves that submission alone', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      await settle();
+      let failUndo;
+      h.updateAnnotation.mockImplementationOnce(() => new Promise((_done, reject) => { failUndo = reject; }));
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+
+      await openOtherSubmission(h);
+      failUndo(new Error('network down'));
+      await settle();
+
+      // No failure is reported against the open submission, and its history stays empty.
+      expect(errorToasts()).toEqual([]);
+      expect(h.getUndoStacks()).toEqual({ local: [], controller: [] });
+      h.dispatchUndo();
+      await settle();
+      expect(submissionsOf(h.updateAnnotation)).toEqual(['submission-1', 'submission-1']);
+    });
   });
 });
