@@ -574,6 +574,50 @@ describe('pdf-preview-modal placement helpers', () => {
     h.handle.destroy();
   });
 
+  // Codex review of the #462 fix, round 3: with two DIFFERENT overlapping edits, the first save that lands has
+  // already transferred ownership, so the later entry's old source is the entry's source as it stands then
+  // (HUMAN), not the stale AI snapshot taken before either request.
+  it('an inline save landing after another edit records that edit as its old text and source', async () => {
+    const h = await createSplitOwnershipHarness();
+    const label = inlineLabelFor(h, 'Teacher feedback');
+    const finishInline = pendingUpdate(h);
+    const inline = window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Second edit');
+    const index = h.options.getAnnotationsData()[0].indexOf(persistedEntry(h));
+    h.options.getAnnotationsData()[0][index] = {
+      ...persistedEntry(h), content: 'First edit', _originalContent: 'First edit', source: 'HUMAN',
+    };
+    finishInline('Second edit');
+    await inline;
+    expect(stackedEdits()).toEqual([
+      expect.objectContaining({
+        oldContent: 'First edit', newContent: 'Second edit', oldSource: 'HUMAN', isOwnershipTransfer: false,
+      }),
+    ]);
+    h.handle.destroy();
+  });
+
+  it('a sidebar save landing after another edit records that edit as its old text and source', async () => {
+    const h = await createSplitOwnershipHarness();
+    h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
+    document.getElementById('edit-annotation-text-owned-comment').value = 'Second edit';
+    const finishSidebar = pendingUpdate(h);
+    const sidebar = h.controller.saveAnnotationEdit('owned-comment');
+    await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(1));
+    const index = h.options.getAnnotationsData()[0].indexOf(persistedEntry(h));
+    h.options.getAnnotationsData()[0][index] = {
+      ...persistedEntry(h), content: 'First edit', _originalContent: 'First edit', source: 'HUMAN',
+    };
+    finishSidebar('Second edit');
+    await sidebar;
+    const edits = window.PdfPreviewModal.__test.getUndoStacks().controller.filter((op) => op.type === 'edit');
+    expect(edits).toEqual([
+      expect.objectContaining({
+        oldContent: 'First edit', newContent: 'Second edit', oldSource: 'HUMAN', isOwnershipTransfer: false,
+      }),
+    ]);
+    h.handle.destroy();
+  });
+
   it('Ctrl+Z after a sidebar save restores the persisted text, not an unsaved draft', async () => {
     const h = await createSplitOwnershipHarness();
     h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
