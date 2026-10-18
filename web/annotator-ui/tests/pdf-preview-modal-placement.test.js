@@ -1992,6 +1992,7 @@ describe('pdf-preview-modal placement helpers', () => {
       const h = await undoHarness({
         createAnnotation,
         deleteAnnotation,
+        visibilityController: {}, // the undo and the redo re-render the page overlay
         annotations: {
           0: [{ stable_id: 'stroke-1', xref: 60, page_index: 0, type: 'drawing', content: '', source: 'HUMAN' }],
         },
@@ -2020,7 +2021,7 @@ describe('pdf-preview-modal placement helpers', () => {
 
       const [assignment, submission, , options] = deleteAnnotation.mock.calls[0];
       expect(deleteAnnotation.mock.calls[1]).toEqual([assignment, submission, 'stroke-2', options]);
-      expect(h.handle.getAnnotations()).toEqual({});
+      await vi.waitFor(() => expect(h.handle.getAnnotations()).toEqual({}));
       expect(h.getUndoStacks().local).toEqual([expect.objectContaining({ type: 'delete-markup' })]);
       h.handle.destroy();
     });
@@ -2223,7 +2224,8 @@ describe('pdf-preview-modal placement helpers', () => {
       // The controller and the modal cap their undo stacks separately, so together they can hold 100 entries.
       const controllerUndoStack = Array.from({ length: 50 }, (_value, i) => edit(`controller-${i}`, i + 1));
       const updateAnnotation = vi.fn().mockResolvedValue({ success: true });
-      const h = await undoHarness({ controllerUndoStack, updateAnnotation });
+      // An overlay renderer, because each undo and redo re-renders the page overlay.
+      const h = await undoHarness({ controllerUndoStack, updateAnnotation, visibilityController: {} });
       for (let i = 0; i < 50; i += 1) {
         h.pushLocalUndo(edit(`local-${i}`, 1000 + i));
       }
