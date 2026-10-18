@@ -4371,9 +4371,15 @@
     // Edit and priority steps. Undo restores the old value and, after an ownership transfer, the old source; redo
     // replays the original request, which carried only the new value: the server applies the same ownership
     // transfer to it as it did to the original.
+    // localFields: what the local copy shows the value in, when the server answers without the annotation.
     const FIELD_HISTORY = {
-        edit: { field: 'content', oldKey: 'oldContent', newKey: 'newContent', label: 'edit' },
-        priority: { field: 'color', oldKey: 'oldColor', newKey: 'newColor', label: 'priority change' },
+        edit: {
+            field: 'content', oldKey: 'oldContent', newKey: 'newContent', label: 'edit', localFields: ['content'],
+        },
+        priority: {
+            field: 'color', oldKey: 'oldColor', newKey: 'newColor', label: 'priority change',
+            localFields: ['color', 'priority'],
+        },
     };
 
     async function applyFieldOperation(operation, isRedo) {
@@ -4410,6 +4416,14 @@
                         const updatedAnn = enhanceAnnotationEntry(data.annotation);
                         annotationsData[responsePageIdx][annIdx] = updatedAnn;
                     }
+                }
+            } else if (data.success) {
+                // Stored, but not read back: show the stored value. The source changes only when the request named
+                // one, because the server keeps the stored source otherwise.
+                const entry = findAnnotationEntry(operation.pageIdx, operation.identifier || operation.requestId);
+                if (entry) {
+                    spec.localFields.forEach((localField) => { entry[localField] = updateData[spec.field]; });
+                    if (updateData.source) entry.source = updateData.source;
                 }
             }
 
@@ -7217,14 +7231,10 @@
                         const annIdx = findAnnotationIndex(pageIdx, lookupIdentifier);
                         if (annIdx >= 0) {
                             const existingAnn = annotationsData[pageIdx][annIdx];
-                            // Update priority/color locally
+                            // Update priority/color locally. The source stays: the request named none, and the
+                            // server keeps the stored source then (it never transfers ownership on a colour change).
                             existingAnn.priority = priority;
                             existingAnn.color = priority;
-                            // Mark as human-edited since user changed the priority
-                            existingAnn.source = 'HUMAN';
-                            if (!existingAnn.original_source) {
-                                existingAnn.original_source = originalSource;
-                            }
                             existingAnn._hasBeenEdited = true;
                             existingAnn._priorityChanged = true;
                             delete existingAnn._isTemporary;
@@ -7239,8 +7249,8 @@
                                 oldColor: originalColor,
                                 newColor: priority,
                                 oldSource: originalSource,
-                                newSource: 'HUMAN',
-                                isOwnershipTransfer: originalSource === 'AI',
+                                newSource: originalSource,
+                                isOwnershipTransfer: false,
                             });
                         }
                     }
