@@ -1755,20 +1755,15 @@ describe('pdf-preview-modal placement helpers', () => {
 
     const errorToasts = () => [...document.querySelectorAll('.alert-danger')].map((toast) => toast.textContent.trim());
 
-    // A fake annotation endpoint that keeps its state between calls and applies the server's ownership rule: a
-    // human content or priority change on an AI annotation transfers it to HUMAN, and an explicit source wins.
-    // A redo replays the original request, so it must land on the state the original action produced.
-    function serveAnnotation(h) {
+    // A fake annotation endpoint that keeps its state between calls and follows the AEMS server's ownership
+    // rule: the PUT stores `new_source or metadata.get('source') or 'AI'`, so a request without a source keeps
+    // the stored one, and only an explicit source moves ownership. A content or colour change never does.
+    // echo: false answers success without the annotation, as the server does when it cannot read it back.
+    function serveAnnotation(h, { echo = true } = {}) {
       let state = { ...h.annotation };
       h.updateAnnotation.mockImplementation(async (_assignment, _submission, _identifier, body) => {
-        const transfers = body.source === undefined && ('content' in body || 'color' in body);
-        state = {
-          ...state,
-          ...body,
-          ...(transfers ? { source: 'HUMAN' } : {}),
-          page_index: body.page_index ?? state.page_index,
-        };
-        return { success: true, annotation: { ...state } };
+        state = { ...state, ...body, page_index: body.page_index ?? state.page_index };
+        return echo ? { success: true, annotation: { ...state } } : { success: true };
       });
     }
 
@@ -1814,104 +1809,176 @@ describe('pdf-preview-modal placement helpers', () => {
       await settle();
     }
 
-    it('Ctrl+Y re-applies an undone sidebar edit with the original request and its HUMAN ownership', async () => {
+    // One action, then Ctrl+Z, then a redo shortcut, with the annotation read after each step. The action makes
+    // exactly one update request, so the undo makes the second and the redo the third.
+    async function throughHistory(h, action, redoInit) {
+      await action();
+      await settle();
+      const afterDo = stateOf(entries(h)[0]);
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+      const afterUndo = stateOf(entries(h)[0]);
+      h.dispatchRedo(redoInit);
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
+      await settle();
+      return { afterDo, afterUndo, afterRedo: stateOf(entries(h)[0]) };
+    }
+
+    it('redoes a sidebar edit of an AI annotation, which keeps it AI throughout', async () => {
       const h = await splitHarness();
       serveAnnotation(h);
-      await saveSidebarEdit(h, 'Edited feedback');
-      const afterEdit = stateOf(entries(h)[0]);
-      expect(afterEdit).toMatchObject({ content: 'Edited feedback', source: 'HUMAN' });
 
-      await undoThenRedo(h, h.updateAnnotation);
+      const { afterDo, afterUndo, afterRedo } = await throughHistory(h, () => saveSidebarEdit(h, 'Edited feedback'));
 
+      expect(afterDo).toMatchObject({ content: 'Edited feedback', source: 'AI', original_source: 'AI' });
+      expect(afterUndo).toMatchObject({ content: 'Teacher feedback', source: 'AI', original_source: 'AI' });
+      expect(afterRedo).toEqual(afterDo);
+      expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback' });
       expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
-      expect(stateOf(entries(h)[0])).toEqual(afterEdit);
-      await vi.waitFor(() => h.expectBucket('HUMAN'));
+      h.expectBucket('AI');
       // The edit is back on both undo stacks, so Ctrl+Z undoes it again with the same request as before.
       expect(historyOps(h, 'edit')).toEqual({ local: [expect.anything()], controller: [expect.anything()] });
       h.dispatchUndo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
       expect(h.updateAnnotation.mock.calls[3]).toEqual(h.updateAnnotation.mock.calls[1]);
-      await vi.waitFor(() => h.expectBucket('AI'));
-      h.handle.destroy();
     });
 
-    it('Ctrl+Shift+Z re-applies an undone inline edit with the original request and its HUMAN ownership', async () => {
+    it('redoes a sidebar edit of a HUMAN annotation, which keeps it HUMAN throughout', async () => {
+      const h = await splitHarness({ source: 'HUMAN' });
+      serveAnnotation(h);
+
+      const { afterDo, afterUndo, afterRedo } = await throughHistory(h, () => saveSidebarEdit(h, 'Edited feedback'));
+
+      expect(afterDo).toMatchObject({ content: 'Edited feedback', source: 'HUMAN', original_source: 'AI' });
+      expect(afterUndo).toMatchObject({ content: 'Teacher feedback', source: 'HUMAN', original_source: 'AI' });
+      expect(afterRedo).toEqual(afterDo);
+      expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
+      h.expectBucket('HUMAN');
+    });
+
+    it('Ctrl+Shift+Z redoes an inline edit with the original request, keeping its ownership', async () => {
       const h = await splitHarness();
       serveAnnotation(h);
       const label = inlineLabelFor(h, h.annotation.content);
-      await window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline');
-      const afterEdit = stateOf(entries(h)[0]);
-      expect(afterEdit).toMatchObject({ content: 'Edited inline', source: 'HUMAN' });
 
-      await undoThenRedo(h, h.updateAnnotation, { key: 'Z', ctrlKey: true, shiftKey: true });
+      const { afterDo, afterUndo, afterRedo } = await throughHistory(
+        h,
+        () => window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline'),
+        { key: 'Z', ctrlKey: true, shiftKey: true },
+      );
 
+      expect(afterDo).toMatchObject({ content: 'Edited inline', source: 'AI', original_source: 'AI' });
+      expect(afterUndo).toMatchObject({ content: 'Teacher feedback', source: 'AI' });
+      expect(afterRedo).toEqual(afterDo);
       expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
-      expect(stateOf(entries(h)[0])).toEqual(afterEdit);
-      await vi.waitFor(() => h.expectBucket('HUMAN'));
+      h.expectBucket('AI');
       expect(historyOps(h, 'edit').local).toHaveLength(1);
-      h.handle.destroy();
     });
 
-    it('Ctrl+Y re-applies an undone priority change with the original request and its HUMAN ownership', async () => {
+    it('redoes a priority change with the original request, keeping its ownership', async () => {
       const h = await splitHarness();
       serveAnnotation(h);
-      await h.options.helpers.updateAnnotationPriority(0, 'owned-comment', 'red');
-      const afterChange = stateOf(entries(h)[0]);
-      expect(afterChange).toMatchObject({ color: 'red', source: 'HUMAN' });
 
-      await undoThenRedo(h, h.updateAnnotation);
+      const { afterDo, afterUndo, afterRedo } = await throughHistory(
+        h, () => h.options.helpers.updateAnnotationPriority(0, 'owned-comment', 'red'),
+      );
 
+      expect(afterDo).toMatchObject({ color: 'red', source: 'AI', original_source: 'AI' });
+      expect(afterUndo.color).not.toBe('red');
+      expect(afterUndo).toMatchObject({ source: 'AI', original_source: 'AI' });
+      expect(afterRedo).toEqual(afterDo);
       expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
-      expect(stateOf(entries(h)[0])).toEqual(afterChange);
-      await vi.waitFor(() => h.expectBucket('HUMAN'));
+      h.expectBucket('AI');
       expect(historyOps(h, 'priority').local).toHaveLength(1);
-      h.handle.destroy();
+    });
+
+    // "Update succeeded but annotation couldn't be retrieved": the server stored the colour and, the request
+    // naming no source, kept the annotation AI. The local copy must say so after the change, its undo and redo.
+    it('keeps a priority change answered without its annotation AI through undo and redo', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h, { echo: false });
+
+      const { afterDo, afterUndo, afterRedo } = await throughHistory(
+        h, () => h.options.helpers.updateAnnotationPriority(0, 'owned-comment', 'red'),
+      );
+
+      expect(afterDo).toMatchObject({ color: 'red', source: 'AI', original_source: 'AI' });
+      expect(afterUndo.color).not.toBe('red');
+      expect(afterUndo).toMatchObject({ source: 'AI', original_source: 'AI' });
+      expect(afterRedo).toEqual(afterDo);
+      h.expectBucket('AI');
     });
 
     it.each([
       ['a same-page ownership move', 0, true],
       ['a cross-page ownership move', 1, true],
       ['a same-page move', 0, false],
-    ])('Ctrl+Y re-applies %s with the original request', async (_name, targetPage, transfer) => {
-      const h = await splitHarness({ source: transfer ? 'AI' : 'HUMAN' });
+    ])('redoes %s with the original request, its ownership included', async (_name, targetPage, transfer) => {
+      const startSource = transfer ? 'AI' : 'HUMAN';
+      const h = await splitHarness({ source: startSource });
       serveAnnotation(h);
+      const placed = () => ({ ...stateOf(entries(h)[0]), rect: entries(h)[0].rect });
       await window.PdfPreviewModal.__test.updateAnnotationPosition(0, targetPage, 'owned-comment', h.marker, transfer);
-      const placed = (entry) => ({ ...stateOf(entry), rect: entry.rect });
-      const afterMove = placed(entries(h)[0]);
-      expect(afterMove).toMatchObject({ page_index: targetPage, source: 'HUMAN' });
+      await settle();
+      const afterMove = placed();
+      expect(afterMove).toMatchObject({ page_index: targetPage, source: 'HUMAN', original_source: 'AI' });
 
-      await undoThenRedo(h, h.updateAnnotation);
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+      expect(placed()).toMatchObject({ page_index: 0, source: startSource, original_source: 'AI' });
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
+      await settle();
 
       expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
-      expect(placed(entries(h)[0])).toEqual(afterMove);
+      expect(placed()).toEqual(afterMove);
       h.expectBucket('HUMAN');
       expect(historyOps(h, 'move').local).toHaveLength(1);
       // Undo works again after the redo, with the same request as the first undo.
       h.dispatchUndo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
       expect(h.updateAnnotation.mock.calls[3]).toEqual(h.updateAnnotation.mock.calls[1]);
-      h.handle.destroy();
     });
 
-    it('Ctrl+Y re-applies an undone highlight resize with the original request and its HUMAN ownership', async () => {
+    it('redoes a highlight resize with the original request, moving ownership to HUMAN and back', async () => {
       const h = await splitHarness();
       serveAnnotation(h);
-      await h.controller.persistHighlightExtend(h.marker, h.annotation, {
-        pageIdx: 0, quadsPdf: [[50, 722, 220, 742]], anchorText: 'resized answer text',
-      });
-      const afterResize = stateOf(entries(h)[0]);
-      expect(afterResize).toMatchObject({ anchor_text: 'resized answer text', source: 'HUMAN' });
 
-      await undoThenRedo(h, h.updateAnnotation);
+      const { afterDo, afterUndo, afterRedo } = await throughHistory(h, () => h.controller.persistHighlightExtend(
+        h.marker, h.annotation, { pageIdx: 0, quadsPdf: [[50, 722, 220, 742]], anchorText: 'resized answer text' },
+      ));
 
+      expect(afterDo).toMatchObject({ anchor_text: 'resized answer text', source: 'HUMAN', original_source: 'AI' });
+      expect(afterUndo).toMatchObject({ anchor_text: 'answer text', source: 'AI', original_source: 'AI' });
+      expect(afterRedo).toEqual(afterDo);
       expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
-      expect(stateOf(entries(h)[0])).toEqual(afterResize);
-      await vi.waitFor(() => h.expectBucket('HUMAN'));
+      h.expectBucket('HUMAN');
       expect(historyOps(h, 'highlight-extend')).toEqual({
         local: [expect.anything()],
         controller: [expect.anything()],
       });
-      h.handle.destroy();
+    });
+
+    // The tethered-highlight drag persists ownership with a source-only request and records no operation, so
+    // undo and redo leave its transfer alone.
+    it('leaves a source-only ownership transfer out of the undo and redo history', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      h.marker.dataset.annotationSource = 'HUMAN'; // the drag's optimistic flip
+      await window.PdfPreviewModal.__test.persistAnchoredOwnershipTransfer(h.marker, 'owned-comment');
+      expect(h.updateAnnotation.mock.calls[0][3]).toEqual({ source: 'HUMAN' });
+      expect(stateOf(entries(h)[0])).toMatchObject({ source: 'HUMAN', original_source: 'AI' });
+
+      h.dispatchUndo();
+      await settle();
+      h.dispatchRedo();
+      await settle();
+
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(1);
+      expect(stateOf(entries(h)[0])).toMatchObject({ source: 'HUMAN', original_source: 'AI' });
+      h.expectBucket('HUMAN');
     });
 
     // A highlight resized through the modal's own fallback: the controller has no highlight support. The fake
@@ -2239,7 +2306,7 @@ describe('pdf-preview-modal placement helpers', () => {
       h.dispatchRedo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
       expect(h.updateAnnotation.mock.calls[3]).toEqual(h.updateAnnotation.mock.calls[0]);
-      await vi.waitFor(() => h.expectBucket('HUMAN'));
+      await vi.waitFor(() => h.expectBucket('AI'));
       h.handle.destroy();
     });
 
@@ -2455,7 +2522,7 @@ describe('pdf-preview-modal placement helpers', () => {
       await settle();
       expect(h.updateAnnotation).toHaveBeenCalledTimes(4);
 
-      finishRedo({ success: true, annotation: { ...h.annotation, content: 'Second edit', source: 'HUMAN' } });
+      finishRedo({ success: true, annotation: { ...h.annotation, content: 'Second edit' } });
       await settle();
       h.dispatchUndo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(5));
@@ -2482,7 +2549,7 @@ describe('pdf-preview-modal placement helpers', () => {
       await settle();
       expect(h.updateAnnotation).toHaveBeenCalledTimes(5);
 
-      finishRedo({ success: true, annotation: { ...h.annotation, content: 'First edit', source: 'HUMAN' } });
+      finishRedo({ success: true, annotation: { ...h.annotation, content: 'First edit' } });
       await settle();
       h.dispatchRedo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(6));
@@ -2504,7 +2571,7 @@ describe('pdf-preview-modal placement helpers', () => {
 
       // A marker move lands while the redo request is still out.
       await window.PdfPreviewModal.__test.updateAnnotationPosition(0, 0, 'owned-comment', h.marker, false);
-      finishRedo({ success: true, annotation: { ...h.annotation, content: 'Edited feedback', source: 'HUMAN' } });
+      finishRedo({ success: true, annotation: { ...h.annotation, content: 'Edited feedback' } });
       await settle();
 
       expect(h.updateAnnotation).toHaveBeenCalledTimes(4);
