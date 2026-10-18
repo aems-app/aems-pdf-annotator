@@ -3304,6 +3304,9 @@
     // it back there as well as here and the two undo stacks keep agreeing. Capped like the undo stack.
     let redoStack = [];
     let isRedoing = false;
+    // Advances whenever another document opens: a history step that began under an earlier epoch neither sends
+    // its request nor applies its answer (issue #540).
+    let historyDocumentEpoch = 0;
     const pdfSearchState = {
         term: '',
         matches: [],
@@ -4086,9 +4089,35 @@
     const HISTORY_APPLIED = 'applied'; // done: the operation moves to the other stack
     const HISTORY_FAILED = 'failed'; // not done but may work later: the operation stays where it was
     const HISTORY_DROPPED = 'dropped'; // cannot be done, e.g. its annotation is gone: the operation is discarded
+    const HISTORY_STALE = 'stale'; // began on a document that is no longer open: nothing of it is kept
 
-    // A failed request of a history step: dropped when its annotation no longer exists, kept otherwise.
+    const STALE_HISTORY_STEP = new Error('The history step belongs to a document that is no longer open.');
+
+    // One undo or redo. Its requests go out only while the document it began on is still open, and their
+    // answers count only if it still is when they arrive; otherwise they throw STALE_HISTORY_STEP.
+    function beginHistoryStep() {
+        const epoch = historyDocumentEpoch;
+        const isStale = () => epoch !== historyDocumentEpoch;
+        const guard = (request) => (...args) => {
+            if (isStale()) return Promise.reject(STALE_HISTORY_STEP);
+            return request(...args).then(
+                (result) => { if (isStale()) throw STALE_HISTORY_STEP; return result; },
+                (error) => { throw isStale() ? STALE_HISTORY_STEP : error; },
+            );
+        };
+        return {
+            create: guard(createAnnotationRequest),
+            update: guard(updateAnnotationRequest),
+            remove: guard(deleteAnnotationRequest),
+        };
+    }
+
+    // A failed request of a history step: stale when its document closed meanwhile, dropped when its annotation
+    // no longer exists, kept otherwise.
     function historyRequestFailure(error, message) {
+        if (error === STALE_HISTORY_STEP) {
+            return HISTORY_STALE;
+        }
         if (isMissingAnnotationFailure(error)) {
             dropMissingHighlightUndo();
             return HISTORY_DROPPED;
@@ -4138,7 +4167,7 @@
         markLocalAnnotationChange(); // Prevent polling from reloading
     }
 
-    async function undoDeleteOperation(operation) {
+    async function undoDeleteOperation(operation, step) {
         const isQuadHighlight =
             String(operation.annotation.type || '').toLowerCase() === 'highlight' &&
             Array.isArray(operation.annotation.quads) &&
@@ -4180,7 +4209,7 @@
 
         // Call the API to recreate the annotation
         try {
-            const data = await createAnnotationRequest(annotationData);
+            const data = await step.create(annotationData);
             if (!data || !data.success) {
                 return historyRequestFailure(data || {}, 'Failed to undo deletion');
             }
@@ -4201,13 +4230,12 @@
             return HISTORY_APPLIED;
         } catch (undoErr) {
             console.error('Failed to recreate annotation:', undoErr);
-            showToast('error', 'Failed to undo deletion');
-            return HISTORY_FAILED;
+            return historyRequestFailure(undoErr, 'Failed to undo deletion');
         }
     }
 
     // Redo of a delete: the same delete request, for the annotation the undo recreated.
-    async function redoDeleteOperation(operation) {
+    async function redoDeleteOperation(operation, step) {
         const target = operation.redoTarget;
         const currentTarget = resolveCurrentUndoTarget(target.pageIdx, target);
         if (!currentTarget) {
@@ -4216,7 +4244,7 @@
         }
 
         try {
-            const data = await deleteAnnotationRequest(currentTarget.apiIdentifier);
+            const data = await step.remove(currentTarget.apiIdentifier);
             if (!data || !data.success) {
                 return historyRequestFailure(data || {}, 'Failed to redo deletion');
             }
@@ -4234,7 +4262,7 @@
     }
 
     // Undo moves the annotation back from where the move put it; redo replays the move's own request from there.
-    async function applyMoveOperation(operation, isRedo) {
+    async function applyMoveOperation(operation, isRedo, step) {
         const verb = isRedo ? 'redo' : 'undo';
         const fromPageIdx = isRedo ? operation.oldPageIdx : operation.newPageIdx;
         const toPageIdx = isRedo ? operation.newPageIdx : operation.oldPageIdx;
@@ -4279,7 +4307,7 @@
         }
 
         try {
-            const data = await updateAnnotationRequest(apiIdentifier, updateData);
+            const data = await step.update(apiIdentifier, updateData);
             if (!data || !data.success) {
                 return historyRequestFailure(data || {}, `Failed to ${verb} move`);
             }
@@ -4359,19 +4387,19 @@
         }
     }
 
-    async function applyHighlightExtendOperation(operation, isRedo) {
+    async function applyHighlightExtendOperation(operation, isRedo, step) {
         const verb = isRedo ? 'redo' : 'undo';
         const controllerStep = isRedo ? 'performHighlightExtendRedo' : 'performHighlightExtendUndo';
         try {
+            // The controller sends through the step too, so it applies nothing for a closed document.
             const result = _currentAnnotationCtrl && typeof _currentAnnotationCtrl[controllerStep] === 'function'
-                ? await _currentAnnotationCtrl[controllerStep](operation)
-                : await applyHighlightExtendFallback(operation, isRedo);
+                ? await _currentAnnotationCtrl[controllerStep](operation, { request: step.update })
+                : await applyHighlightExtendFallback(operation, isRedo, step);
             // A highlight that no longer exists has already been reported; its operation is discarded.
             return result && result.missing ? HISTORY_DROPPED : HISTORY_APPLIED;
         } catch (highlightErr) {
             console.error(`Failed to ${verb} highlight extend/shorten:`, highlightErr);
-            showToast('error', `Failed to ${verb} highlight change`);
-            return HISTORY_FAILED;
+            return historyRequestFailure(highlightErr, `Failed to ${verb} highlight change`);
         }
     }
 
@@ -4389,7 +4417,7 @@
         },
     };
 
-    async function applyFieldOperation(operation, isRedo) {
+    async function applyFieldOperation(operation, isRedo, step) {
         const spec = FIELD_HISTORY[operation.type];
         const verb = isRedo ? 'redo' : 'undo';
         const failureMessage = `Failed to ${verb} ${spec.label}`;
@@ -4412,7 +4440,7 @@
         }
 
         try {
-            const data = await updateAnnotationRequest(apiIdentifier, updateData);
+            const data = await step.update(apiIdentifier, updateData);
             if (!data || !data.success) {
                 // Refused: the server kept its state, so nothing changes here either.
                 return historyRequestFailure(data || {}, failureMessage);
@@ -4457,7 +4485,7 @@
     // the Delete-key gesture on the selection overlay. The snapshot
     // payload was captured at delete time before the entry was
     // discarded.
-    async function undoDeleteMarkupOperation(operation) {
+    async function undoDeleteMarkupOperation(operation, step) {
         const snap = operation.snapshot || {};
         if (!snap || (!snap.rect && !snap.points)) {
             console.warn('delete-markup undo: no snapshot data to recreate from');
@@ -4488,7 +4516,7 @@
             });
         }
         try {
-            const data = await createAnnotationRequest(body);
+            const data = await step.create(body);
             if (!data || !data.success) {
                 return historyRequestFailure(data || {}, 'Failed to undo deletion');
             }
@@ -4516,17 +4544,16 @@
             return HISTORY_APPLIED;
         } catch (undoErr) {
             console.error('Failed to undo delete-markup:', undoErr);
-            showToast('error', 'Failed to undo deletion');
-            return HISTORY_FAILED;
+            return historyRequestFailure(undoErr, 'Failed to undo deletion');
         }
     }
 
     // Redo of a markup delete: the same delete request and local removal as the Delete-key gesture, for the
     // markup the undo recreated.
-    async function redoDeleteMarkupOperation(operation) {
+    async function redoDeleteMarkupOperation(operation, step) {
         const { identifier, pageIdx } = operation.redoTarget;
         try {
-            const data = await deleteAnnotationRequest(buildApiAnnotationIdentifier({ identifier }) || identifier);
+            const data = await step.remove(buildApiAnnotationIdentifier({ identifier }) || identifier);
             if (!data || !data.success) {
                 // Refused: the server kept the markup, so the page keeps it too.
                 return historyRequestFailure(data || {}, 'Failed to redo deletion');
@@ -4543,19 +4570,19 @@
         }
     }
 
-    function undoOperation(operation) {
+    function undoOperation(operation, step) {
         switch (operation.type) {
         case 'delete':
-            return undoDeleteOperation(operation);
+            return undoDeleteOperation(operation, step);
         case 'move':
-            return applyMoveOperation(operation, false);
+            return applyMoveOperation(operation, false, step);
         case 'highlight-extend':
-            return applyHighlightExtendOperation(operation, false);
+            return applyHighlightExtendOperation(operation, false, step);
         case 'edit':
         case 'priority':
-            return applyFieldOperation(operation, false);
+            return applyFieldOperation(operation, false, step);
         case 'delete-markup':
-            return undoDeleteMarkupOperation(operation);
+            return undoDeleteMarkupOperation(operation, step);
         default:
             // Recorded but not undoable (create-drawing, create-textbox): consumed silently.
             return HISTORY_DROPPED;
@@ -4566,24 +4593,24 @@
     // recorded by the original action or by its undo. Types without an entry, such as create-drawing and
     // create-textbox (whose undo is a no-op), never reach the redo stack.
     const REDO_STEPS = {
-        edit: { isReady: () => true, redo: (operation) => applyFieldOperation(operation, true) },
-        priority: { isReady: () => true, redo: (operation) => applyFieldOperation(operation, true) },
+        edit: { isReady: () => true, redo: (operation, step) => applyFieldOperation(operation, true, step) },
+        priority: { isReady: () => true, redo: (operation, step) => applyFieldOperation(operation, true, step) },
         move: {
             isReady: (operation) => !!operation.redoBody
                 && (operation.oldPageIdx === operation.newPageIdx || !!operation.redoTarget),
-            redo: (operation) => applyMoveOperation(operation, true),
+            redo: (operation, step) => applyMoveOperation(operation, true, step),
         },
         'highlight-extend': {
             isReady: (operation) => !!operation.redoBody,
-            redo: (operation) => applyHighlightExtendOperation(operation, true),
+            redo: (operation, step) => applyHighlightExtendOperation(operation, true, step),
         },
         delete: { isReady: (operation) => !!operation.redoTarget, redo: redoDeleteOperation },
         'delete-markup': { isReady: (operation) => !!operation.redoTarget, redo: redoDeleteMarkupOperation },
     };
 
     function canRedoOperation(operation) {
-        const step = REDO_STEPS[operation.type];
-        return !!step && step.isReady(operation);
+        const redoStep = REDO_STEPS[operation.type];
+        return !!redoStep && redoStep.isReady(operation);
     }
 
     async function performUndo() {
@@ -4598,9 +4625,14 @@
         }
 
         isUndoing = true;
+        const step = beginHistoryStep();
 
         try {
-            const outcome = await undoOperation(entry.operation);
+            const outcome = await undoOperation(entry.operation, step);
+            if (outcome === HISTORY_STALE) {
+                // Its document closed meanwhile; that document's history went with it.
+                return;
+            }
             if (outcome === HISTORY_FAILED) {
                 // Push operation back onto the stacks it came from if failed
                 restoreUndoEntry(entry);
@@ -4631,10 +4663,15 @@
         }
 
         isRedoing = true;
+        const step = beginHistoryStep();
 
         try {
             // Only operations canRedoOperation admitted are on the redo stack.
-            const outcome = await REDO_STEPS[entry.operation.type].redo(entry.operation);
+            const outcome = await REDO_STEPS[entry.operation.type].redo(entry.operation, step);
+            if (outcome === HISTORY_STALE) {
+                // Its document closed meanwhile; that document's history went with it.
+                return;
+            }
             if (outcome === HISTORY_APPLIED) {
                 restoreUndoEntry(entry);
             } else if (outcome === HISTORY_FAILED) {
@@ -6363,7 +6400,7 @@
 
     // The modal's own undo or redo of a highlight extend, for when the annotation controller cannot: undo
     // restores the recorded pre-extend state, redo replays the recorded extend request (issue #540).
-    async function applyHighlightExtendFallback(operation, isRedo) {
+    async function applyHighlightExtendFallback(operation, isRedo, step) {
         // A highlight PUT deletes and recreates the PDF annotation. Resolve
         // against live state now: operation.xref may already be obsolete after
         // a newer extend, undo, redo, move, or delete-undo.
@@ -6404,7 +6441,7 @@
 
         let data;
         try {
-            data = await updateAnnotationRequest(currentTarget.apiIdentifier, updateData);
+            data = await step.update(currentTarget.apiIdentifier, updateData);
         } catch (error) {
             if (isMissingAnnotationFailure(error)) {
                 return dropMissingHighlightUndo();
@@ -8528,6 +8565,7 @@
         // recorded on one submission against another (issue #540). The annotation controller's own undo stack
         // already starts empty with each modal; this module-level copy outlived it.
         if (submissionId !== currentSubmissionId || resolvedAssignmentId !== currentAssignmentId) {
+            historyDocumentEpoch += 1;
             undoStack = [];
             clearRedoStack();
         }

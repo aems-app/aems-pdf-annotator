@@ -966,7 +966,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             return { updateData: updateData, targetState: targetState };
         }
 
-        async function _applyHighlightExtendStep(operation, isRedo) {
+        // options.request replaces _h.updateAnnotationRequest for this step: the host passes one that sends
+        // nothing, and resolves nothing, once the document the step began on has closed (issue #540).
+        async function _applyHighlightExtendStep(operation, isRedo, options) {
             var direction = isRedo ? 'redo' : 'undo';
             // A redo needs the request it replays; an extend recorded without one cannot be redone.
             if (!operation || operation.type !== 'highlight-extend' || (isRedo && !operation.redoBody)) {
@@ -985,10 +987,11 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
 
             var step = await _highlightExtendStep(operation, isRedo);
+            var request = (options && options.request) || _h.updateAnnotationRequest;
 
             var data;
             try {
-                data = await _h.updateAnnotationRequest(currentTarget.apiIdentifier, step.updateData);
+                data = await request(currentTarget.apiIdentifier, step.updateData);
             } catch (error) {
                 if (_isMissingAnnotationFailure(error)) {
                     return _dropMissingHighlightUndo();
@@ -1025,12 +1028,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             return data;
         }
 
-        async function performHighlightExtendUndo(operation) {
-            return _applyHighlightExtendStep(operation, false);
+        async function performHighlightExtendUndo(operation, options) {
+            return _applyHighlightExtendStep(operation, false, options);
         }
 
-        async function performHighlightExtendRedo(operation) {
-            return _applyHighlightExtendStep(operation, true);
+        async function performHighlightExtendRedo(operation, options) {
+            return _applyHighlightExtendStep(operation, true, options);
         }
 
         // -----------------------------------------------------------------
