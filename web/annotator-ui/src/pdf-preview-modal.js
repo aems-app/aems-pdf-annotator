@@ -3307,6 +3307,9 @@
     // Advances whenever another document opens: a history step that began under an earlier epoch neither sends
     // its request nor applies its answer (issue #540).
     let historyDocumentEpoch = 0;
+    // Numbers every new operation in the order it was recorded. A step that puts an operation back goes below
+    // any operation numbered after it, and a step learns from it whether a new operation arrived meanwhile.
+    let historySequence = 0;
     const pdfSearchState = {
         term: '',
         matches: [],
@@ -3425,23 +3428,42 @@
     }
 
     // Undo functionality
-    // options.preserveRedo marks a history step putting its operation back: a redo, or an undo that failed. Any
-    // other push is a new operation, after which the undone operations no longer follow from the current state,
-    // so it clears the redo history.
+    // options.preserveRedo marks a history step putting its operation back: a redo, or an undo that failed. It goes
+    // back in history order, below any operation recorded after it. Any other push is a new operation, recorded
+    // even while an undo or redo request is in flight; after it the undone operations no longer follow from the
+    // current state, so it clears the redo history.
     function pushUndoOperation(operation, options) {
         const preserveRedo = !!(options && options.preserveRedo);
-        if (!preserveRedo && (isUndoing || isRedoing)) {
-            // Don't record new undo operations while an undo or a redo is applying one
-            return;
-        }
-        if (!preserveRedo) {
-            clearRedoStack();
-        }
         if (operation && !operation.undoTimestamp) {
             operation.undoTimestamp = Date.now();
         }
+        if (preserveRedo) {
+            insertInHistoryOrder(undoStack, operation);
+            return;
+        }
 
+        clearRedoStack();
+        if (operation) {
+            historySequence += 1;
+            operation.historySequence = historySequence;
+        }
         pushBounded(undoStack, operation);
+    }
+
+    // Insert below every operation numbered after this one; operations without a number keep push order.
+    function insertInHistoryOrder(stack, operation) {
+        const sequence = operation && operation.historySequence;
+        let index = stack.length;
+        if (typeof sequence === 'number') {
+            while (index > 0 && typeof stack[index - 1].historySequence === 'number'
+                && stack[index - 1].historySequence > sequence) {
+                index -= 1;
+            }
+        }
+        stack.splice(index, 0, operation);
+        if (stack.length > MAX_UNDO_STACK_SIZE) {
+            stack.shift();
+        }
     }
 
     // Ctrl+Z undoes; Ctrl+Y and Ctrl+Shift+Z redo (issue #540); Cmd stands in for Ctrl on macOS. With Shift
@@ -4097,6 +4119,7 @@
     // answers count only if it still is when they arrive; otherwise they throw STALE_HISTORY_STEP.
     function beginHistoryStep() {
         const epoch = historyDocumentEpoch;
+        const sequence = historySequence;
         const isStale = () => epoch !== historyDocumentEpoch;
         const guard = (request) => (...args) => {
             if (isStale()) return Promise.reject(STALE_HISTORY_STEP);
@@ -4109,6 +4132,8 @@
             create: guard(createAnnotationRequest),
             update: guard(updateAnnotationRequest),
             remove: guard(deleteAnnotationRequest),
+            // A new operation recorded since the step began cleared redo, which this step must not refill.
+            overtaken: () => historySequence !== sequence,
         };
     }
 
@@ -4636,7 +4661,7 @@
             if (outcome === HISTORY_FAILED) {
                 // Push operation back onto the stacks it came from if failed
                 restoreUndoEntry(entry);
-            } else if (outcome === HISTORY_APPLIED && canRedoOperation(entry.operation)) {
+            } else if (outcome === HISTORY_APPLIED && !step.overtaken() && canRedoOperation(entry.operation)) {
                 pushBounded(redoStack, entry);
             }
         } catch (error) {
@@ -4674,13 +4699,15 @@
             }
             if (outcome === HISTORY_APPLIED) {
                 restoreUndoEntry(entry);
-            } else if (outcome === HISTORY_FAILED) {
+            } else if (outcome === HISTORY_FAILED && !step.overtaken()) {
                 redoStack.push(entry);
             }
         } catch (error) {
             console.error('Error during redo:', error);
             showToast('error', translatePdfPreviewText('Redo operation failed'));
-            redoStack.push(entry);
+            if (!step.overtaken()) {
+                redoStack.push(entry);
+            }
         } finally {
             isRedoing = false;
         }

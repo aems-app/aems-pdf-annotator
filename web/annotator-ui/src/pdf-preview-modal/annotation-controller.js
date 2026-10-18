@@ -496,14 +496,19 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         // Undo
         // -----------------------------------------------------------------
 
-        // options.preserveRedo marks a redo putting its operation back (issue #540): the host mirror must keep
-        // its redo history, which any other push clears.
+        // options.preserveRedo marks a history step putting its operation back, a redo or a failed undo (issue
+        // #540): the host mirror must keep its redo history, which any other push clears, and the operation goes
+        // back in history order, below any operation the host numbered after it.
         function pushUndoOperation(operation, options) {
             if (_isUndoing) return;
             if (operation && !operation.undoTimestamp) {
                 operation.undoTimestamp = Date.now();
             }
-            _undoStack.push(operation);
+            if (options && options.preserveRedo) {
+                _insertInHistoryOrder(operation);
+            } else {
+                _undoStack.push(operation);
+            }
             if (_undoStack.length > MAX_UNDO_STACK_SIZE) {
                 _undoStack.shift();
             }
@@ -511,6 +516,19 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             if (typeof _h.pushUndoOperation === 'function') {
                 _h.pushUndoOperation(operation, options);
             }
+        }
+
+        // The host numbers operations (historySequence); without numbers, push order stands.
+        function _insertInHistoryOrder(operation) {
+            var sequence = operation && operation.historySequence;
+            var index = _undoStack.length;
+            if (typeof sequence === 'number') {
+                while (index > 0 && typeof _undoStack[index - 1].historySequence === 'number'
+                    && _undoStack[index - 1].historySequence > sequence) {
+                    index -= 1;
+                }
+            }
+            _undoStack.splice(index, 0, operation);
         }
 
         function getUndoStack() {
