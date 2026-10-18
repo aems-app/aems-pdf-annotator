@@ -1602,18 +1602,8 @@
         if (!isCurrentHistoryEpoch(epoch) || writes.deleted) return;
         const local = Object.keys(annotationsData)
             .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
-        const parts = resolveAnnotationIdParts({ identifier: annotationId, xref: local?.xref });
-        const refersToConflict = (operation) => {
-            const refers = (target) => target && (
-                ['annotationId', 'identifier', 'requestId', 'requestIdentifier', 'stable_id', 'id'].some((key) => {
-                    if (target[key] == null) return false;
-                    const candidate = resolveAnnotationIdParts({ identifier: target[key] });
-                    return (parts.stableId != null && candidate.stableId === parts.stableId)
-                        || (parts.xref != null && candidate.xref === parts.xref);
-                }) || (parts.xref != null && String(target.xref) === String(parts.xref))
-            );
-            return [operation, operation.annotation, operation.snapshot, operation.undoTarget, operation.redoTarget].some(refers);
-        };
+        const identity = { identifier: annotationId, xref: local?.xref };
+        const refersToConflict = (operation) => historyOperationMatches(operation, identity);
         undoStack = undoStack.filter((operation) => !refersToConflict(operation));
         redoStack = redoStack.filter((entry) => !refersToConflict(entry.operation));
         _currentAnnotationCtrl?.removeUndoOperations?.(refersToConflict);
@@ -3570,6 +3560,41 @@
         return epoch === historyDocumentEpoch;
     }
 
+    const HISTORY_IDENTITY_FIELDS = ['annotationId', 'identifier', 'requestId', 'requestIdentifier', 'stable_id', 'stableId', 'id'];
+
+    // Bare identifiers (including numeric stable IDs) belong only to the stable namespace.
+    // Only an xref field or an explicitly namespaced identifier can contribute an xref.
+    function historyIdentityMatches(left, right) {
+        const identities = (target) => {
+            const values = new Set();
+            const add = (namespace, value) => {
+                const normalized = normalizeAnnotationIdentifierValue(value);
+                if (normalized != null) values.add(`${namespace}:${normalized}`);
+            };
+            add('xref', target?.xref);
+            HISTORY_IDENTITY_FIELDS.forEach((key) => {
+                const value = normalizeAnnotationIdentifierValue(target?.[key]);
+                if (!value) return;
+                if (key === 'stable_id' || key === 'stableId'
+                    || (!value.includes('|') && !value.startsWith('xref:') && !value.startsWith('id:'))) {
+                    add('stable', value);
+                } else {
+                    const parts = parseCompositeIdentifier(value);
+                    add('stable', parts.stableId);
+                    add('xref', parts.xref);
+                }
+            });
+            return values;
+        };
+        const rightIdentities = identities(right);
+        return [...identities(left)].some((value) => rightIdentities.has(value));
+    }
+
+    function historyOperationMatches(left, right) {
+        const targets = (operation) => [operation, operation?.annotation, operation?.snapshot, operation?.undoTarget, operation?.redoTarget];
+        return targets(left).some((target) => targets(right).some((other) => historyIdentityMatches(target, other)));
+    }
+
     // Undo functionality
     // options.preserveRedo marks a history step putting its operation back: a redo, or an undo that failed. It goes
     // back in history order, below any operation recorded after it. Any other push is a new operation, recorded
@@ -3652,8 +3677,7 @@
             !!right &&
             left.type === right.type &&
             left.undoTimestamp === right.undoTimestamp &&
-            normalizeAnnotationIdentifierValue(left.identifier || left.requestId || left.annotation?.id || left.annotation?.stable_id)
-                === normalizeAnnotationIdentifierValue(right.identifier || right.requestId || right.annotation?.id || right.annotation?.stable_id) &&
+            (left === right || historyOperationMatches(left, right)) &&
             Number(left.pageIdx ?? left.oldPageIdx ?? -1) === Number(right.pageIdx ?? right.oldPageIdx ?? -1)
         );
 
@@ -3684,19 +3708,7 @@
     }
 
     function findAnnotationIndexByUndoOperation(pageIdx, operation) {
-        const identifiers = [
-            operation?.identifier,
-            operation?.requestId,
-            operation?.xref,
-        ];
-        for (const identifier of identifiers) {
-            if (identifier === null || identifier === undefined) continue;
-            const annotationIdx = findAnnotationIndex(pageIdx, identifier);
-            if (annotationIdx >= 0) {
-                return annotationIdx;
-            }
-        }
-        return -1;
+        return (annotationsData[pageIdx] || []).findIndex((annotation) => historyIdentityMatches(annotation, operation));
     }
 
     function namespaceXrefIdentifier(value, xref) {
@@ -4859,21 +4871,14 @@
     // Recreation changes identity for the entire timeline, including entries currently on the redo stack.
     function remapMarkupHistory(oldId, annotation, inFlight) {
         const newId = annotation.stable_id || annotation.id || annotation.xref;
-        const oldXref = inFlight.snapshot?.xref ?? inFlight.xref;
+        const identity = { annotationId: oldId, xref: inFlight.snapshot?.xref ?? inFlight.xref };
         const operations = new Set([
             ...undoStack, ...redoStack.map((entry) => entry.operation),
             ...(_currentAnnotationCtrl?.getUndoStack?.() || []), inFlight,
         ]);
         const remap = (target) => {
-            if (!target) return;
-            const identityKeys = ['annotationId', 'identifier', 'requestId', 'requestIdentifier', 'stable_id', 'id'];
-            const matches = identityKeys.some((key) => {
-                const parts = resolveAnnotationIdParts({ identifier: target[key] });
-                return String(target[key]) === String(oldId) || parts.stableId === String(oldId)
-                    || (oldXref != null && parts.xref === String(oldXref));
-            }) || (oldXref != null && String(target.xref) === String(oldXref));
-            if (!matches) return;
-            identityKeys.forEach((key) => {
+            if (!target || !historyIdentityMatches(target, identity)) return;
+            HISTORY_IDENTITY_FIELDS.forEach((key) => {
                 if (target[key] != null) target[key] = newId;
             });
             if (target.xref != null) target.xref = annotation.xref;
@@ -9918,6 +9923,7 @@
                     resolveAnnotationIdentifierValue: resolveAnnotationIdentifierValue,
                     findAnnotationEntry: findAnnotationEntry,
                     findAnnotationIndex: findAnnotationIndex,
+                    historyIdentityMatches: historyIdentityMatches,
                     translatePdfPreviewText: translatePdfPreviewText,
                     escapeHtml: escapeHtml,
                     escapeHtmlAttribute: escapeHtmlAttribute,

@@ -633,6 +633,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         }
 
         function _findAnnotationIndexByOperation(pageIdx, operation) {
+            if (_h.historyIdentityMatches) {
+                var currentAnnotations = _getAnnotationsData();
+                return (currentAnnotations[pageIdx] || []).findIndex(function (annotation) {
+                    return _h.historyIdentityMatches(annotation, operation);
+                });
+            }
             var identifiers = [
                 operation && operation.identifier,
                 operation && operation.requestId,
