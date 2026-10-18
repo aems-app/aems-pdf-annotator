@@ -501,6 +501,11 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         // back in history order, below any operation the host numbered after it.
         function pushUndoOperation(operation, options) {
             if (_isUndoing) return;
+            if (options && options.epoch !== undefined && typeof _h.isCurrentHistoryEpoch === 'function'
+                && !_h.isCurrentHistoryEpoch(options.epoch)) {
+                // Its request started on a document the host has since closed: record it on neither stack.
+                return;
+            }
             if (operation && !operation.undoTimestamp) {
                 operation.undoTimestamp = Date.now();
             }
@@ -529,6 +534,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
             }
             _undoStack.splice(index, 0, operation);
+        }
+
+        // The host's document epoch when a request starts; the recording of its operation carries it, so the host
+        // can refuse one that answers after another document opened (issue #540).
+        function _currentHistoryEpoch() {
+            return typeof _h.getHistoryEpoch === 'function' ? _h.getHistoryEpoch() : undefined;
         }
 
         function getUndoStack() {
@@ -883,6 +894,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 anchor_text: payload.anchorText,
                 source: 'HUMAN',
             };
+            var requestEpoch = _currentHistoryEpoch();
             var data = await _h.updateAnnotationRequest(apiIdentifier, requestBody);
             if (!data || !data.success) {
                 return data || { success: false };
@@ -938,7 +950,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 // Redo replays this exact request: the PDF-space quads it sent are not recoverable from
                 // newQuads, which hold the response's top-left quads when the server echoed them.
                 redoBody: _cloneHighlightRequest(requestBody),
-            });
+            }, { epoch: requestEpoch });
 
             var operation = peekUndoOperation();
             _updateHighlightMarkerSource(operation, responseAnnotation, 'HUMAN');
@@ -2771,6 +2783,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     xref: existingXref,
                     requestId: requestIdentifier,
                 });
+                var requestEpoch = _currentHistoryEpoch();
                 var data = await _h.updateAnnotationRequest(apiIdentifier, { content: newContent });
                 if (!data.success || !data.annotation) {
                     throw new Error((data && data.error) || 'Update failed');
@@ -2813,7 +2826,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                                 oldSource: sourceBefore,
                                 newSource: newSource,
                                 isOwnershipTransfer: sourceBefore === 'AI' && newSource === 'HUMAN',
-                            });
+                            }, { epoch: requestEpoch });
                         }
                     }
                 }
@@ -3027,6 +3040,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     xref: existingXref,
                     requestId: requestIdentifier,
                 });
+                var requestEpoch = _currentHistoryEpoch();
                 var data = await _h.deleteAnnotationRequest(apiIdentifier);
                 if (!data.success) {
                     throw new Error((data && data.error) || 'Delete failed');
@@ -3050,7 +3064,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         stable_id: _extractStableIdentifier(originalAnn, null),
                         source: _h.resolveAnnotationSource ? _h.resolveAnnotationSource(originalAnn) : originalAnn.source,
                     },
-                });
+                }, { epoch: requestEpoch });
 
                 var annotationsData = _getAnnotationsData();
                 if (annotationsData[pageIdx]) {

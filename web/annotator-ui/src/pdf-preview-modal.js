@@ -3218,6 +3218,7 @@
                 requestId: marker.dataset.annotationRequestId,
             });
 
+            const requestEpoch = currentHistoryEpoch();
             const data = await updateAnnotationRequest(apiIdentifier, { content: trimmedContent });
 
             if (data.success && data.annotation) {
@@ -3282,7 +3283,7 @@
                         oldSource,
                         newSource,
                         isOwnershipTransfer: oldSource === 'AI' && newSource === 'HUMAN',
-                    });
+                    }, { epoch: requestEpoch });
                 }
 
                 markLocalAnnotationChange(); // Prevent polling reload
@@ -3427,12 +3428,26 @@
         return annotationTypes.includes(String(value));
     }
 
+    // The document epoch when a request starts. The recording of the operation it performs carries it
+    // (options.epoch), and is dropped if another document opened before the answer arrived (issue #540).
+    function currentHistoryEpoch() {
+        return historyDocumentEpoch;
+    }
+
+    function isCurrentHistoryEpoch(epoch) {
+        return epoch === historyDocumentEpoch;
+    }
+
     // Undo functionality
     // options.preserveRedo marks a history step putting its operation back: a redo, or an undo that failed. It goes
     // back in history order, below any operation recorded after it. Any other push is a new operation, recorded
     // even while an undo or redo request is in flight; after it the undone operations no longer follow from the
     // current state, so it clears the redo history.
     function pushUndoOperation(operation, options) {
+        if (options && options.epoch !== undefined && !isCurrentHistoryEpoch(options.epoch)) {
+            // Its request started on a document that is no longer open: the operation belongs to that history.
+            return;
+        }
         const preserveRedo = !!(options && options.preserveRedo);
         if (operation && !operation.undoTimestamp) {
             operation.undoTimestamp = Date.now();
@@ -3737,6 +3752,7 @@
                 if (!viewer) return;
 
                 var saveToken = beginDrawingSave();
+                var requestEpoch;
                 resolveDrawingViewport(viewer, stroke.pageIdx + 1).then(function (viewport) {
                     if (!viewport) return null;
 
@@ -3744,6 +3760,7 @@
                         return viewport.convertToPdfPoint(pt.x, pt.y);
                     });
 
+                    requestEpoch = currentHistoryEpoch();
                     return createAnnotationRequest({
                         page_index: pageIdx,
                         content: '',
@@ -3765,7 +3782,7 @@
                             type: 'create-drawing',
                             pageIdx: stroke.pageIdx,
                             annotationId: stroke.annotationId
-                        });
+                        }, { epoch: requestEpoch });
                     }
                 })
                 .catch(function (err) {
@@ -3813,6 +3830,7 @@
                     color: 'amber'
                 };
 
+                var requestEpoch = currentHistoryEpoch();
                 (isUpdate
                     ? updateAnnotationRequest(buildApiAnnotationIdentifier({ identifier: entry.annotationId }) || entry.annotationId, textboxBody)
                     : createAnnotationRequest(textboxBody)
@@ -3827,7 +3845,7 @@
                                 type: 'create-textbox',
                                 pageIdx: entry.pageIdx,
                                 annotationId: entry.annotationId
-                            });
+                            }, { epoch: requestEpoch });
                         }
                     }
                 })
@@ -3896,6 +3914,7 @@
                 }
 
                 if (annotationId) {
+                    var requestEpoch = currentHistoryEpoch();
                     deleteAnnotationRequest(buildApiAnnotationIdentifier({ identifier: annotationId }) || annotationId)
                     .then(function () {
                         removeAnnotationEntryLocal(item.pageIdx, annotationId);
@@ -3906,7 +3925,7 @@
                             pageIdx: item.pageIdx,
                             annotationId: annotationId,
                             snapshot: snapshot
-                        });
+                        }, { epoch: requestEpoch });
                     })
                     .catch(function (err) {
                         console.error('Failed to delete markup:', err);
@@ -4120,9 +4139,9 @@
     // One undo or redo. Its requests go out only while the document it began on is still open, and their
     // answers count only if it still is when they arrive; otherwise they throw STALE_HISTORY_STEP.
     function beginHistoryStep() {
-        const epoch = historyDocumentEpoch;
+        const epoch = currentHistoryEpoch();
         const sequence = historySequence;
-        const isStale = () => epoch !== historyDocumentEpoch;
+        const isStale = () => !isCurrentHistoryEpoch(epoch);
         const guard = (request) => (...args) => {
             if (isStale()) return Promise.reject(STALE_HISTORY_STEP);
             return request(...args).then(
@@ -6370,6 +6389,7 @@
                 anchor_text: payload.anchorText,
                 source: 'HUMAN',
             };
+            const requestEpoch = currentHistoryEpoch();
             const data = await updateAnnotationRequest(apiIdentifier, requestBody);
             if (data && data.success) {
                 const responseAnn = data.annotation || null;
@@ -6419,7 +6439,7 @@
                     isOwnershipTransfer: oldSource === 'AI',
                     // Redo replays this exact request (issue #540).
                     redoBody: cloneHistoryBody(requestBody),
-                });
+                }, { epoch: requestEpoch });
 
                 marker.classList.remove('source-ai');
                 marker.classList.add('source-human');
@@ -7323,6 +7343,7 @@
 
             // Note: _updatingPriorityId and _isTemporary are already set in the click handler above
 
+            const requestEpoch = currentHistoryEpoch();
             const data = await updateAnnotationRequest(apiIdentifier, { color: priority });
 
             // Check for explicit error in response
@@ -7378,7 +7399,7 @@
                                 oldSource: originalSource,
                                 newSource: newSource,
                                 isOwnershipTransfer: isOwnershipTransfer,
-                            });
+                            }, { epoch: requestEpoch });
                         }
                     }
                 } else {
@@ -7407,7 +7428,7 @@
                                 oldSource: originalSource,
                                 newSource: originalSource,
                                 isOwnershipTransfer: false,
-                            });
+                            }, { epoch: requestEpoch });
                         }
                     }
                 }
@@ -7905,6 +7926,7 @@
                 }
             }
 
+            const requestEpoch = currentHistoryEpoch();
             const data = await updateAnnotationRequest(apiIdentifier, requestBody);
 
             if (data.success && data.annotation) {
@@ -7942,7 +7964,7 @@
                         isOwnershipTransfer: isOwnershipTransfer,
                         // Redo replays this exact request (issue #540).
                         redoBody: cloneHistoryBody(requestBody),
-                    });
+                    }, { epoch: requestEpoch });
 
                     const normalizedAnn = enhanceAnnotationEntry(data.annotation);
                     debugLog('[CROSS-PAGE] Normalized annotation payload:', normalizedAnn);
@@ -9626,6 +9648,8 @@
                     updateAnnotationPriority: updateAnnotationPriority,
                     pushUndoOperation: pushUndoOperation,
                     clearRedoStack: clearRedoStack,
+                    getHistoryEpoch: currentHistoryEpoch,
+                    isCurrentHistoryEpoch: isCurrentHistoryEpoch,
                     collapseInlineLabel: collapseInlineLabel,
                     expandInlineLabelEdit: expandInlineLabelEdit,
                     setupTextareaAutoResize: setupTextareaAutoResize,
