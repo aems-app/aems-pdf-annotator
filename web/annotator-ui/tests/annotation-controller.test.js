@@ -657,6 +657,26 @@ describe('annotation-controller state ownership', () => {
     expect(controller.getUndoStack()).toEqual([operation]);
   });
 
+  // Review open question 1: an operation whose request answers after another document opened belongs to the
+  // closed document, so the controller records it on neither its own stack nor the host's.
+  it('records nothing for a request that answered after its document closed', async () => {
+    const mod = await loadAnnotationControllerModule();
+    const pushUndoOperation = vi.fn();
+    let openEpoch = 1;
+    const controller = mod.createAnnotationController({
+      annotationsState: { undoStack: [] },
+      getAnnotationsData: () => ({}),
+      helpers: { pushUndoOperation, isCurrentHistoryEpoch: (epoch) => epoch === openEpoch },
+    });
+
+    controller.pushUndoOperation({ type: 'edit', identifier: 'ann-1' }, { epoch: 1 });
+    openEpoch = 2;
+    controller.pushUndoOperation({ type: 'edit', identifier: 'ann-2' }, { epoch: 1 });
+
+    expect(controller.getUndoStack()).toEqual([expect.objectContaining({ identifier: 'ann-1' })]);
+    expect(pushUndoOperation).toHaveBeenCalledTimes(1);
+  });
+
   it('clearing the undo stack also clears the host redo history', async () => {
     const mod = await loadAnnotationControllerModule();
     const clearRedoStack = vi.fn();

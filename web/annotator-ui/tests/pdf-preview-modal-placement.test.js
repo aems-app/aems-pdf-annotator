@@ -1982,9 +1982,10 @@ describe('pdf-preview-modal placement helpers', () => {
       h.expectBucket('HUMAN');
     });
 
-    // A highlight resized through the modal's own fallback: the controller has no highlight support. The fake
-    // endpoint keeps its state, and a highlight PUT recreates the PDF annotation, so each answer has a new xref.
-    async function fallbackHighlightResized() {
+    // A highlight about to be resized through the modal's own fallback: the controller has no highlight support.
+    // The fake endpoint keeps its state, and a highlight PUT recreates the PDF annotation, so each answer has a
+    // new xref. resize() performs the resize.
+    async function fallbackHighlightReady() {
       const highlight = {
         stable_id: 'hl-1', xref: 70, page_index: 0, type: 'Highlight', content: 'Check the sign',
         quads: [[50, 50, 150, 70]], anchor_text: 'answer text', rect: [50, 50, 150, 70], source: 'AI',
@@ -2010,9 +2011,15 @@ describe('pdf-preview-modal placement helpers', () => {
       h.clickMarker({ pageIdx: 0, identifier: 'hl-1' });
       const { onExtendCompleted } = anchor.init.mock.calls[0][0];
       const [marker, selected] = anchor.select.mock.calls[0];
-      await onExtendCompleted(marker, selected, {
+      const resize = () => onExtendCompleted(marker, selected, {
         pageIdx: 0, quadsPdf: [[50, 722, 220, 742]], anchorText: 'resized answer text',
       });
+      return { h, updateAnnotation, resize };
+    }
+
+    async function fallbackHighlightResized() {
+      const { h, updateAnnotation, resize } = await fallbackHighlightReady();
+      await resize();
       const resized = { quads: [[50, 722, 220, 742]], anchor_text: 'resized answer text', source: 'HUMAN' };
       expect(h.handle.getAnnotations()[0][0]).toMatchObject(resized);
       return { h, updateAnnotation, resized };
@@ -2042,9 +2049,8 @@ describe('pdf-preview-modal placement helpers', () => {
       return { h, createAnnotation, deleteAnnotation };
     }
 
-    // A pen stroke deleted with the Delete key, then (unless undo is false) its undo, which recreates it as
-    // stroke-2.
-    async function strokeDeletedThenRestored({ undo = true } = {}) {
+    // A selected pen stroke; deleteStroke() presses the Delete key.
+    async function strokeSelected() {
       const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
       window.PdfPreviewModalMarkupSelection = selection;
       const createAnnotation = vi.fn(async (_assignment, _submission, body) => ({
@@ -2069,7 +2075,14 @@ describe('pdf-preview-modal placement helpers', () => {
           points: [{ x: 10, y: 92 }, { x: 20, y: 102 }],
         },
       });
-      selection.onDeleteRequested();
+      return { h, createAnnotation, deleteAnnotation, deleteStroke: () => selection.onDeleteRequested() };
+    }
+
+    // A pen stroke deleted with the Delete key, then (unless undo is false) its undo, which recreates it as
+    // stroke-2.
+    async function strokeDeletedThenRestored({ undo = true } = {}) {
+      const { h, createAnnotation, deleteAnnotation, deleteStroke } = await strokeSelected();
+      deleteStroke();
       await vi.waitFor(() => expect(h.getUndoStacks().local).toHaveLength(1));
       expect(h.handle.getAnnotations()).toEqual({});
       await settle();
@@ -3233,6 +3246,104 @@ describe('pdf-preview-modal placement helpers', () => {
       h.dispatchUndo();
       await settle();
       expect(submissionsOf(h.updateAnnotation)).toEqual(['submission-1', 'submission-1']);
+    });
+
+    // Review open question 1: an ordinary action still in flight when another submission opens must not record
+    // its operation there; Ctrl+Z would then send the old submission's undo through the new one's endpoint.
+    const adapterSubmissions = (h) => ['createAnnotation', 'updateAnnotation', 'deleteAnnotation']
+      .flatMap((name) => h.adapter[name].mock.calls.map(([, submission]) => submission));
+
+    // Each flow builds its harness and names the request its action makes, how to start the action, and the
+    // answer the server gives once the other submission is open.
+    async function splitFlow(start, answer, request = 'updateAnnotation') {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      return { h, request: h.adapter[request], start: () => start(h), answer: () => answer(h) };
+    }
+
+    const LATE_ACTIONS = [
+      ['an inline edit', () => splitFlow(
+        (h) => window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(
+          inlineLabelFor(h, h.annotation.content), 'Edited inline',
+        ),
+        (h) => ({ success: true, annotation: { ...h.annotation, content: 'Edited inline' } }),
+      )],
+      ['a sidebar edit', () => splitFlow(
+        (h) => saveSidebarEdit(h, 'Edited feedback'),
+        (h) => ({ success: true, annotation: { ...h.annotation, content: 'Edited feedback' } }),
+      )],
+      ['a priority change', () => splitFlow(
+        (h) => h.options.helpers.updateAnnotationPriority(0, 'owned-comment', 'red'),
+        (h) => ({ success: true, annotation: { ...h.annotation, color: 'red' } }),
+      )],
+      ['a marker move', () => splitFlow(
+        (h) => window.PdfPreviewModal.__test.updateAnnotationPosition(0, 0, 'owned-comment', h.marker, true),
+        (h) => ({ success: true, annotation: { ...h.annotation, source: 'HUMAN' } }),
+      )],
+      ['a sidebar delete', () => splitFlow(
+        (h) => h.controller.deleteAnnotation(0, 'owned-comment'),
+        () => ({ success: true }),
+        'deleteAnnotation',
+      )],
+      ['a highlight resize', () => splitFlow(
+        (h) => h.controller.persistHighlightExtend(h.marker, h.annotation, {
+          pageIdx: 0, quadsPdf: [[50, 722, 220, 742]], anchorText: 'resized answer text',
+        }),
+        (h) => ({
+          success: true,
+          annotation: { ...h.annotation, quads: [[50, 722, 220, 742]], anchor_text: 'resized answer text', source: 'HUMAN' },
+        }),
+      )],
+      ['a highlight resize through the modal fallback', async () => {
+        const { h, updateAnnotation, resize } = await fallbackHighlightReady();
+        return {
+          h,
+          request: updateAnnotation,
+          start: resize,
+          answer: () => ({ success: true, annotation: { stable_id: 'hl-1', xref: 71, page_index: 0, source: 'HUMAN' } }),
+        };
+      }],
+      ['a pen stroke', async () => {
+        const m = await markupHarness();
+        return {
+          h: m.h,
+          request: m.server.createAnnotation,
+          start: () => m.canvas.onStrokeComplete(0, {
+            pageIdx: 0, points: [{ x: 10, y: 92 }], style: 'pen', strokeWidth: 2, opacity: 1, color: { rgb: [1, 0, 0] },
+          }),
+          answer: () => ({ success: true, annotation: { stable_id: 'late-1', xref: 700, page_index: 0, type: 'drawing' } }),
+        };
+      }],
+      ['a text box', async () => {
+        const m = await markupHarness();
+        return {
+          h: m.h,
+          request: m.server.createAnnotation,
+          start: () => m.textboxes.onTextboxCommitted({ pageIdx: 0, content: 'Check units', color: { rgb: [0, 0, 1] } }),
+          answer: () => ({ success: true, annotation: { stable_id: 'late-1', xref: 700, page_index: 0, type: 'textbox' } }),
+        };
+      }],
+      ['a pen-stroke delete', async () => {
+        const { h, deleteAnnotation, deleteStroke } = await strokeSelected();
+        return { h, request: deleteAnnotation, start: deleteStroke, answer: () => ({ success: true }) };
+      }],
+    ];
+
+    it.each(LATE_ACTIONS)('%s answered after another submission opened is not recorded there', async (_name, setup) => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { h, request, start, answer } = await setup();
+      const finish = pending(request);
+      start();
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+
+      await openOtherSubmission(h);
+      finish(answer());
+      await settle();
+
+      expect(h.getUndoStacks()).toEqual({ local: [], controller: [] });
+      h.dispatchUndo();
+      await settle();
+      expect(adapterSubmissions(h)).not.toContain('submission-2');
     });
   });
 });
