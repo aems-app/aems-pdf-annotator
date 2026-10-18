@@ -1,3 +1,4 @@
+import { applyAnnotationPut } from './fixtures/annotation-put.fixture.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DELETE_UNDO_PAGE_HEIGHT,
@@ -185,17 +186,12 @@ async function createSplitOwnershipHarness({
   const annotation = {
     id: 'owned-comment', stable_id: 'owned-comment', xref: 42, page_index: 0,
     type: 'Highlight', content: 'Teacher feedback', source, original_source: 'AI',
-    grader_name: 'Artem Kulachenko', rect: [50, 50, 150, 70],
+    color: 'amber', grader_name: 'Artem Kulachenko', rect: [50, 50, 150, 70],
     quads: [[50, 50, 150, 70]], anchor_text: 'answer text',
   };
   let serverAnnotation = { ...annotation };
-  // A content/colour PUT keeps the stored source; only an explicit source transfers ownership.
   function persistUpdate(body) {
-    serverAnnotation = {
-      ...serverAnnotation, ...body,
-      source: body.source || serverAnnotation.source || 'AI',
-      page_index: body.page_index ?? serverAnnotation.page_index,
-    };
+    serverAnnotation = applyAnnotationPut(serverAnnotation, body);
     return { success: true, annotation: { ...serverAnnotation } };
   }
   const updateAnnotation = vi.fn(async (_assignment, _submission, _id, body) => (
@@ -470,7 +466,7 @@ describe('pdf-preview-modal placement helpers', () => {
     h.handle.destroy();
   });
 
-  it('keeps an inline content-only edit in the AI list', async () => {
+  it('re-buckets an inline content-only edit into the HUMAN list', async () => {
     const h = await createSplitOwnershipHarness();
     const label = document.createElement('div');
     label.className = 'annotation-label label-expanded label-editing';
@@ -478,13 +474,13 @@ describe('pdf-preview-modal placement helpers', () => {
     h.marker.appendChild(label);
     await window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline');
     expect(h.updateAnnotation.mock.calls[0][3]).toEqual({ content: 'Edited inline' });
-    h.expectBucket('AI');
+    h.expectBucket('HUMAN');
     expect(persistedEntry(h).content).toBe('Edited inline');
     h.handle.destroy();
   });
 
   // Issue #462 (criterion 29): an edit saved through the inline label pushed no undo entry, so Ctrl+Z left the
-  // edited text in place. Undo must restore the previous text while a content-only PUT keeps the AI source.
+  // edited text in place. A content-only edit becomes HUMAN; undo restores the previous text and AI source.
   it('Ctrl+Z restores an inline text edit and its source', async () => {
     const h = await createSplitOwnershipHarness();
     const label = document.createElement('div');
@@ -493,12 +489,12 @@ describe('pdf-preview-modal placement helpers', () => {
     label.dataset.originalFullText = h.annotation.content;
     h.marker.appendChild(label);
     await window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline');
-    h.expectBucket('AI');
+    h.expectBucket('HUMAN');
     expect(persistedEntry(h).content).toBe('Edited inline');
 
     h.dispatchUndo();
     await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
-    expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback' });
+    expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback', source: 'AI' });
     await vi.waitFor(() => {
       h.expectBucket('AI');
       expect(persistedEntry(h).content).toBe('Teacher feedback');
@@ -578,7 +574,7 @@ describe('pdf-preview-modal placement helpers', () => {
     finishInline();
     await inline;
     expect(stackedEdits()).toEqual([]);
-    h.expectBucket('AI');
+    h.expectBucket('HUMAN');
     h.handle.destroy();
   });
 
@@ -597,13 +593,13 @@ describe('pdf-preview-modal placement helpers', () => {
     finishSidebar();
     await sidebar;
     expect(stackedEdits()).toEqual([]);
-    h.expectBucket('AI');
+    h.expectBucket('HUMAN');
     h.handle.destroy();
   });
 
   // Codex review of the #462 fix, round 3: with two DIFFERENT overlapping edits and an explicit ownership
   // transfer before the first save lands, the later entry's old source is the current HUMAN source, not the
-  // stale AI snapshot. Content-only saves themselves do not transfer ownership.
+  // stale AI snapshot. The first content-only save already transfers ownership to HUMAN.
   it('an inline save landing after another edit records that edit as its old text and source', async () => {
     const h = await createSplitOwnershipHarness();
     const label = inlineLabelFor(h, 'Teacher feedback');
@@ -663,12 +659,12 @@ describe('pdf-preview-modal placement helpers', () => {
     const textarea = document.getElementById('edit-annotation-text-owned-comment');
     textarea.value = 'Edited feedback';
     await h.controller.saveAnnotationEdit('owned-comment');
-    h.expectBucket('AI');
+    h.expectBucket('HUMAN');
     expect(persistedEntry(h).content).toBe('Edited feedback');
 
     h.dispatchUndo();
     await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
-    expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback' });
+    expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback', source: 'AI' });
     await vi.waitFor(() => {
       h.expectBucket('AI');
       expect(persistedEntry(h).content).toBe('Teacher feedback');
@@ -676,7 +672,7 @@ describe('pdf-preview-modal placement helpers', () => {
     h.handle.destroy();
   });
 
-  it('keeps a sidebar content-only edit in the AI list', async () => {
+  it('re-buckets a sidebar content-only edit into the HUMAN list', async () => {
     const h = await createSplitOwnershipHarness();
     h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
     const textarea = document.getElementById('edit-annotation-text-owned-comment');
@@ -684,7 +680,7 @@ describe('pdf-preview-modal placement helpers', () => {
     textarea.value = 'Edited feedback';
     await h.controller.saveAnnotationEdit('owned-comment');
     expect(h.updateAnnotation.mock.calls[0][3]).toEqual({ content: 'Edited feedback' });
-    h.expectBucket('AI');
+    h.expectBucket('HUMAN');
     expect(persistedEntry(h).content).toBe('Edited feedback');
     h.handle.destroy();
   });
@@ -1758,19 +1754,17 @@ describe('pdf-preview-modal placement helpers', () => {
 
     const errorToasts = () => [...document.querySelectorAll('.alert-danger')].map((toast) => toast.textContent.trim());
 
-    // A fake annotation endpoint that keeps its state between calls and follows the AEMS server's ownership
-    // rule: the PUT stores `new_source or metadata.get('source') or 'AI'`, so a request without a source keeps
-    // the stored one, and only an explicit source moves ownership. A content or colour change never does.
-    // echo: false answers success without the annotation, as the server does when it cannot read it back.
+    // Stateful AEMS ownership fake, including automatic AI -> HUMAN transfer.
+    // echo: false models a successful update whose annotation cannot be read back.
     function serveAnnotation(h, { echo = true } = {}) {
       let state = { ...h.annotation };
       h.adapter.listAnnotations = vi.fn(async () => ({ success: true, annotations: { 0: [{ ...state }] } }));
       h.updateAnnotation.mockImplementation(async (_assignment, _submission, _identifier, body) => {
-        state = { ...state, ...body, page_index: body.page_index ?? state.page_index };
+        state = applyAnnotationPut(state, body);
         return echo ? { success: true, annotation: { ...state } } : { success: true };
       });
       return { get stored() { return { ...state }; }, apply: (body) => {
-        state = { ...state, ...body };
+        state = applyAnnotationPut(state, body);
         return { success: true, annotation: { ...state } };
       } };
     }
@@ -1833,18 +1827,18 @@ describe('pdf-preview-modal placement helpers', () => {
       return { afterDo, afterUndo, afterRedo: stateOf(entries(h)[0]) };
     }
 
-    it('redoes a sidebar edit of an AI annotation, which keeps it AI throughout', async () => {
+    it('redoes a sidebar edit of an AI annotation, which transfers to HUMAN and restores AI on undo', async () => {
       const h = await splitHarness();
       serveAnnotation(h);
 
       const { afterDo, afterUndo, afterRedo } = await throughHistory(h, () => saveSidebarEdit(h, 'Edited feedback'));
 
-      expect(afterDo).toMatchObject({ content: 'Edited feedback', source: 'AI', original_source: 'AI' });
+      expect(afterDo).toMatchObject({ content: 'Edited feedback', source: 'HUMAN', original_source: 'AI' });
       expect(afterUndo).toMatchObject({ content: 'Teacher feedback', source: 'AI', original_source: 'AI' });
       expect(afterRedo).toEqual(afterDo);
-      expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback' });
+      expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback', source: 'AI' });
       expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
-      h.expectBucket('AI');
+      h.expectBucket('HUMAN');
       // The edit is back on both undo stacks, so Ctrl+Z undoes it again with the same request as before.
       expect(historyOps(h, 'edit')).toEqual({ local: [expect.anything()], controller: [expect.anything()] });
       h.dispatchUndo();
@@ -1876,11 +1870,11 @@ describe('pdf-preview-modal placement helpers', () => {
         { key: 'Z', ctrlKey: true, shiftKey: true },
       );
 
-      expect(afterDo).toMatchObject({ content: 'Edited inline', source: 'AI', original_source: 'AI' });
+      expect(afterDo).toMatchObject({ content: 'Edited inline', source: 'HUMAN', original_source: 'AI' });
       expect(afterUndo).toMatchObject({ content: 'Teacher feedback', source: 'AI' });
       expect(afterRedo).toEqual(afterDo);
       expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
-      h.expectBucket('AI');
+      h.expectBucket('HUMAN');
       expect(historyOps(h, 'edit').local).toHaveLength(1);
     });
 
@@ -1892,18 +1886,18 @@ describe('pdf-preview-modal placement helpers', () => {
         h, () => h.options.helpers.updateAnnotationPriority(0, 'owned-comment', 'red'),
       );
 
-      expect(afterDo).toMatchObject({ color: 'red', source: 'AI', original_source: 'AI' });
+      expect(afterDo).toMatchObject({ color: 'red', source: 'HUMAN', original_source: 'AI' });
       expect(afterUndo.color).not.toBe('red');
       expect(afterUndo).toMatchObject({ source: 'AI', original_source: 'AI' });
       expect(afterRedo).toEqual(afterDo);
       expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
-      h.expectBucket('AI');
+      h.expectBucket('HUMAN');
       expect(historyOps(h, 'priority').local).toHaveLength(1);
     });
 
     // "Update succeeded but annotation couldn't be retrieved": the server stored the colour and, the request
-    // naming no source, kept the annotation AI. The local copy must say so after the change, its undo and redo.
-    it('keeps a priority change answered without its annotation AI through undo and redo', async () => {
+    // naming no source, transferred the annotation to HUMAN. The local copy must say so after the change, its undo and redo.
+    it('tracks automatic ownership for a priority change answered without its annotation', async () => {
       const h = await splitHarness();
       serveAnnotation(h, { echo: false });
 
@@ -1911,11 +1905,11 @@ describe('pdf-preview-modal placement helpers', () => {
         h, () => h.options.helpers.updateAnnotationPriority(0, 'owned-comment', 'red'),
       );
 
-      expect(afterDo).toMatchObject({ color: 'red', source: 'AI', original_source: 'AI' });
+      expect(afterDo).toMatchObject({ color: 'red', source: 'HUMAN', original_source: 'AI' });
       expect(afterUndo.color).not.toBe('red');
       expect(afterUndo).toMatchObject({ source: 'AI', original_source: 'AI' });
       expect(afterRedo).toEqual(afterDo);
-      h.expectBucket('AI');
+      h.expectBucket('HUMAN');
     });
 
     it.each([
@@ -1999,7 +1993,7 @@ describe('pdf-preview-modal placement helpers', () => {
       };
       let state = { ...highlight };
       const updateAnnotation = vi.fn(async (_assignment, _submission, _identifier, body) => {
-        state = { ...state, ...body, xref: state.xref + 1 };
+        state = { ...applyAnnotationPut(state, body), xref: state.xref + 1 };
         return { success: true, annotation: { ...state } };
       });
       const anchor = { init: vi.fn(), select: vi.fn(), deselect: vi.fn() };
@@ -2616,7 +2610,7 @@ describe('pdf-preview-modal placement helpers', () => {
         const id = identifier.startsWith('id:') ? identifier.slice(3) : identifier;
         const current = stored.get(id);
         if (!current) throw new Error(`Unexpected update target: ${identifier}`);
-        const annotation = { ...current, ...body };
+        const annotation = applyAnnotationPut(current, body);
         stored.set(id, annotation);
         return { success: true, annotation: { ...annotation } };
       });
@@ -2763,7 +2757,7 @@ describe('pdf-preview-modal placement helpers', () => {
       original.type = type;
       let stored = { ...original };
       h.updateAnnotation.mockImplementation(async (_a, _s, _id, body) => {
-        stored = { ...stored, ...body }; // A source-less PUT preserves the stored source.
+        stored = applyAnnotationPut(stored, body);
         return { success: true, annotation: { ...stored } };
       });
       const finishWrite = pending(h.updateAnnotation);
@@ -2836,7 +2830,7 @@ describe('pdf-preview-modal placement helpers', () => {
 
       expect(server.stored.content).toBe('Third edit');
       expect(entries(h)[0].content).toBe('Third edit');
-      expect(document.getElementById('pdfGradedAICommentsList').textContent).toContain('Third edit');
+      expect(document.getElementById('pdfGradedCommentsList').textContent).toContain('Third edit');
       // With no server revision or before-image, the safe fallback refreshes and drops ambiguous edits.
       expect(errorToasts()).toContain('Concurrent annotation changes refreshed; undo history was cleared');
       expect(stackTypes(h)).toEqual({ local: [], controller: [] });
@@ -3106,7 +3100,7 @@ describe('pdf-preview-modal placement helpers', () => {
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
 
       // The next Ctrl+Z undid the first edit, back to the original text.
-      expect(h.updateAnnotation.mock.calls[3][3]).toEqual({ content: 'Teacher feedback' });
+      expect(h.updateAnnotation.mock.calls[3][3]).toEqual({ content: 'Teacher feedback', source: 'AI' });
     });
 
     it('drops a pen-stroke delete redo whose markup the server no longer has', async () => {
@@ -3306,7 +3300,7 @@ describe('pdf-preview-modal placement helpers', () => {
       const updateAnnotation = vi.fn(async (_assignment, _submission, id, body) => {
         const current = stored.get(id);
         if (!current) return { success: false, status: 404, error: 'Annotation not found' };
-        return store({ ...current, ...body, ...(body.rect ? { rect: topLeftRect(body.rect) } : {}) });
+        return store(applyAnnotationPut(current, { ...body, ...(body.rect ? { rect: topLeftRect(body.rect) } : {}) }));
       });
       const deleteAnnotation = vi.fn(async (_assignment, _submission, id) => (
         stored.delete(id) ? { success: true } : { success: false, status: 404, error: 'Annotation not found' }
@@ -3416,7 +3410,7 @@ describe('pdf-preview-modal placement helpers', () => {
       await saveSidebarEdit(h, 'Second edit');
       h.dispatchUndo();
       await settle();
-      expect(h.updateAnnotation.mock.calls.at(-1)[3]).toEqual({ content: 'Teacher feedback' });
+      expect(h.updateAnnotation.mock.calls.at(-1)[3]).toEqual({ content: 'Teacher feedback', source: 'AI' });
     });
 
     it('an ordinary move still preparing its page when another submission opens sends nothing', async () => {

@@ -1,3 +1,4 @@
+import { applyAnnotationPut } from './fixtures/annotation-put.fixture.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   LOSSY_DELETE_HIGHLIGHT,
@@ -510,8 +511,7 @@ describe('annotation-controller state ownership', () => {
 
       const nextQuads = body.quads || serverAnnotation.quads;
       serverAnnotation = {
-        ...serverAnnotation,
-        ...body,
+        ...applyAnnotationPut(serverAnnotation, body),
         quads: nextQuads,
         rect: body.rect || [
           nextQuads[0][0],
@@ -773,7 +773,7 @@ describe('annotation-controller state ownership', () => {
       updateAnnotationRequest, showToast,
     });
     updateAnnotationRequest
-      .mockResolvedValueOnce({ success: true, annotation: { ...annotation, anchor_text: 'extended phrase' } })
+      .mockResolvedValueOnce({ success: true, annotation: applyAnnotationPut(annotation, { anchor_text: 'extended phrase', source: 'HUMAN' }) })
       .mockResolvedValueOnce({ success: true, annotation: { ...annotation } });
     await resize();
     const operation = controller.popUndoOperation();
