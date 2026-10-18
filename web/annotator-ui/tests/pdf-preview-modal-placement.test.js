@@ -2171,6 +2171,27 @@ describe('pdf-preview-modal placement helpers', () => {
       next.destroy();
     });
 
+    // The modal's own undo stack outlived the document it was recorded on: after another submission opened,
+    // Ctrl+Z replayed the previous submission's edit against the new submission's annotation of the same id.
+    it('switching to another document does not undo the previous document\'s operations', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      await settle();
+
+      h.handle.close();
+      const next = window.PdfPreviewModal.createPdfPreviewModal({
+        assignmentId: 'assignment-1', submissionId: 'submission-2', modeAdapter: h.adapter,
+      });
+      opened.push(next);
+      await next.open();
+      h.dispatchUndo();
+      await settle();
+
+      expect(h.updateAnnotation.mock.calls.map(([, submission]) => submission)).toEqual(['submission-1']);
+      expect(h.getUndoStacks()).toEqual({ local: [], controller: [] });
+    });
+
     it('ignores Ctrl+Y while an undo is still in flight', async () => {
       const h = await splitHarness();
       serveAnnotation(h);
