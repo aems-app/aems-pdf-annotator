@@ -1741,6 +1741,7 @@ describe('pdf-preview-modal placement helpers', () => {
       delete window.PdfPreviewModalDrawingCanvas;
       delete window.PdfPreviewModalTextbox;
       delete window.PdfPreviewModalRendering;
+      delete window.i18n;
     });
 
     async function splitHarness(options) {
@@ -1763,10 +1764,15 @@ describe('pdf-preview-modal placement helpers', () => {
     // echo: false answers success without the annotation, as the server does when it cannot read it back.
     function serveAnnotation(h, { echo = true } = {}) {
       let state = { ...h.annotation };
+      h.adapter.listAnnotations = vi.fn(async () => ({ success: true, annotations: { 0: [{ ...state }] } }));
       h.updateAnnotation.mockImplementation(async (_assignment, _submission, _identifier, body) => {
         state = { ...state, ...body, page_index: body.page_index ?? state.page_index };
         return echo ? { success: true, annotation: { ...state } } : { success: true };
       });
+      return { get stored() { return { ...state }; }, apply: (body) => {
+        state = { ...state, ...body };
+        return { success: true, annotation: { ...state } };
+      } };
     }
 
     const entries = (h) => Object.values(h.options.getAnnotationsData()).flat();
@@ -2398,6 +2404,7 @@ describe('pdf-preview-modal placement helpers', () => {
       ['a network error keeps it queued', networkDown, 'Failed to redo move', true],
       ['an answer that the annotation is gone drops it', notFound, 'Annotation no longer exists', false],
     ])('a move redo that fails: %s', async (_name, fail, toast, queued) => {
+      window.i18n = { t: (message) => `SV: ${message}` };
       vi.spyOn(console, 'error').mockImplementation(() => {});
       const h = await splitHarness();
       serveAnnotation(h);
@@ -2408,7 +2415,7 @@ describe('pdf-preview-modal placement helpers', () => {
       fail(h.updateAnnotation);
 
       h.dispatchRedo();
-      await vi.waitFor(() => expect(errorToasts()).toContain(toast));
+      await vi.waitFor(() => expect(errorToasts()).toContain(`SV: ${toast}`));
       await settle();
       expect(h.updateAnnotation).toHaveBeenCalledTimes(3);
       h.dispatchRedo();
@@ -2433,13 +2440,14 @@ describe('pdf-preview-modal placement helpers', () => {
       ['a network error keeps it queued', networkDown, 'Failed to redo deletion', true],
       ['an error that the annotation is gone drops it', notFound, 'Annotation no longer exists', false],
     ])('a delete redo that fails: %s', async (_name, fail, toast, queued) => {
+      window.i18n = { t: (message) => `SV: ${message}` };
       vi.spyOn(console, 'error').mockImplementation(() => {});
       // The recreated annotation has no xref, so the redo finds it by its stable id alone.
       const { h, deleteAnnotation } = await deletedThenRestored({ withoutXref: true });
       fail(deleteAnnotation);
 
       h.dispatchRedo();
-      await vi.waitFor(() => expect(errorToasts()).toContain(toast));
+      await vi.waitFor(() => expect(errorToasts()).toContain(`SV: ${toast}`));
       await settle();
       expect(deleteAnnotation).toHaveBeenCalledTimes(2);
       expect(entries(h)).toHaveLength(1);
@@ -2506,6 +2514,7 @@ describe('pdf-preview-modal placement helpers', () => {
         false,
       ],
     ])('a highlight redo through the modal fallback that fails: %s', async (_name, fail, toast, queued) => {
+      window.i18n = { t: (message) => `SV: ${message}` };
       vi.spyOn(console, 'error').mockImplementation(() => {});
       const { h, updateAnnotation } = await fallbackHighlightResized();
       h.dispatchUndo();
@@ -2514,7 +2523,7 @@ describe('pdf-preview-modal placement helpers', () => {
       const restore = fail({ h, request: updateAnnotation }) || (() => {});
 
       h.dispatchRedo();
-      await vi.waitFor(() => expect(errorToasts()).toContain(toast));
+      await vi.waitFor(() => expect(errorToasts()).toContain(`SV: ${toast}`));
       await settle();
       restore();
       const callsAfterFailure = updateAnnotation.mock.calls.length;
@@ -2578,9 +2587,8 @@ describe('pdf-preview-modal placement helpers', () => {
       expect(h.updateAnnotation.mock.calls[5]).toEqual(h.updateAnnotation.mock.calls[1]);
     });
 
-    // Review finding 2: an operation the user completes while an undo or redo request is in flight is a new
-    // operation like any other. It is recorded and clears redo, and the step finishing late cannot put its own
-    // operation above it.
+    // Same-annotation writes can be applied by the server before their responses arrive. Without revisions
+    // or before-images their snapshots are ambiguous: refresh persisted state and visibly clear history.
     const moveMarker = (h) => window.PdfPreviewModal.__test.updateAnnotationPosition(
       0, 0, 'owned-comment', h.marker, false,
     );
@@ -2589,7 +2597,7 @@ describe('pdf-preview-modal placement helpers', () => {
       controller: h.getUndoStacks().controller.map((op) => op.newContent || op.type),
     });
 
-    it('records an operation that lands while a redo is in flight, below which the redone one goes', async () => {
+    it('refreshes and clears ambiguous history when a move overlaps a redo', async () => {
       const h = await splitHarness();
       serveAnnotation(h);
       await saveSidebarEdit(h, 'First edit');
@@ -2607,42 +2615,54 @@ describe('pdf-preview-modal placement helpers', () => {
       finishRedo({ success: true, annotation: { ...h.annotation, content: 'First edit' } });
       await settle();
 
-      expect(stackTypes(h)).toEqual({ local: ['First edit', 'move'], controller: ['First edit'] });
+      expect(stackTypes(h)).toEqual({ local: [], controller: [] });
+      expect(errorToasts()).toContain('Concurrent annotation changes refreshed; undo history was cleared');
       const calls = h.updateAnnotation.mock.calls.length;
       h.dispatchRedo(); // the move cleared the second edit's redo
       await settle();
       expect(h.updateAnnotation).toHaveBeenCalledTimes(calls);
-      h.dispatchUndo(); // the move is the newest operation
-      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(calls + 1));
-      expect(h.updateAnnotation.mock.calls.at(-1)[3]).toHaveProperty('rect');
+      h.dispatchUndo(); // ambiguous history was cleared
+      await settle();
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(calls);
     });
 
-    it('records a sidebar edit that lands while a redo is in flight on both stacks, above the redone one', async () => {
+    it('refreshes a sidebar edit that lands while a redo is in flight and discards ambiguous snapshots', async () => {
       const h = await splitHarness();
-      serveAnnotation(h);
+      const server = serveAnnotation(h);
       await saveSidebarEdit(h, 'First edit');
       h.dispatchUndo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
       await settle();
-      const finishRedo = pending(h.updateAnnotation);
+      let finishRedo;
+      h.updateAnnotation.mockImplementationOnce((_a, _s, _id, body) => {
+        const response = server.apply(body); // stored now, delivered after Third
+        return new Promise((resolve) => { finishRedo = () => resolve(response); });
+      });
       h.dispatchRedo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
 
       await saveSidebarEdit(h, 'Third edit'); // lands while the redo request is still out
-      finishRedo({ success: true, annotation: { ...h.annotation, content: 'First edit' } });
+      finishRedo();
       await settle();
 
-      expect(stackTypes(h)).toEqual({
-        local: ['First edit', 'Third edit'],
-        controller: ['First edit', 'Third edit'],
-      });
+      expect(server.stored.content).toBe('Third edit');
+      expect(entries(h)[0].content).toBe('Third edit');
+      expect(document.getElementById('pdfGradedAICommentsList').textContent).toContain('Third edit');
+      // With no server revision or before-image, the safe fallback refreshes and drops ambiguous edits.
+      expect(errorToasts()).toContain('Concurrent annotation changes refreshed; undo history was cleared');
+      expect(stackTypes(h)).toEqual({ local: [], controller: [] });
+      const calls = h.updateAnnotation.mock.calls.length;
       h.dispatchUndo();
-      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(5));
       await settle();
-      expect(stackTypes(h)).toEqual({ local: ['First edit'], controller: ['First edit'] });
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(calls); // never sends the incorrect Original snapshot
+      await saveSidebarEdit(h, 'Fourth edit');
+      h.dispatchUndo();
+      await settle();
+      expect(h.updateAnnotation.mock.calls.at(-1)[3]).toEqual({ content: 'Third edit' });
+      expect(server.stored.content).toBe('Third edit');
     });
 
-    it('records an operation that lands while an undo is in flight; the undone one is then not redoable', async () => {
+    it('refreshes and clears ambiguous history when a move overlaps an undo', async () => {
       const h = await splitHarness();
       serveAnnotation(h);
       await saveSidebarEdit(h, 'Edited feedback');
@@ -2655,16 +2675,17 @@ describe('pdf-preview-modal placement helpers', () => {
       finishUndo({ success: true, annotation: { ...h.annotation } });
       await settle();
 
-      expect(stackTypes(h)).toEqual({ local: ['move'], controller: [] });
+      expect(stackTypes(h)).toEqual({ local: [], controller: [] });
+      expect(errorToasts()).toContain('Concurrent annotation changes refreshed; undo history was cleared');
       h.dispatchRedo();
       await settle();
       expect(h.updateAnnotation).toHaveBeenCalledTimes(3);
       h.dispatchUndo();
-      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
-      expect(h.updateAnnotation.mock.calls.at(-1)[3]).toHaveProperty('rect');
+      await settle();
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(3);
     });
 
-    it('puts a failed undo back below an operation recorded while it was in flight', async () => {
+    it('refreshes rather than restoring ambiguous history after an overlapping undo fails', async () => {
       vi.spyOn(console, 'error').mockImplementation(() => {});
       const h = await splitHarness();
       serveAnnotation(h);
@@ -2678,7 +2699,8 @@ describe('pdf-preview-modal placement helpers', () => {
       finishUndo({ success: false, error: 'locked' });
       await settle();
 
-      expect(stackTypes(h)).toEqual({ local: ['Edited feedback', 'move'], controller: ['Edited feedback'] });
+      expect(stackTypes(h)).toEqual({ local: [], controller: [] });
+      expect(errorToasts()).toContain('Concurrent annotation changes refreshed; undo history was cleared');
     });
 
     it('does not re-queue a failed redo once an operation was recorded while it was in flight', async () => {
@@ -2701,7 +2723,8 @@ describe('pdf-preview-modal placement helpers', () => {
       await settle();
 
       expect(h.updateAnnotation).toHaveBeenCalledTimes(calls);
-      expect(stackTypes(h)).toEqual({ local: ['move'], controller: [] });
+      expect(stackTypes(h)).toEqual({ local: [], controller: [] });
+      expect(errorToasts()).toContain('Concurrent annotation changes refreshed; undo history was cleared');
     });
 
     it('reopening the same document keeps its redo history', async () => {
@@ -3052,6 +3075,8 @@ describe('pdf-preview-modal placement helpers', () => {
     }
 
     async function markupHarness() {
+      const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
+      window.PdfPreviewModalMarkupSelection = selection;
       const canvas = {
         init: vi.fn(), destroy: vi.fn(), ensureCanvasForPage: vi.fn(), getActiveColor: vi.fn(),
         getActiveTool: vi.fn(), getPresetColors: vi.fn(() => []), hitTestStroke: vi.fn(),
@@ -3076,7 +3101,7 @@ describe('pdf-preview-modal placement helpers', () => {
       window.__pdfGradedViewer.pdf = { getPage: async () => ({ view: [0, 0, 612, PAGE_HEIGHT] }) };
       document.getElementById('pdfGradedContainer').innerHTML = `
         <div class="pdf-page-wrapper" data-page-num="1"><canvas></canvas><div class="pdf-annotation-overlay"></div></div>`;
-      return { h, canvas, textboxes, server };
+      return { h, canvas, textboxes, server, selection };
     }
 
     async function drawStroke(m) {
@@ -3109,6 +3134,102 @@ describe('pdf-preview-modal placement helpers', () => {
       return rest;
     };
     const pageMarkup = (m) => Object.values(m.h.handle.getAnnotations()).flat();
+
+    it.each([['stroke', drawStroke], ['textbox', typeTextbox]])(
+      'remaps every history reference when undoing deletion of a created %s', async (type, create) => {
+        const m = await markupHarness();
+        await create(m);
+        m.selection.deleteSelected.mockReturnValue({ type, pageIdx: 0, entry: {
+          annotationId: 'markup-1', content: 'Check units', color: { name: 'amber', rgb: [0, 0, 1] },
+          points: [{ x: 10, y: 92 }, { x: 20, y: 102 }],
+        } });
+        m.selection.onDeleteRequested();
+        await settle();
+        m.h.dispatchUndo(); // recreate deletion as markup-2
+        await settle();
+        expect(pageMarkup(m)[0].stable_id).toBe('markup-2');
+        expect(m.h.getUndoStacks().local[0].annotationId).toBe('markup-2');
+        m.h.dispatchUndo(); // undo the earlier creation
+        await settle();
+        expect(m.server.deleteAnnotation.mock.calls.at(-1)[2]).toBe('markup-2');
+        expect(pageMarkup(m)).toEqual([]);
+        m.h.dispatchRedo(); // redo creation as markup-3
+        await settle();
+        expect(pageMarkup(m)[0].stable_id).toBe('markup-3');
+        m.h.dispatchRedo(); // redo deletion must also take markup-3
+        await settle();
+        expect(m.server.deleteAnnotation.mock.calls.at(-1)[2]).toBe('markup-3');
+        expect(pageMarkup(m)).toEqual([]);
+      },
+    );
+
+    it('keeps persisted text current after a content undo without an echoed annotation', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'First edit');
+      serveAnnotation(h, { echo: false });
+      h.dispatchUndo();
+      await settle();
+      expect(entries(h)[0].content).toBe('Teacher feedback');
+      expect(entries(h)[0]._originalContent).toBe('Teacher feedback');
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Second edit');
+      h.dispatchUndo();
+      await settle();
+      expect(h.updateAnnotation.mock.calls.at(-1)[3]).toEqual({ content: 'Teacher feedback' });
+    });
+
+    it('an ordinary move still preparing its page when another submission opens sends nothing', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      let finishPage;
+      window.__pdfGradedViewer.pdf.getPage = vi.fn(() => new Promise((resolve) => { finishPage = resolve; }));
+      const move = window.PdfPreviewModal.__test.updateAnnotationPosition(0, 0, 'owned-comment', h.marker, true);
+      const next = await openOtherSubmission(h);
+      const before = next.getAnnotations();
+      finishPage({ view: [0, 0, 612, 792] });
+      await move;
+      await settle();
+      expect(h.updateAnnotation).not.toHaveBeenCalled();
+      expect(next.getAnnotations()).toEqual(before);
+      expect(h.getUndoStacks()).toEqual({ local: [], controller: [] });
+    });
+
+    it.each(['stroke', 'textbox'])('a %s move still resolving geometry after a document switch sends nothing', async (type) => {
+      const m = await markupHarness();
+      await (type === 'stroke' ? drawStroke(m) : typeTextbox(m));
+      let finishPage;
+      window.__pdfGradedViewer.getViewportForPage = () => null;
+      window.__pdfGradedViewer.pdf.getPage = vi.fn(() => new Promise((resolve) => { finishPage = resolve; }));
+      const moving = m.selection.onMoveCompleted({ type, pageIdx: 0, entry: {
+        annotationId: 'markup-1', points: [{ x: 10, y: 92 }],
+      } });
+      const next = await openOtherSubmission(m.h);
+      const before = next.getAnnotations();
+      finishPage({ getViewport: () => ({ width: 612, height: 792 }) });
+      await moving;
+      expect(m.server.updateAnnotation).not.toHaveBeenCalled();
+      expect(next.getAnnotations()).toEqual(before);
+    });
+
+    it('a stroke still resolving its viewport when another submission opens sends nothing', async () => {
+      const m = await markupHarness();
+      let finishPage;
+      const viewport = window.__pdfGradedViewer.getViewportForPage(1);
+      window.__pdfGradedViewer.getViewportForPage = () => null;
+      window.__pdfGradedViewer.pdf.getPage = vi.fn(() => new Promise((resolve) => { finishPage = resolve; }));
+      m.canvas.onStrokeComplete(0, {
+        pageIdx: 0, points: [{ x: 10, y: 92 }], style: 'pen', strokeWidth: 2,
+        opacity: 1, color: { rgb: [1, 0, 0] },
+      });
+      const next = await openOtherSubmission(m.h);
+      const before = next.getAnnotations();
+      finishPage({ getViewport: () => viewport });
+      await settle();
+      expect(m.server.createAnnotation).not.toHaveBeenCalled();
+      expect(next.getAnnotations()).toEqual(before);
+      expect(m.h.getUndoStacks()).toEqual({ local: [], controller: [] });
+    });
 
     it.each([
       ['pen stroke', drawStroke],
@@ -3337,10 +3458,14 @@ describe('pdf-preview-modal placement helpers', () => {
       start();
       await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
 
-      await openOtherSubmission(h);
+      const next = await openOtherSubmission(h);
+      const annotationsBefore = next.getAnnotations();
+      const markersBefore = document.getElementById('pdfGradedContainer').innerHTML;
       finish(answer());
       await settle();
 
+      expect(next.getAnnotations()).toEqual(annotationsBefore);
+      expect(document.getElementById('pdfGradedContainer').innerHTML).toBe(markersBefore);
       expect(h.getUndoStacks()).toEqual({ local: [], controller: [] });
       h.dispatchUndo();
       await settle();
