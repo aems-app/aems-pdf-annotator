@@ -479,6 +479,49 @@ describe('pdf-preview-modal placement helpers', () => {
     h.handle.destroy();
   });
 
+  // Codex review of the #462 fix, round 1: the undo entry must record the last PERSISTED text, not a draft the
+  // priority path kept in annotation.content, and a save that persists nothing new must push no entry.
+  function inlineLabelFor(h, startedFrom) {
+    const label = document.createElement('div');
+    label.className = 'annotation-label label-expanded label-editing';
+    label.dataset.fullText = startedFrom;
+    label.dataset.originalFullText = startedFrom;
+    h.marker.appendChild(label);
+    return label;
+  }
+
+  it('Ctrl+Z after an inline save restores the persisted text, not an unsaved draft', async () => {
+    const h = await createSplitOwnershipHarness();
+    const entry = Object.values(h.options.getAnnotationsData()).flat()[0];
+    entry._originalContent = 'Teacher feedback';
+    entry.content = 'Edited inline'; // the draft the priority path preserves while editing
+    const label = inlineLabelFor(h, 'Teacher feedback');
+    h.updateAnnotation.mockResolvedValueOnce({
+      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: 'Edited inline' },
+    });
+    await window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline');
+
+    h.dispatchUndo();
+    await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+    expect(h.updateAnnotation.mock.calls[1][3].content).toBe('Teacher feedback');
+    h.handle.destroy();
+  });
+
+  it('an inline save that persists nothing new pushes no undo entry', async () => {
+    const h = await createSplitOwnershipHarness();
+    const entry = Object.values(h.options.getAnnotationsData()).flat()[0];
+    // The sidebar Save already persisted the edit; the inline blur handler then saves the same text again.
+    entry._originalContent = 'Edited inline';
+    entry.content = 'Edited inline';
+    const label = inlineLabelFor(h, 'Teacher feedback');
+    h.updateAnnotation.mockResolvedValueOnce({
+      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: 'Edited inline' },
+    });
+    await window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline');
+    expect(window.PdfPreviewModal.__test.getUndoStacks().local.filter((op) => op.type === 'edit')).toEqual([]);
+    h.handle.destroy();
+  });
+
   it('Ctrl+Z restores a sidebar text edit and its source', async () => {
     const h = await createSplitOwnershipHarness();
     h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
