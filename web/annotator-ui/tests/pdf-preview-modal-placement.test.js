@@ -188,10 +188,18 @@ async function createSplitOwnershipHarness({
     grader_name: 'Artem Kulachenko', rect: [50, 50, 150, 70],
     quads: [[50, 50, 150, 70]], anchor_text: 'answer text',
   };
+  let serverAnnotation = { ...annotation };
+  // A content/colour PUT keeps the stored source; only an explicit source transfers ownership.
+  function persistUpdate(body) {
+    serverAnnotation = {
+      ...serverAnnotation, ...body,
+      source: body.source || serverAnnotation.source || 'AI',
+      page_index: body.page_index ?? serverAnnotation.page_index,
+    };
+    return { success: true, annotation: { ...serverAnnotation } };
+  }
   const updateAnnotation = vi.fn(async (_assignment, _submission, _id, body) => (
-    updateResult || { success: true, annotation: {
-      ...annotation, ...body, page_index: body.page_index ?? 0,
-    } }
+    updateResult || persistUpdate(body)
   ));
   let controller;
   let options;
@@ -249,7 +257,7 @@ async function createSplitOwnershipHarness({
   const aiList = document.getElementById('pdfGradedAICommentsList');
   const humanList = document.getElementById('pdfGradedCommentsList');
   return {
-    ...harness, annotation, marker, controller, options, updateAnnotation,
+    ...harness, annotation, marker, controller, options, updateAnnotation, persistUpdate,
     expectBucket(expectedSource) {
       const target = expectedSource === 'AI' ? aiList : humanList;
       const other = expectedSource === 'AI' ? humanList : aiList;
@@ -462,23 +470,21 @@ describe('pdf-preview-modal placement helpers', () => {
     h.handle.destroy();
   });
 
-  it('re-buckets an inline text edit when the server transfers ownership', async () => {
+  it('keeps an inline content-only edit in the AI list', async () => {
     const h = await createSplitOwnershipHarness();
     const label = document.createElement('div');
     label.className = 'annotation-label label-expanded label-editing';
     label.dataset.fullText = h.annotation.content;
     h.marker.appendChild(label);
-    h.updateAnnotation.mockResolvedValueOnce({
-      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: 'Edited inline' },
-    });
     await window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline');
     expect(h.updateAnnotation.mock.calls[0][3]).toEqual({ content: 'Edited inline' });
-    h.expectBucket('HUMAN');
+    h.expectBucket('AI');
+    expect(persistedEntry(h).content).toBe('Edited inline');
     h.handle.destroy();
   });
 
   // Issue #462 (criterion 29): an edit saved through the inline label pushed no undo entry, so Ctrl+Z left the
-  // edited text in place. Undo must restore the previous text and, after an ownership transfer, the AI source.
+  // edited text in place. Undo must restore the previous text while a content-only PUT keeps the AI source.
   it('Ctrl+Z restores an inline text edit and its source', async () => {
     const h = await createSplitOwnershipHarness();
     const label = document.createElement('div');
@@ -486,17 +492,17 @@ describe('pdf-preview-modal placement helpers', () => {
     label.dataset.fullText = h.annotation.content;
     label.dataset.originalFullText = h.annotation.content;
     h.marker.appendChild(label);
-    h.updateAnnotation.mockResolvedValueOnce({
-      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: 'Edited inline' },
-    });
     await window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline');
-    h.expectBucket('HUMAN');
+    h.expectBucket('AI');
+    expect(persistedEntry(h).content).toBe('Edited inline');
 
     h.dispatchUndo();
     await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
-    expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback', source: 'AI' });
-    await vi.waitFor(() => h.expectBucket('AI'));
-    expect(Object.values(h.options.getAnnotationsData()).flat()[0].content).toBe('Teacher feedback');
+    expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback' });
+    await vi.waitFor(() => {
+      h.expectBucket('AI');
+      expect(persistedEntry(h).content).toBe('Teacher feedback');
+    });
     h.handle.destroy();
   });
 
@@ -517,9 +523,6 @@ describe('pdf-preview-modal placement helpers', () => {
     entry._originalContent = 'Teacher feedback';
     entry.content = 'Edited inline'; // the draft the priority path preserves while editing
     const label = inlineLabelFor(h, 'Teacher feedback');
-    h.updateAnnotation.mockResolvedValueOnce({
-      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: 'Edited inline' },
-    });
     await window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline');
 
     h.dispatchUndo();
@@ -535,9 +538,6 @@ describe('pdf-preview-modal placement helpers', () => {
     entry._originalContent = 'Edited inline';
     entry.content = 'Edited inline';
     const label = inlineLabelFor(h, 'Teacher feedback');
-    h.updateAnnotation.mockResolvedValueOnce({
-      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: 'Edited inline' },
-    });
     await window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline');
     expect(window.PdfPreviewModal.__test.getUndoStacks().local.filter((op) => op.type === 'edit')).toEqual([]);
     h.handle.destroy();
@@ -552,8 +552,12 @@ describe('pdf-preview-modal placement helpers', () => {
 
   function pendingUpdate(h) {
     let resolve;
-    h.updateAnnotation.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
-    return (content) => resolve({ success: true, annotation: { ...h.annotation, source: 'HUMAN', content } });
+    let body;
+    h.updateAnnotation.mockImplementationOnce((_assignment, _submission, _id, requestBody) => {
+      body = requestBody;
+      return new Promise((done) => { resolve = done; });
+    });
+    return () => resolve(h.persistUpdate(body));
   }
 
   function stackedEdits() {
@@ -569,11 +573,12 @@ describe('pdf-preview-modal placement helpers', () => {
     // The sidebar Save lands first and stores the same text.
     const index = h.options.getAnnotationsData()[0].indexOf(persistedEntry(h));
     h.options.getAnnotationsData()[0][index] = {
-      ...persistedEntry(h), content: 'Second edit', _originalContent: 'Second edit',
+      ...h.persistUpdate({ content: 'Second edit' }).annotation, _originalContent: 'Second edit',
     };
-    finishInline('Second edit');
+    finishInline();
     await inline;
     expect(stackedEdits()).toEqual([]);
+    h.expectBucket('AI');
     h.handle.destroy();
   });
 
@@ -587,17 +592,18 @@ describe('pdf-preview-modal placement helpers', () => {
     // The inline save lands first and stores the same text.
     const index = h.options.getAnnotationsData()[0].indexOf(persistedEntry(h));
     h.options.getAnnotationsData()[0][index] = {
-      ...persistedEntry(h), content: 'Second edit', _originalContent: 'Second edit',
+      ...h.persistUpdate({ content: 'Second edit' }).annotation, _originalContent: 'Second edit',
     };
-    finishSidebar('Second edit');
+    finishSidebar();
     await sidebar;
     expect(stackedEdits()).toEqual([]);
+    h.expectBucket('AI');
     h.handle.destroy();
   });
 
-  // Codex review of the #462 fix, round 3: with two DIFFERENT overlapping edits, the first save that lands has
-  // already transferred ownership, so the later entry's old source is the entry's source as it stands then
-  // (HUMAN), not the stale AI snapshot taken before either request.
+  // Codex review of the #462 fix, round 3: with two DIFFERENT overlapping edits and an explicit ownership
+  // transfer before the first save lands, the later entry's old source is the current HUMAN source, not the
+  // stale AI snapshot. Content-only saves themselves do not transfer ownership.
   it('an inline save landing after another edit records that edit as its old text and source', async () => {
     const h = await createSplitOwnershipHarness();
     const label = inlineLabelFor(h, 'Teacher feedback');
@@ -605,9 +611,9 @@ describe('pdf-preview-modal placement helpers', () => {
     const inline = window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Second edit');
     const index = h.options.getAnnotationsData()[0].indexOf(persistedEntry(h));
     h.options.getAnnotationsData()[0][index] = {
-      ...persistedEntry(h), content: 'First edit', _originalContent: 'First edit', source: 'HUMAN',
+      ...h.persistUpdate({ content: 'First edit', source: 'HUMAN' }).annotation, _originalContent: 'First edit',
     };
-    finishInline('Second edit');
+    finishInline();
     await inline;
     expect(stackedEdits()).toEqual([
       expect.objectContaining({
@@ -626,9 +632,9 @@ describe('pdf-preview-modal placement helpers', () => {
     await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(1));
     const index = h.options.getAnnotationsData()[0].indexOf(persistedEntry(h));
     h.options.getAnnotationsData()[0][index] = {
-      ...persistedEntry(h), content: 'First edit', _originalContent: 'First edit', source: 'HUMAN',
+      ...h.persistUpdate({ content: 'First edit', source: 'HUMAN' }).annotation, _originalContent: 'First edit',
     };
-    finishSidebar('Second edit');
+    finishSidebar();
     await sidebar;
     const edits = window.PdfPreviewModal.__test.getUndoStacks().controller.filter((op) => op.type === 'edit');
     expect(edits).toEqual([
@@ -644,9 +650,6 @@ describe('pdf-preview-modal placement helpers', () => {
     h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
     persistedEntry(h).content = 'Edited feedback'; // a draft kept in content, as the priority path does
     document.getElementById('edit-annotation-text-owned-comment').value = 'Edited feedback';
-    h.updateAnnotation.mockResolvedValueOnce({
-      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: 'Edited feedback' },
-    });
     await h.controller.saveAnnotationEdit('owned-comment');
     h.dispatchUndo();
     await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
@@ -659,32 +662,30 @@ describe('pdf-preview-modal placement helpers', () => {
     h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
     const textarea = document.getElementById('edit-annotation-text-owned-comment');
     textarea.value = 'Edited feedback';
-    h.updateAnnotation.mockResolvedValueOnce({
-      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: textarea.value },
-    });
     await h.controller.saveAnnotationEdit('owned-comment');
-    h.expectBucket('HUMAN');
+    h.expectBucket('AI');
+    expect(persistedEntry(h).content).toBe('Edited feedback');
 
     h.dispatchUndo();
     await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
-    expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback', source: 'AI' });
-    await vi.waitFor(() => h.expectBucket('AI'));
-    expect(Object.values(h.options.getAnnotationsData()).flat()[0].content).toBe('Teacher feedback');
+    expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback' });
+    await vi.waitFor(() => {
+      h.expectBucket('AI');
+      expect(persistedEntry(h).content).toBe('Teacher feedback');
+    });
     h.handle.destroy();
   });
 
-  it('re-buckets a sidebar text edit when the server transfers ownership', async () => {
+  it('keeps a sidebar content-only edit in the AI list', async () => {
     const h = await createSplitOwnershipHarness();
     h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
     const textarea = document.getElementById('edit-annotation-text-owned-comment');
     expect(textarea).not.toBeNull();
     textarea.value = 'Edited feedback';
-    h.updateAnnotation.mockResolvedValueOnce({
-      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: textarea.value },
-    });
     await h.controller.saveAnnotationEdit('owned-comment');
     expect(h.updateAnnotation.mock.calls[0][3]).toEqual({ content: 'Edited feedback' });
-    h.expectBucket('HUMAN');
+    h.expectBucket('AI');
+    expect(persistedEntry(h).content).toBe('Edited feedback');
     h.handle.destroy();
   });
 
