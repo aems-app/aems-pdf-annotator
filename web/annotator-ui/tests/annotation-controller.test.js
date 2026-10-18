@@ -639,6 +639,148 @@ describe('annotation-controller state ownership', () => {
     expect(annotationsState.undoStack).toEqual([]);
   });
 
+  // Issue #540: a redo puts its operation back on the undo stack without clearing the redo history, and the
+  // modal mirrors this stack, so the controller must hand the redo re-push through as one.
+  it('forwards a redo re-push to the host undo mirror as a redo re-push', async () => {
+    const mod = await loadAnnotationControllerModule();
+    const pushUndoOperation = vi.fn();
+    const controller = mod.createAnnotationController({
+      annotationsState: { undoStack: [] },
+      getAnnotationsData: () => ({}),
+      helpers: { pushUndoOperation },
+    });
+    const operation = { type: 'edit', identifier: 'ann-1', undoTimestamp: 5 };
+
+    controller.pushUndoOperation(operation, { preserveRedo: true });
+
+    expect(pushUndoOperation).toHaveBeenCalledWith(operation, { preserveRedo: true });
+    expect(controller.getUndoStack()).toEqual([operation]);
+  });
+
+  it('clearing the undo stack also clears the host redo history', async () => {
+    const mod = await loadAnnotationControllerModule();
+    const clearRedoStack = vi.fn();
+    const controller = mod.createAnnotationController({
+      annotationsState: { undoStack: [] },
+      getAnnotationsData: () => ({}),
+      helpers: { clearRedoStack },
+    });
+    controller.pushUndoOperation({ type: 'edit', identifier: 'ann-1' });
+
+    controller.clearUndoStack();
+
+    expect(controller.getUndoStack()).toEqual([]);
+    expect(clearRedoStack).toHaveBeenCalledOnce();
+  });
+
+  function createHighlightRedoController(mod, { updateAnnotationRequest, showToast = vi.fn() }) {
+    document.body.innerHTML = `
+      <div
+        class="annotation-marker source-ai"
+        data-annotation-xref="42"
+        data-annotation-request-id="highlight-1"
+        data-annotation-source="AI"
+      ></div>
+    `;
+    const annotation = {
+      stable_id: 'highlight-1',
+      requestIdentifier: 'highlight-1',
+      xref: 42,
+      page_index: 0,
+      type: 'Highlight',
+      quads: [[10, 20, 50, 30]],
+      anchor_text: 'previous phrase',
+      rect: [10, 20, 50, 30],
+      source: 'AI',
+    };
+    const state = { annotationsData: { 0: [{ ...annotation }] } };
+    const controller = mod.createAnnotationController({
+      annotationsState: { undoStack: [] },
+      getAnnotationsData: () => state.annotationsData,
+      setAnnotationsData: (data) => { state.annotationsData = data; },
+      helpers: {
+        buildApiAnnotationIdentifier: ({ identifier }) => identifier,
+        resolveAnnotationIdentifierValue: (ann) => ann.stable_id,
+        normalizeAnnotationIdentifierValue: (value) => value == null ? null : String(value),
+        resolveAnnotationSource: (ann) => ann.source,
+        updateAnnotationRequest,
+        showToast,
+        translatePdfPreviewText: (text) => text,
+      },
+    });
+    const marker = document.querySelector('.annotation-marker');
+    const resize = () => controller.persistHighlightExtend(marker, state.annotationsData[0][0], {
+      quadsPdf: [[10, 770, 90, 780]], anchorText: 'extended phrase', pageIdx: 0,
+    });
+    return { annotation, controller, marker, resize, state };
+  }
+
+  it('redoes a highlight extend with its original request, applying the recorded state when the response omits it', async () => {
+    const mod = await loadAnnotationControllerModule();
+    const resized = { quads: [[10, 20, 90, 30]], anchor_text: 'extended phrase', rect: [10, 20, 90, 30], source: 'HUMAN' };
+    const updateAnnotationRequest = vi.fn();
+    const { annotation, controller, marker, resize, state } = createHighlightRedoController(mod, {
+      updateAnnotationRequest,
+    });
+    updateAnnotationRequest
+      .mockResolvedValueOnce({ success: true, annotation: { ...annotation, ...resized } }) // the extend
+      .mockResolvedValueOnce({ success: true, annotation: { ...annotation } }) // its undo
+      .mockResolvedValueOnce({ success: true }); // its redo, answered without the annotation
+    await resize();
+    const operation = controller.popUndoOperation();
+    await controller.performHighlightExtendUndo(operation);
+    expect(marker.dataset.annotationSource).toBe('AI');
+
+    expect(controller.performHighlightExtendRedo).toBeTypeOf('function');
+    const result = await controller.performHighlightExtendRedo(operation);
+
+    expect(result).toMatchObject({ success: true });
+    expect(updateAnnotationRequest.mock.calls[2]).toEqual(updateAnnotationRequest.mock.calls[0]);
+    expect(state.annotationsData[0][0]).toMatchObject(resized);
+    expect(marker.dataset.annotationSource).toBe('HUMAN');
+  });
+
+  it('drops a highlight extend redo and shows an error toast when the target was deleted', async () => {
+    const mod = await loadAnnotationControllerModule();
+    const showToast = vi.fn();
+    const updateAnnotationRequest = vi.fn();
+    const { annotation, controller, resize, state } = createHighlightRedoController(mod, {
+      updateAnnotationRequest, showToast,
+    });
+    updateAnnotationRequest
+      .mockResolvedValueOnce({ success: true, annotation: { ...annotation, anchor_text: 'extended phrase' } })
+      .mockResolvedValueOnce({ success: true, annotation: { ...annotation } });
+    await resize();
+    const operation = controller.popUndoOperation();
+    await controller.performHighlightExtendUndo(operation);
+    state.annotationsData = { 0: [] };
+
+    expect(controller.performHighlightExtendRedo).toBeTypeOf('function');
+    const result = await controller.performHighlightExtendRedo(operation);
+
+    expect(result).toMatchObject({ success: false, missing: true });
+    expect(showToast).toHaveBeenCalledWith('error', 'Annotation no longer exists');
+    expect(updateAnnotationRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses to redo anything but a recorded highlight extend', async () => {
+    const mod = await loadAnnotationControllerModule();
+    const updateAnnotationRequest = vi.fn();
+    const controller = mod.createAnnotationController({
+      annotationsState: { undoStack: [] },
+      getAnnotationsData: () => ({}),
+      helpers: { buildApiAnnotationIdentifier: ({ identifier }) => identifier, updateAnnotationRequest },
+    });
+
+    expect(controller.performHighlightExtendRedo).toBeTypeOf('function');
+    await expect(controller.performHighlightExtendRedo({ type: 'edit' }))
+      .rejects.toThrow('Invalid highlight extend redo operation.');
+    // An extend recorded before redo existed has no request to replay.
+    await expect(controller.performHighlightExtendRedo({ type: 'highlight-extend', identifier: 'h', pageIdx: 0 }))
+      .rejects.toThrow('Invalid highlight extend redo operation.');
+    expect(updateAnnotationRequest).not.toHaveBeenCalled();
+  });
+
   it('selectAnnotation syncs selectedId and emits selection changes', async () => {
     document.body.innerHTML = `
       <div id="pdfGradedCommentsList">

@@ -17,11 +17,14 @@ async function createUndoHarness({
   performHighlightExtendUndo = vi.fn().mockResolvedValue({ success: true }),
   createAnnotation = vi.fn().mockResolvedValue({ success: true }),
   updateAnnotation = vi.fn().mockResolvedValue({ success: true }),
+  deleteAnnotation = vi.fn().mockResolvedValue({ success: true }),
+  annotations = null,
   visibilityController = null,
   annotationControllerFactory = null,
 } = {}) {
   let modalHelpers;
   let overlayHelpers;
+  const markerClickHandlers = [];
 
   window.PdfPreviewModalStateCore = {
     createModalState: (options) => ({
@@ -39,6 +42,7 @@ async function createUndoHarness({
     createAnnotationController: (options) => {
       modalHelpers = options.helpers;
       if (annotationControllerFactory) return annotationControllerFactory(options);
+      if (annotations) options.setAnnotationsData(annotations);
       return {
         peekUndoOperation: () => controllerUndoStack.at(-1) || null,
         popUndoOperation: () => controllerUndoStack.pop() || null,
@@ -46,6 +50,7 @@ async function createUndoHarness({
         performHighlightExtendUndo,
         unobserveAnnotationMarker: visibilityController?.unobserveAnnotationMarker,
         getVisibleMarkers: visibilityController?.getVisibleMarkers,
+        selectAnnotation: () => {},
         renderList: vi.fn(),
         onAnnotationsChanged: () => {},
         onAnnotationsLoaded: () => {},
@@ -61,7 +66,7 @@ async function createUndoHarness({
       createOverlayRenderer: (options) => {
         overlayHelpers = options.helpers;
         return {
-          onMarkerClicked: () => {},
+          onMarkerClicked: (handler) => { markerClickHandlers.push(handler); },
           onMarkerDblClicked: () => {},
           onOverlayDblClicked: () => {},
           onOverlayReady: () => {},
@@ -106,6 +111,7 @@ async function createUndoHarness({
   const adapter = {
     createAnnotation,
     updateAnnotation,
+    deleteAnnotation,
   };
   await loadPlacementHelpers();
   const handle = window.PdfPreviewModal.createPdfPreviewModal({
@@ -117,6 +123,8 @@ async function createUndoHarness({
 
   return {
     handle,
+    adapter,
+    clickMarker: (data) => markerClickHandlers.forEach((handler) => handler(data)),
     buildApiAnnotationIdentifier: modalHelpers.buildApiAnnotationIdentifier,
     unobserveAnnotationMarker: overlayHelpers?.unobserveAnnotationMarker,
     pushLocalUndo: modalHelpers.pushUndoOperation,
@@ -126,6 +134,12 @@ async function createUndoHarness({
         ctrlKey: true,
         bubbles: true,
       }));
+    },
+    // Ctrl+Y by default; pass a key init for Ctrl+Shift+Z or the Cmd variants.
+    dispatchRedo: (init = { key: 'y', ctrlKey: true }, target = document) => {
+      const event = new window.KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+      target.dispatchEvent(event);
+      return event;
     },
     getUndoStacks: () => window.PdfPreviewModal.__test.getUndoStacks(),
   };
@@ -157,7 +171,9 @@ function createMarker({
 }
 
 // Real list renderers and annotation model, with only the host API/PDF viewer stubbed.
-async function createSplitOwnershipHarness({ source = 'AI', updateResult = null } = {}) {
+async function createSplitOwnershipHarness({
+  source = 'AI', updateResult = null, createAnnotation, deleteAnnotation,
+} = {}) {
   await import('../src/pdf-preview-modal/utils.js');
   await import('../src/pdf-preview-modal/annotation-helpers.js');
   await import('../src/pdf-preview-modal/sidebar-panel.js');
@@ -188,6 +204,8 @@ async function createSplitOwnershipHarness({ source = 'AI', updateResult = null 
   });
   const harness = await createUndoHarness({
     updateAnnotation,
+    createAnnotation,
+    deleteAnnotation,
     visibilityController: { renderPage },
     annotationControllerFactory: (opts) => {
       options = opts;
@@ -1705,5 +1723,530 @@ describe('pdf-preview-modal placement helpers', () => {
 
     vi.advanceTimersByTime(1);
     expect(label.classList.contains('label-expanded')).toBe(true);
+  });
+
+  // Issue #540: redo (Ctrl+Y, Ctrl+Shift+Z, and the Cmd variants) for every operation the undo stack records.
+  // Each test performs the original action, undoes it, and redoes it, then checks that the redo made the same
+  // persistence call as the original action and left the annotation in its post-action state, ownership included.
+  describe('redo (issue #540)', () => {
+    // Every modal a test opens is destroyed afterwards, so a test that fails part-way cannot leave its keydown
+    // handlers on the document to answer the next test's shortcuts.
+    const opened = [];
+    afterEach(() => {
+      opened.splice(0).forEach((handle) => handle.destroy());
+      delete window.PdfPreviewModalMarkupSelection;
+      delete window.PdfPreviewModalHighlightAnchor;
+    });
+
+    async function splitHarness(options) {
+      const h = await createSplitOwnershipHarness(options);
+      opened.push(h.handle);
+      return h;
+    }
+
+    async function undoHarness(options) {
+      const h = await createUndoHarness(options);
+      opened.push(h.handle);
+      return h;
+    }
+
+    const errorToasts = () => [...document.querySelectorAll('.alert-danger')].map((toast) => toast.textContent.trim());
+
+    // A fake annotation endpoint that keeps its state between calls and applies the server's ownership rule: a
+    // human content or priority change on an AI annotation transfers it to HUMAN, and an explicit source wins.
+    // A redo replays the original request, so it must land on the state the original action produced.
+    function serveAnnotation(h) {
+      let state = { ...h.annotation };
+      h.updateAnnotation.mockImplementation(async (_assignment, _submission, _identifier, body) => {
+        const transfers = body.source === undefined && ('content' in body || 'color' in body);
+        state = {
+          ...state,
+          ...body,
+          ...(transfers ? { source: 'HUMAN' } : {}),
+          page_index: body.page_index ?? state.page_index,
+        };
+        return { success: true, annotation: { ...state } };
+      });
+    }
+
+    const entries = (h) => Object.values(h.options.getAnnotationsData()).flat();
+    // What an action leaves behind, ownership included. The rect is compared only where the action sets it:
+    // a highlight PUT has the server recompute it.
+    const stateOf = (entry) => ({
+      source: entry.source,
+      original_source: entry.original_source,
+      grader_name: entry.grader_name,
+      content: entry.content,
+      color: entry.color,
+      page_index: entry.page_index,
+      quads: entry.quads,
+      anchor_text: entry.anchor_text,
+    });
+    const historyOps = (h, type) => {
+      const { local, controller } = h.getUndoStacks();
+      return {
+        local: local.filter((op) => op.type === type),
+        controller: controller.filter((op) => op.type === type),
+      };
+    };
+
+    async function saveSidebarEdit(h, text) {
+      h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
+      document.getElementById('edit-annotation-text-owned-comment').value = text;
+      await h.controller.saveAnnotationEdit('owned-comment');
+    }
+
+    async function settle() {
+      await vi.advanceTimersByTimeAsync(350);
+    }
+
+    // Ctrl+Z, then the given redo shortcut, each awaited until its request has been made.
+    async function undoThenRedo(h, request, redoInit) {
+      const before = request.mock.calls.length;
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(before + 1));
+      await settle();
+      h.dispatchRedo(redoInit);
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(before + 2));
+      await settle();
+    }
+
+    it('Ctrl+Y re-applies an undone sidebar edit with the original request and its HUMAN ownership', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      const afterEdit = stateOf(entries(h)[0]);
+      expect(afterEdit).toMatchObject({ content: 'Edited feedback', source: 'HUMAN' });
+
+      await undoThenRedo(h, h.updateAnnotation);
+
+      expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
+      expect(stateOf(entries(h)[0])).toEqual(afterEdit);
+      await vi.waitFor(() => h.expectBucket('HUMAN'));
+      // The edit is back on both undo stacks, so Ctrl+Z undoes it again with the same request as before.
+      expect(historyOps(h, 'edit')).toEqual({ local: [expect.anything()], controller: [expect.anything()] });
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
+      expect(h.updateAnnotation.mock.calls[3]).toEqual(h.updateAnnotation.mock.calls[1]);
+      await vi.waitFor(() => h.expectBucket('AI'));
+      h.handle.destroy();
+    });
+
+    it('Ctrl+Shift+Z re-applies an undone inline edit with the original request and its HUMAN ownership', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      const label = inlineLabelFor(h, h.annotation.content);
+      await window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline');
+      const afterEdit = stateOf(entries(h)[0]);
+      expect(afterEdit).toMatchObject({ content: 'Edited inline', source: 'HUMAN' });
+
+      await undoThenRedo(h, h.updateAnnotation, { key: 'Z', ctrlKey: true, shiftKey: true });
+
+      expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
+      expect(stateOf(entries(h)[0])).toEqual(afterEdit);
+      await vi.waitFor(() => h.expectBucket('HUMAN'));
+      expect(historyOps(h, 'edit').local).toHaveLength(1);
+      h.handle.destroy();
+    });
+
+    it('Ctrl+Y re-applies an undone priority change with the original request and its HUMAN ownership', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await h.options.helpers.updateAnnotationPriority(0, 'owned-comment', 'red');
+      const afterChange = stateOf(entries(h)[0]);
+      expect(afterChange).toMatchObject({ color: 'red', source: 'HUMAN' });
+
+      await undoThenRedo(h, h.updateAnnotation);
+
+      expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
+      expect(stateOf(entries(h)[0])).toEqual(afterChange);
+      await vi.waitFor(() => h.expectBucket('HUMAN'));
+      expect(historyOps(h, 'priority').local).toHaveLength(1);
+      h.handle.destroy();
+    });
+
+    it.each([
+      ['a same-page ownership move', 0, true],
+      ['a cross-page ownership move', 1, true],
+      ['a same-page move', 0, false],
+    ])('Ctrl+Y re-applies %s with the original request', async (_name, targetPage, transfer) => {
+      const h = await splitHarness({ source: transfer ? 'AI' : 'HUMAN' });
+      serveAnnotation(h);
+      await window.PdfPreviewModal.__test.updateAnnotationPosition(0, targetPage, 'owned-comment', h.marker, transfer);
+      const placed = (entry) => ({ ...stateOf(entry), rect: entry.rect });
+      const afterMove = placed(entries(h)[0]);
+      expect(afterMove).toMatchObject({ page_index: targetPage, source: 'HUMAN' });
+
+      await undoThenRedo(h, h.updateAnnotation);
+
+      expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
+      expect(placed(entries(h)[0])).toEqual(afterMove);
+      h.expectBucket('HUMAN');
+      expect(historyOps(h, 'move').local).toHaveLength(1);
+      // Undo works again after the redo, with the same request as the first undo.
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
+      expect(h.updateAnnotation.mock.calls[3]).toEqual(h.updateAnnotation.mock.calls[1]);
+      h.handle.destroy();
+    });
+
+    it('Ctrl+Y re-applies an undone highlight resize with the original request and its HUMAN ownership', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await h.controller.persistHighlightExtend(h.marker, h.annotation, {
+        pageIdx: 0, quadsPdf: [[50, 722, 220, 742]], anchorText: 'resized answer text',
+      });
+      const afterResize = stateOf(entries(h)[0]);
+      expect(afterResize).toMatchObject({ anchor_text: 'resized answer text', source: 'HUMAN' });
+
+      await undoThenRedo(h, h.updateAnnotation);
+
+      expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
+      expect(stateOf(entries(h)[0])).toEqual(afterResize);
+      await vi.waitFor(() => h.expectBucket('HUMAN'));
+      expect(historyOps(h, 'highlight-extend')).toEqual({
+        local: [expect.anything()],
+        controller: [expect.anything()],
+      });
+      h.handle.destroy();
+    });
+
+    it('redoes a highlight resize through the modal fallback when the controller has no highlight support', async () => {
+      const highlight = {
+        stable_id: 'hl-1', xref: 70, page_index: 0, type: 'Highlight', content: 'Check the sign',
+        quads: [[50, 50, 150, 70]], anchor_text: 'answer text', rect: [50, 50, 150, 70], source: 'AI',
+      };
+      let state = { ...highlight };
+      // A highlight PUT recreates the PDF annotation, so every response carries a new xref.
+      const updateAnnotation = vi.fn(async (_assignment, _submission, _identifier, body) => {
+        state = { ...state, ...body, xref: state.xref + 1 };
+        return { success: true, annotation: { ...state } };
+      });
+      const anchor = { init: vi.fn(), select: vi.fn(), deselect: vi.fn() };
+      window.PdfPreviewModalHighlightAnchor = anchor;
+      const h = await undoHarness({
+        updateAnnotation,
+        performHighlightExtendUndo: null,
+        visibilityController: {},
+        annotations: { 0: [{ ...highlight }] },
+      });
+      document.getElementById('pdfGradedContainer').innerHTML = `
+        <div class="pdf-page-wrapper" data-page-num="1"><div class="pdf-annotation-overlay">
+          <div class="annotation-marker" data-annotation-anchored="true" data-annotation-page="0"
+            data-annotation-xref="70" data-annotation-request-id="hl-1"></div>
+        </div></div>`;
+      h.clickMarker({ pageIdx: 0, identifier: 'hl-1' });
+      const { onExtendCompleted } = anchor.init.mock.calls[0][0];
+      const [marker, selected] = anchor.select.mock.calls[0];
+      await onExtendCompleted(marker, selected, {
+        pageIdx: 0, quadsPdf: [[50, 722, 220, 742]], anchorText: 'resized answer text',
+      });
+      const resized = { quads: [[50, 722, 220, 742]], anchor_text: 'resized answer text', source: 'HUMAN' };
+      expect(h.handle.getAnnotations()[0][0]).toMatchObject(resized);
+
+      await undoThenRedo(h, updateAnnotation);
+
+      expect(updateAnnotation.mock.calls[1][3]).toMatchObject({ anchor_text: 'answer text', source: 'AI' });
+      expect(updateAnnotation.mock.calls[2]).toEqual(updateAnnotation.mock.calls[0]);
+      expect(h.handle.getAnnotations()[0][0]).toMatchObject(resized);
+      h.handle.destroy();
+    });
+
+    it('Ctrl+Y re-deletes an annotation whose deletion was undone, with the original request', async () => {
+      let fixture;
+      let nextXref = 43;
+      const createAnnotation = vi.fn(async (_assignment, _submission, body) => ({
+        success: true, annotation: { ...fixture, ...body, xref: nextXref++ },
+      }));
+      const deleteAnnotation = vi.fn().mockResolvedValue({ success: true });
+      const h = await splitHarness({ createAnnotation, deleteAnnotation });
+      fixture = h.annotation;
+      await h.controller.deleteAnnotation(0, 'owned-comment');
+      expect(deleteAnnotation).toHaveBeenCalledTimes(1);
+      expect(entries(h)).toEqual([]);
+
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => h.expectBucket('AI'));
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(deleteAnnotation).toHaveBeenCalledTimes(2));
+
+      expect(deleteAnnotation.mock.calls[1]).toEqual(deleteAnnotation.mock.calls[0]);
+      await vi.waitFor(() => expect(entries(h)).toEqual([]));
+      expect(historyOps(h, 'delete')).toEqual({ local: [expect.anything()], controller: [expect.anything()] });
+      // Undo recreates it again, with the same request as the first undo and its AI ownership.
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledTimes(2));
+      expect(createAnnotation.mock.calls[1]).toEqual(createAnnotation.mock.calls[0]);
+      await vi.waitFor(() => h.expectBucket('AI'));
+      h.handle.destroy();
+    });
+
+    it('Ctrl+Y re-deletes a pen stroke whose deletion was undone', async () => {
+      const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
+      window.PdfPreviewModalMarkupSelection = selection;
+      const createAnnotation = vi.fn(async (_assignment, _submission, body) => ({
+        success: true, annotation: { ...body, stable_id: 'stroke-2', xref: 61 },
+      }));
+      const deleteAnnotation = vi.fn().mockResolvedValue({ success: true });
+      const h = await undoHarness({
+        createAnnotation,
+        deleteAnnotation,
+        annotations: {
+          0: [{ stable_id: 'stroke-1', xref: 60, page_index: 0, type: 'drawing', content: '', source: 'HUMAN' }],
+        },
+      });
+      selection.deleteSelected.mockReturnValue({
+        type: 'stroke',
+        pageIdx: 0,
+        entry: {
+          annotationId: 'stroke-1',
+          content: '',
+          color: { name: 'red', rgb: [1, 0, 0] },
+          points: [{ x: 10, y: 92 }, { x: 20, y: 102 }],
+        },
+      });
+      selection.onDeleteRequested();
+      await vi.waitFor(() => expect(h.getUndoStacks().local).toHaveLength(1));
+      expect(h.handle.getAnnotations()).toEqual({});
+
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(h.handle.getAnnotations()[0]).toEqual([
+        expect.objectContaining({ stable_id: 'stroke-2' }),
+      ]));
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(deleteAnnotation).toHaveBeenCalledTimes(2));
+
+      const [assignment, submission, , options] = deleteAnnotation.mock.calls[0];
+      expect(deleteAnnotation.mock.calls[1]).toEqual([assignment, submission, 'stroke-2', options]);
+      expect(h.handle.getAnnotations()).toEqual({});
+      expect(h.getUndoStacks().local).toEqual([expect.objectContaining({ type: 'delete-markup' })]);
+      h.handle.destroy();
+    });
+
+    it.each([
+      ['Ctrl+Y', { key: 'y', ctrlKey: true }],
+      ['Ctrl+Shift+Z', { key: 'Z', ctrlKey: true, shiftKey: true }],
+      ['Ctrl+Shift+Z reported as a lower-case key', { key: 'z', ctrlKey: true, shiftKey: true }],
+      ['Cmd+Y', { key: 'y', metaKey: true }],
+      ['Cmd+Shift+Z', { key: 'Z', metaKey: true, shiftKey: true }],
+    ])('%s redoes the last undone operation', async (_name, init) => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+
+      await undoThenRedo(h, h.updateAnnotation, init);
+
+      expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
+      h.handle.destroy();
+    });
+
+    it.each(['textarea', 'input'])('leaves Ctrl+Y to the browser inside a %s', async (tag) => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+      const field = document.createElement(tag);
+      document.body.appendChild(field);
+
+      const event = h.dispatchRedo({ key: 'y', ctrlKey: true }, field);
+      await settle();
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(2);
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
+      h.handle.destroy();
+    });
+
+    it('treats Ctrl+Y with nothing to redo as a no-op', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      h.dispatchRedo();
+      await settle();
+      expect(h.updateAnnotation).not.toHaveBeenCalled();
+      await saveSidebarEdit(h, 'Edited feedback');
+      await undoThenRedo(h, h.updateAnnotation);
+      const stacks = h.getUndoStacks();
+
+      h.dispatchRedo();
+      await settle();
+
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(3);
+      expect(h.getUndoStacks()).toEqual(stacks);
+      expect(errorToasts()).toEqual([]);
+      h.handle.destroy();
+    });
+
+    it.each([
+      ['a sidebar edit, recorded by the controller', (h) => saveSidebarEdit(h, 'Another edit')],
+      [
+        'a marker move, recorded by the modal',
+        (h) => window.PdfPreviewModal.__test.updateAnnotationPosition(0, 0, 'owned-comment', h.marker, false),
+      ],
+    ])('a new operation after an undo clears redo: %s', async (_name, newOperation) => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      await undoThenRedo(h, h.updateAnnotation); // redo is available after an undo
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
+      await settle();
+
+      await newOperation(h);
+      await settle();
+      const callsAfterNewOperation = h.updateAnnotation.mock.calls.length;
+      h.dispatchRedo();
+      await settle();
+
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(callsAfterNewOperation);
+      h.handle.destroy();
+    });
+
+    it('clearing the undo history also clears redo', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      await undoThenRedo(h, h.updateAnnotation);
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
+
+      h.controller.clearUndoStack();
+      h.dispatchRedo();
+      await settle();
+
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(4);
+      h.handle.destroy();
+    });
+
+    it('switching to another document clears redo', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      await undoThenRedo(h, h.updateAnnotation);
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
+
+      h.handle.close();
+      const next = window.PdfPreviewModal.createPdfPreviewModal({
+        assignmentId: 'assignment-1', submissionId: 'submission-2', modeAdapter: h.adapter,
+      });
+      opened.push(next);
+      await next.open();
+      h.dispatchRedo();
+      await settle();
+
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(4);
+      next.destroy();
+    });
+
+    it('ignores Ctrl+Y while an undo is still in flight', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'First edit');
+      await saveSidebarEdit(h, 'Second edit');
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
+      await settle();
+      let finishUndo;
+      h.updateAnnotation.mockImplementationOnce(() => new Promise((done) => { finishUndo = done; }));
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
+
+      h.dispatchRedo(); // the second edit is on the redo stack, but the first edit's undo has not landed
+      await settle();
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(4);
+
+      finishUndo({ success: true, annotation: { ...h.annotation } });
+      await settle();
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(5));
+      await settle();
+      expect(h.updateAnnotation.mock.calls[4]).toEqual(h.updateAnnotation.mock.calls[0]);
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(6));
+      expect(h.updateAnnotation.mock.calls[5]).toEqual(h.updateAnnotation.mock.calls[1]);
+      h.handle.destroy();
+    });
+
+    it('keeps a failed redo queued so Ctrl+Y can retry it', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+      h.updateAnnotation.mockRejectedValueOnce(new Error('network down'));
+
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
+      await vi.waitFor(() => expect(errorToasts()).toContain('Failed to redo edit'));
+      expect(historyOps(h, 'edit')).toEqual({ local: [], controller: [] });
+
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
+      expect(h.updateAnnotation.mock.calls[3]).toEqual(h.updateAnnotation.mock.calls[0]);
+      await vi.waitFor(() => h.expectBucket('HUMAN'));
+      h.handle.destroy();
+    });
+
+    it('drops a redo whose annotation no longer exists', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await window.PdfPreviewModal.__test.updateAnnotationPosition(0, 0, 'owned-comment', h.marker, true);
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+      const pageAnnotations = h.options.getAnnotationsData()[0];
+      const removed = pageAnnotations.splice(0, pageAnnotations.length); // another reviewer deleted it
+
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(errorToasts()).toContain('Annotation no longer exists'));
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(2);
+
+      // Dropped, not re-queued: with the annotation back, there is still nothing to redo.
+      pageAnnotations.push(...removed);
+      h.dispatchRedo();
+      await settle();
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(2);
+      h.handle.destroy();
+    });
+
+    it('keeps at most MAX_UNDO_STACK_SIZE (50) redo entries, dropping the earliest undone', async () => {
+      const edit = (identifier, undoTimestamp) => ({
+        type: 'edit', identifier, pageIdx: 0, oldContent: 'old', newContent: 'new', undoTimestamp,
+      });
+      // The controller and the modal cap their undo stacks separately, so together they can hold 100 entries.
+      const controllerUndoStack = Array.from({ length: 50 }, (_value, i) => edit(`controller-${i}`, i + 1));
+      const updateAnnotation = vi.fn().mockResolvedValue({ success: true });
+      const h = await undoHarness({ controllerUndoStack, updateAnnotation });
+      for (let i = 0; i < 50; i += 1) {
+        h.pushLocalUndo(edit(`local-${i}`, 1000 + i));
+      }
+      // Each step settles before the next key: a shortcut pressed while one is in flight is ignored.
+      for (let undone = 1; undone <= 100; undone += 1) {
+        h.dispatchUndo();
+        await vi.waitFor(() => expect(updateAnnotation).toHaveBeenCalledTimes(undone));
+        await settle();
+      }
+
+      for (let redone = 1; redone <= 50; redone += 1) {
+        h.dispatchRedo();
+        await vi.waitFor(() => expect(updateAnnotation).toHaveBeenCalledTimes(100 + redone));
+        await settle();
+      }
+      h.dispatchRedo();
+      await settle();
+
+      expect(updateAnnotation).toHaveBeenCalledTimes(150);
+      // The last 50 undone (the oldest edits) survive the cap and redo oldest first.
+      expect(updateAnnotation.mock.calls[100][2]).toBe('controller-0');
+      expect(updateAnnotation.mock.calls[149][2]).toBe('controller-49');
+      h.handle.destroy();
+    });
   });
 });
