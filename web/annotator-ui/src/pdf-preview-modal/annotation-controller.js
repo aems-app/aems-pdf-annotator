@@ -2727,6 +2727,16 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     throw new Error((data && data.error) || 'Update failed');
                 }
 
+                // The undo entry's old text is the last PERSISTED one (_originalContent; content can hold a draft),
+                // read against the entry as it stands now, before this save replaces it: an overlapping inline save
+                // of the same edit may already have stored it, and then this save pushes no entry (issue #462).
+                var current = _h.findAnnotationEntry
+                    ? _h.findAnnotationEntry(pageIdx, requestIdentifier || stableIdentifier) || originalAnn
+                    : originalAnn;
+                var persistedBefore = current && typeof current._originalContent === 'string'
+                    ? current._originalContent.trim()
+                    : originalContent;
+
                 var responsePageIdx = data.annotation.page_index;
                 var annotations = _getAnnotationsData();
                 if (annotations[responsePageIdx]) {
@@ -2738,18 +2748,20 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         annotations[responsePageIdx][annIdx] = updatedAnn;
 
                         var newSource = _h.resolveAnnotationSource ? _h.resolveAnnotationSource(updatedAnn) : 'HUMAN';
-                        pushUndoOperation({
-                            type: 'edit',
-                            identifier: stableIdentifier,
-                            xref: existingXref,
-                            requestId: requestIdentifier,
-                            pageIdx: pageIdx,
-                            oldContent: originalContent,
-                            newContent: newContent,
-                            oldSource: originalSource,
-                            newSource: newSource,
-                            isOwnershipTransfer: originalSource === 'AI' && newSource === 'HUMAN',
-                        });
+                        if (persistedBefore !== newContent) {
+                            pushUndoOperation({
+                                type: 'edit',
+                                identifier: stableIdentifier,
+                                xref: existingXref,
+                                requestId: requestIdentifier,
+                                pageIdx: pageIdx,
+                                oldContent: persistedBefore,
+                                newContent: newContent,
+                                oldSource: originalSource,
+                                newSource: newSource,
+                                isOwnershipTransfer: originalSource === 'AI' && newSource === 'HUMAN',
+                            });
+                        }
                     }
                 }
 
