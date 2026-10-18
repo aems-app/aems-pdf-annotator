@@ -3422,12 +3422,13 @@
     }
 
     // Undo functionality
-    // options.preserveRedo marks a redo putting its operation back. Any other push is a new operation, after
-    // which the undone operations no longer follow from the current state, so it clears the redo history.
+    // options.preserveRedo marks a history step putting its operation back: a redo, or an undo that failed. Any
+    // other push is a new operation, after which the undone operations no longer follow from the current state,
+    // so it clears the redo history.
     function pushUndoOperation(operation, options) {
         const preserveRedo = !!(options && options.preserveRedo);
-        if (isUndoing || (isRedoing && !preserveRedo)) {
-            // Don't record undo operations while an undo or a redo is applying one
+        if (!preserveRedo && (isUndoing || isRedoing)) {
+            // Don't record new undo operations while an undo or a redo is applying one
             return;
         }
         if (!preserveRedo) {
@@ -4180,9 +4181,12 @@
         // Call the API to recreate the annotation
         try {
             const data = await createAnnotationRequest(annotationData);
+            if (!data || !data.success) {
+                return historyRequestFailure(data || {}, 'Failed to undo deletion');
+            }
 
             // CRITICAL FIX: Add annotation directly instead of reloading all annotations
-            if (data.success && data.annotation) {
+            if (data.annotation) {
                 const responsePageIdx = data.annotation.page_index;
                 if (!annotationsData[responsePageIdx]) {
                     annotationsData[responsePageIdx] = [];
@@ -4276,9 +4280,12 @@
 
         try {
             const data = await updateAnnotationRequest(apiIdentifier, updateData);
+            if (!data || !data.success) {
+                return historyRequestFailure(data || {}, `Failed to ${verb} move`);
+            }
 
             // CRITICAL FIX: Update annotation directly instead of reloading all annotations
-            if (data.success && data.annotation) {
+            if (data.annotation) {
                 const updatedAnn = enhanceAnnotationEntry(data.annotation);
                 const lookupIdentifier = identity.identifier || identity.requestId;
 
@@ -4406,9 +4413,13 @@
 
         try {
             const data = await updateAnnotationRequest(apiIdentifier, updateData);
+            if (!data || !data.success) {
+                // Refused: the server kept its state, so nothing changes here either.
+                return historyRequestFailure(data || {}, failureMessage);
+            }
 
             // CRITICAL FIX: Update annotation directly instead of reloading all annotations
-            if (data.success && data.annotation) {
+            if (data.annotation) {
                 const responsePageIdx = data.annotation.page_index;
                 if (annotationsData[responsePageIdx]) {
                     const annIdx = findAnnotationIndex(responsePageIdx, operation.identifier || operation.requestId);
@@ -4417,7 +4428,7 @@
                         annotationsData[responsePageIdx][annIdx] = updatedAnn;
                     }
                 }
-            } else if (data.success) {
+            } else {
                 // Stored, but not read back: show the stored value. The source changes only when the request named
                 // one, because the server keeps the stored source otherwise.
                 const entry = findAnnotationEntry(operation.pageIdx, operation.identifier || operation.requestId);
@@ -4479,7 +4490,10 @@
         }
         try {
             const data = await createAnnotationRequest(body);
-            if (data.success && data.annotation) {
+            if (!data || !data.success) {
+                return historyRequestFailure(data || {}, 'Failed to undo deletion');
+            }
+            if (data.annotation) {
                 const respPg = data.annotation.page_index;
                 // upsert (not push) so re-runs of an undo can't double-insert
                 upsertAnnotationEntryLocal(data.annotation, respPg);
@@ -4513,7 +4527,11 @@
     async function redoDeleteMarkupOperation(operation) {
         const { identifier, pageIdx } = operation.redoTarget;
         try {
-            await deleteAnnotationRequest(buildApiAnnotationIdentifier({ identifier }) || identifier);
+            const data = await deleteAnnotationRequest(buildApiAnnotationIdentifier({ identifier }) || identifier);
+            if (!data || !data.success) {
+                // Refused: the server kept the markup, so the page keeps it too.
+                return historyRequestFailure(data || {}, 'Failed to redo deletion');
+            }
             removeAnnotationEntryLocal(pageIdx, identifier);
             refreshMarkupFromAnnotations();
             renderAnnotationsForPage(pageIdx + 1, true);
@@ -4586,16 +4604,16 @@
         try {
             const outcome = await undoOperation(entry.operation);
             if (outcome === HISTORY_FAILED) {
-                // Push operation back to stack if failed
-                undoStack.push(entry.operation);
+                // Push operation back onto the stacks it came from if failed
+                restoreUndoEntry(entry);
             } else if (outcome === HISTORY_APPLIED && canRedoOperation(entry.operation)) {
                 pushBounded(redoStack, entry);
             }
         } catch (error) {
             console.error('Error during undo:', error);
             showToast('error', translatePdfPreviewText('Undo operation failed'));
-            // Push operation back to stack if error occurred
-            undoStack.push(entry.operation);
+            // Push operation back onto the stacks it came from if an error occurred
+            restoreUndoEntry(entry);
         } finally {
             isUndoing = false;
         }
