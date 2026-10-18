@@ -1737,6 +1737,9 @@ describe('pdf-preview-modal placement helpers', () => {
       opened.splice(0).forEach((handle) => handle.destroy());
       delete window.PdfPreviewModalMarkupSelection;
       delete window.PdfPreviewModalHighlightAnchor;
+      delete window.PdfPreviewModalDrawingCanvas;
+      delete window.PdfPreviewModalTextbox;
+      delete window.PdfPreviewModalRendering;
     });
 
     async function splitHarness(options) {
@@ -2995,6 +2998,218 @@ describe('pdf-preview-modal placement helpers', () => {
 
       expect(submissionsOf(h.updateAnnotation)).toEqual(['submission-1']);
       expect(h.getUndoStacks()).toEqual({ local: [], controller: [] });
+    });
+
+    // Review finding 6: a pen stroke or text box the user creates is recorded as create-drawing or
+    // create-textbox. Undo deletes it with the same request as the Delete key; redo recreates it as it was when
+    // undone, with its content, geometry and ownership, and the operation takes the new identifier.
+    const PAGE_HEIGHT = 792;
+    const topLeftRect = (rect) => [rect[0], PAGE_HEIGHT - rect[3], rect[2], PAGE_HEIGHT - rect[1]];
+
+    // A markup endpoint that keeps what it stores. Like the AEMS server, it answers rects top-left and keeps
+    // drawing points in PDF space as sent; a new markup gets the source the request names, or HUMAN.
+    function serveMarkup() {
+      const stored = new Map();
+      let nextId = 1;
+      const store = (annotation) => {
+        stored.set(annotation.stable_id, annotation);
+        return { success: true, annotation: { ...annotation } };
+      };
+      const createAnnotation = vi.fn(async (_assignment, _submission, body) => {
+        const id = `markup-${nextId}`;
+        nextId += 1;
+        return store({
+          ...body,
+          ...(body.rect ? { rect: topLeftRect(body.rect) } : {}),
+          source: body.source ?? 'HUMAN',
+          stable_id: id,
+          xref: 600 + nextId,
+        });
+      });
+      const updateAnnotation = vi.fn(async (_assignment, _submission, id, body) => {
+        const current = stored.get(id);
+        if (!current) return { success: false, status: 404, error: 'Annotation not found' };
+        return store({ ...current, ...body, ...(body.rect ? { rect: topLeftRect(body.rect) } : {}) });
+      });
+      const deleteAnnotation = vi.fn(async (_assignment, _submission, id) => (
+        stored.delete(id) ? { success: true } : { success: false, status: 404, error: 'Annotation not found' }
+      ));
+      return { stored, createAnnotation, updateAnnotation, deleteAnnotation };
+    }
+
+    async function markupHarness() {
+      const canvas = {
+        init: vi.fn(), destroy: vi.fn(), ensureCanvasForPage: vi.fn(), getActiveColor: vi.fn(),
+        getActiveTool: vi.fn(), getPresetColors: vi.fn(() => []), hitTestStroke: vi.fn(),
+        isDrawingActive: vi.fn(() => false), loadStrokesFromAnnotations: vi.fn(), redrawPage: vi.fn(),
+        removeStroke: vi.fn(), setActiveColor: vi.fn(), setActiveTool: vi.fn(), setMarkupMode: vi.fn(),
+      };
+      const textboxes = {
+        createTextbox: vi.fn(), destroy: vi.fn(), editTextbox: vi.fn(), getPageTextboxes: vi.fn(() => []),
+        getTextboxCanvasRect: vi.fn(() => [100, 100, 220, 140]), hitTestTextbox: vi.fn(),
+        loadTextboxesFromAnnotations: vi.fn(), removeTextbox: vi.fn(),
+      };
+      window.PdfPreviewModalDrawingCanvas = canvas;
+      window.PdfPreviewModalTextbox = textboxes;
+      window.PdfPreviewModalRendering = { convertTopLeftRectToViewport: (rect) => rect };
+      const server = serveMarkup();
+      const h = await undoHarness({ ...server, visibilityController: {} });
+      const viewport = {
+        convertToPdfPoint: (x, y) => [x, PAGE_HEIGHT - y],
+        convertToViewportPoint: (x, y) => [x, PAGE_HEIGHT - y],
+      };
+      window.__pdfGradedViewer.getViewportForPage = () => viewport;
+      window.__pdfGradedViewer.pdf = { getPage: async () => ({ view: [0, 0, 612, PAGE_HEIGHT] }) };
+      document.getElementById('pdfGradedContainer').innerHTML = `
+        <div class="pdf-page-wrapper" data-page-num="1"><canvas></canvas><div class="pdf-annotation-overlay"></div></div>`;
+      return { h, canvas, textboxes, server };
+    }
+
+    async function drawStroke(m) {
+      m.canvas.onStrokeComplete(0, {
+        pageIdx: 0,
+        points: [{ x: 10, y: 92 }, { x: 20, y: 102 }],
+        style: 'pen',
+        strokeWidth: 2,
+        opacity: 0.8,
+        color: { rgb: [1, 0, 0] },
+      });
+      await vi.waitFor(() => expect(m.h.getUndoStacks().local).toEqual([
+        expect.objectContaining({ type: 'create-drawing', annotationId: 'markup-1' }),
+      ]));
+      await settle();
+    }
+
+    async function typeTextbox(m) {
+      m.textboxes.onTextboxCommitted({ pageIdx: 0, content: 'Check units', color: { rgb: [0, 0, 1] } });
+      await vi.waitFor(() => expect(m.h.getUndoStacks().local).toEqual([
+        expect.objectContaining({ type: 'create-textbox', annotationId: 'markup-1' }),
+      ]));
+      await settle();
+    }
+
+    // What the page shows of a markup, apart from its identifiers.
+    const markupState = (annotation) => {
+      const { stable_id: _stableId, xref: _xref, id: _id, identifier: _identifier, requestIdentifier: _request,
+        ...rest } = annotation;
+      return rest;
+    };
+    const pageMarkup = (m) => Object.values(m.h.handle.getAnnotations()).flat();
+
+    it.each([
+      ['pen stroke', drawStroke],
+      ['text box', typeTextbox],
+    ])('undoes a created %s with the Delete-key request and redoes it as it was', async (_name, create) => {
+      const m = await markupHarness();
+      await create(m);
+      const [created] = pageMarkup(m);
+      const createRequest = m.server.createAnnotation.mock.calls[0][2];
+
+      m.h.dispatchUndo();
+      await vi.waitFor(() => expect(m.server.deleteAnnotation).toHaveBeenCalledTimes(1));
+      await settle();
+      expect(m.server.deleteAnnotation.mock.calls[0][2]).toBe('markup-1');
+      expect(pageMarkup(m)).toEqual([]);
+
+      m.h.dispatchRedo();
+      await vi.waitFor(() => expect(m.server.createAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+      // The original create request, now naming the ownership the markup had.
+      expect(m.server.createAnnotation.mock.calls[1][2]).toEqual({ ...createRequest, source: 'HUMAN' });
+      const [restored] = pageMarkup(m);
+      expect(restored.stable_id).toBe('markup-2');
+      expect(markupState(restored)).toEqual(markupState(created));
+
+      // The operation took the new identifier: undo deletes the recreated markup.
+      m.h.dispatchUndo();
+      await vi.waitFor(() => expect(m.server.deleteAnnotation).toHaveBeenCalledTimes(2));
+      expect(m.server.deleteAnnotation.mock.calls[1][2]).toBe('markup-2');
+    });
+
+    it('redoes a created text box with the text it had when undone', async () => {
+      const m = await markupHarness();
+      await typeTextbox(m);
+      // Editing the text commits the text box again, as an update with no operation of its own.
+      m.textboxes.onTextboxCommitted({
+        pageIdx: 0, annotationId: 'markup-1', content: 'Check the units', color: { rgb: [0, 0, 1] },
+      });
+      await vi.waitFor(() => expect(m.server.updateAnnotation).toHaveBeenCalledTimes(1));
+      await settle();
+      const updateRequest = m.server.updateAnnotation.mock.calls[0][3];
+
+      m.h.dispatchUndo();
+      await vi.waitFor(() => expect(m.server.deleteAnnotation).toHaveBeenCalledTimes(1));
+      await settle();
+      m.h.dispatchRedo();
+      await vi.waitFor(() => expect(m.server.createAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+
+      expect(m.server.createAnnotation.mock.calls[1][2]).toEqual({ ...updateRequest, source: 'HUMAN' });
+      expect(pageMarkup(m)).toEqual([expect.objectContaining({ content: 'Check the units', source: 'HUMAN' })]);
+    });
+
+    it('a refused undo of a created pen stroke keeps it and can be retried', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const m = await markupHarness();
+      await drawStroke(m);
+      const page = m.h.handle.getAnnotations();
+      const stacks = m.h.getUndoStacks();
+      refuse(m.server.deleteAnnotation);
+
+      m.h.dispatchUndo();
+      await vi.waitFor(() => expect(errorToasts()).toContain('Failed to undo creation'));
+      await settle();
+
+      expect(m.h.handle.getAnnotations()).toEqual(page);
+      expect(m.h.getUndoStacks()).toEqual(stacks);
+      m.h.dispatchUndo();
+      await vi.waitFor(() => expect(m.server.deleteAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+      expect(pageMarkup(m)).toEqual([]);
+    });
+
+    it('a refused redo of a created pen stroke recreates nothing and can be retried', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const m = await markupHarness();
+      await drawStroke(m);
+      m.h.dispatchUndo();
+      await vi.waitFor(() => expect(m.server.deleteAnnotation).toHaveBeenCalledTimes(1));
+      await settle();
+      refuse(m.server.createAnnotation);
+
+      m.h.dispatchRedo();
+      await vi.waitFor(() => expect(errorToasts()).toContain('Failed to redo creation'));
+      await settle();
+
+      expect(pageMarkup(m)).toEqual([]);
+      expect(m.h.getUndoStacks().local).toEqual([]);
+      m.h.dispatchRedo();
+      await vi.waitFor(() => expect(m.server.createAnnotation).toHaveBeenCalledTimes(3));
+      await settle();
+      expect(pageMarkup(m)).toEqual([expect.objectContaining({ type: 'drawing', stable_id: 'markup-2' })]);
+    });
+
+    it.each([
+      ['the page no longer shows it', (m) => { m.h.getAnnotationsData()[0].splice(0); }, 0],
+      ['the server no longer has it', (m) => { m.server.stored.delete('markup-1'); }, 1],
+    ])('drops the undo of a created pen stroke when %s', async (_name, remove, deleteRequests) => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const m = await markupHarness();
+      await drawStroke(m);
+      remove(m);
+
+      m.h.dispatchUndo();
+      await vi.waitFor(() => expect(errorToasts()).toContain('Annotation no longer exists'));
+      await settle();
+      expect(m.server.deleteAnnotation).toHaveBeenCalledTimes(deleteRequests);
+
+      // Dropped, not re-queued: there is nothing left to undo, and nothing to redo.
+      m.h.dispatchUndo();
+      await settle();
+      m.h.dispatchRedo();
+      await settle();
+      expect(m.server.deleteAnnotation).toHaveBeenCalledTimes(deleteRequests);
+      expect(m.server.createAnnotation).toHaveBeenCalledTimes(1);
     });
   });
 });
