@@ -2629,6 +2629,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     delete optimisticAnnotation._abortController;
                     delete optimisticAnnotation._createPromise;
                     var restoreIdentifier = newIdentifier || previousIdentifier || identifier;
+                    pushUndoOperation({
+                        type: 'create-comment',
+                        pageIdx: targetPage,
+                        annotationId: restoreIdentifier,
+                        xref: optimisticAnnotation.xref,
+                    }, { epoch: requestEpoch });
                     var existingLabel = _applyAnnotationIdentityToMarker(existingMarker, targetPage, optimisticAnnotation);
                     var keepInlineEditor = !!(
                         existingLabel &&
@@ -3270,6 +3276,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 var data = await _h.deleteAnnotationRequest(apiIdentifier);
                 if (!_isCurrentEpoch(requestEpoch)) return;
                 if (data.success) {
+                    if (_h.discardTemporaryAnnotationHistory) {
+                        _h.discardTemporaryAnnotationHistory(pageIdx, stableIdentifier);
+                    }
                     if (annotationsData[pageIdx]) {
                         var removalIdx = _h.findAnnotationIndex ? _h.findAnnotationIndex(pageIdx, stableIdentifier) : -1;
                         if (removalIdx >= 0) {

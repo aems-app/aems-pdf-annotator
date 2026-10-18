@@ -2932,6 +2932,13 @@
         const requestEpoch = currentHistoryEpoch();
         if (!label) return;
 
+        // A create response can replace the optimistic textarea on this same label.
+        // Retire its document listener before binding one that reads the new editor.
+        if (label._escapeHandler) {
+            document.removeEventListener('keydown', label._escapeHandler, true);
+            label._escapeHandler = null;
+        }
+
         // Get latest fullText from dataset (may have been updated after save)
         let fullText = label.dataset.fullText || '';
 
@@ -4929,6 +4936,7 @@
             return undoDeleteMarkupOperation(operation, step);
         case 'create-drawing':
         case 'create-textbox':
+        case 'create-comment':
             return undoCreateMarkupOperation(operation, step);
         default:
             // A type this modal does not know how to undo: consumed silently.
@@ -4954,6 +4962,7 @@
         'delete-markup': { isReady: (operation) => !!operation.redoTarget, redo: redoDeleteMarkupOperation },
         'create-drawing': { isReady: (operation) => !!operation.redoBody, redo: redoCreateMarkupOperation },
         'create-textbox': { isReady: (operation) => !!operation.redoBody, redo: redoCreateMarkupOperation },
+        'create-comment': { isReady: (operation) => !!operation.redoBody, redo: redoCreateMarkupOperation },
     };
 
     function canRedoOperation(operation) {
@@ -6457,6 +6466,14 @@
             throw new Error('Annotation controller must be initialized before silently deleting annotations.');
         }
         return _currentAnnotationCtrl.deleteAnnotationSilently(pageIdx, identifier);
+    }
+
+    function discardTemporaryAnnotationHistory(pageIdx, identifier) {
+        const matches = (operation) => operation.type === 'create-comment'
+            && operation.pageIdx === pageIdx && historyOperationMatches(operation, { identifier });
+        undoStack = undoStack.filter((operation) => !matches(operation));
+        redoStack = redoStack.filter((entry) => !matches(entry.operation));
+        _currentAnnotationCtrl?.removeUndoOperations?.(matches);
     }
 
     // Text-anchored highlights are tethered to their phrase: the body may only
@@ -9945,6 +9962,7 @@
                     createAnnotationRequest: createAnnotationRequest,
                     updateAnnotationRequest: updateAnnotationRequest,
                     deleteAnnotationRequest: deleteAnnotationRequest,
+                    discardTemporaryAnnotationHistory: discardTemporaryAnnotationHistory,
                     revertAnnotationToAiRequest: revertAnnotationToAiRequest,
                     hostAdvertisesCapability: _hostAdvertisesCapability,
                     loadAnnotations: function () { return loadAnnotations(currentSubmissionId, currentAssignmentId); },
