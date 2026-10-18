@@ -1455,6 +1455,92 @@ describe('annotation-controller state ownership', () => {
     expect(document.querySelector('.confirm-delete-yes')).not.toBeNull();
   });
 
+  it.each(['Save', 'Escape', 'blur', 'Cancel'])('a stale placeholder %s deletion leaves the new document editor untouched', async (action) => {
+    vi.useFakeTimers();
+    let controller;
+    try {
+      document.body.innerHTML = '<div id="pdfGradedContainer"></div><div id="pdfGradedCommentsList"></div>';
+      window.__pdfGradedViewer = { pdf: {}, currentPage: 1 };
+      window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation = () => true;
+      const mod = await loadAnnotationControllerModule();
+      let data = {};
+      let epoch = 1;
+      let editingId = null;
+      let finishDelete;
+      const state = {};
+      const changed = vi.fn();
+      const scheduled = vi.fn();
+      const normalize = (value) => value == null ? null : String(value);
+      const findIndex = (page, id) => (data[page] || []).findIndex((ann) =>
+        [ann.stable_id, ann.id, ann.xref].some((value) => String(value) === String(id)));
+      const helpers = {
+        getHistoryEpoch: () => epoch,
+        isCurrentHistoryEpoch: (value) => value === epoch,
+        normalizeAnnotationIdentifierValue: normalize,
+        resolveAnnotationIdentifierValue: (ann) => ann.stable_id || ann.id,
+        enhanceAnnotationEntry: (ann) => ({ ...ann, requestIdentifier: ann.stable_id }),
+        buildApiAnnotationIdentifier: ({ identifier }) => identifier,
+        findAnnotationIndex: findIndex,
+        findAnnotationEntry: (page, id) => data[page]?.[findIndex(page, id)],
+        escapeCssAttribute: (value) => value,
+        createAnnotationRequest: vi.fn(async () => ({ success: true, annotation: {
+          ...data[0][0], xref: 77, content: 'New comment...', source: 'HUMAN',
+        } })),
+        deleteAnnotationRequest: vi.fn(() => new Promise((resolve) => { finishDelete = resolve; })),
+        deleteAnnotationSilently: (...args) => controller.deleteAnnotationSilently(...args),
+      };
+      controller = mod.createAnnotationController({
+        annotationsState: state,
+        getAnnotationsData: () => data,
+        setAnnotationsData: (value) => { data = value; },
+        getCurrentSubmissionId: () => 'A',
+        getEditingAnnotationId: () => editingId,
+        setEditingAnnotationId: (value) => { editingId = value; },
+        helpers,
+      });
+      controller.onAnnotationsChanged(changed);
+      controller.onScheduleUpdate(scheduled);
+      await controller.createTemporaryAnnotation([10, 20, 30, 40], 0);
+      await vi.advanceTimersByTimeAsync(120);
+      const textarea = document.querySelector('textarea');
+      expect(textarea).not.toBeNull();
+      const identifier = data[0][0].stable_id;
+      let saving;
+      if (action === 'Save') {
+        textarea.value = '';
+        saving = controller.saveAnnotationEdit(identifier);
+      } else if (action === 'Escape') {
+        textarea.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      } else if (action === 'blur') {
+        textarea.dispatchEvent(new window.FocusEvent('blur', { relatedTarget: null }));
+        await vi.advanceTimersByTimeAsync(100);
+      } else {
+        document.querySelector('.cancel-edit-btn').click();
+      }
+      expect(helpers.deleteAnnotationRequest).toHaveBeenCalledOnce();
+      epoch = 2;
+      data = { 0: [{ stable_id: 'B', content: 'New document draft' }] };
+      editingId = 'ann-0-B';
+      state.editingId = editingId;
+      document.getElementById('pdfGradedCommentsList').innerHTML = '<textarea>New document draft</textarea>';
+      const before = document.body.innerHTML;
+      const stateBefore = structuredClone(state);
+      changed.mockClear();
+      scheduled.mockClear();
+      finishDelete({ success: true });
+      await saving;
+      await vi.advanceTimersByTimeAsync(350);
+      expect(editingId).toBe('ann-0-B');
+      expect(state).toEqual(stateBefore);
+      expect(document.body.innerHTML).toBe(before);
+      expect(changed).not.toHaveBeenCalled();
+      expect(scheduled).not.toHaveBeenCalled();
+    } finally {
+      controller?.destroy();
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps a new annotation editor alive when a detached pre-save textarea blurs after rerender', async () => {
     vi.useFakeTimers();
     try {

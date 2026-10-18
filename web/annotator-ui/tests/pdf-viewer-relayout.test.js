@@ -753,20 +753,27 @@ describe('pdf-viewer non-destructive container reflow', () => {
   // ---- Routing -------------------------------------------------------------
 
   it('the ResizeObserver reflows instead of rebuilding', async () => {
-    const cw = { value: 800 };
-    const viewer = await makeViewer(cw);
-    const before = expectedDisplay(viewer);
-    buildRenderedPage(viewer, 1, before.w, before.h);
-    const rebuild = vi.spyOn(viewer, 'reRenderAllPages').mockResolvedValue(undefined);
-    const reflow = vi.spyOn(viewer, 'relayoutPagesForContainer').mockResolvedValue(undefined);
-    viewer.lastRenderContainerWidth = 800;
+    vi.useFakeTimers();
+    try {
+      const cw = { value: 800 };
+      const viewer = await makeViewer(cw);
+      const before = expectedDisplay(viewer);
+      buildRenderedPage(viewer, 1, before.w, before.h);
+      const rebuild = vi.spyOn(viewer, 'reRenderAllPages').mockResolvedValue(undefined);
+      const reflow = vi.spyOn(viewer, 'relayoutPagesForContainer').mockResolvedValue(undefined);
+      viewer.lastRenderContainerWidth = 800;
 
-    cw.value = 500;
-    expect(typeof resizeObserverCallback).toBe('function');
-    resizeObserverCallback([]);
-    await vi.waitFor(() => expect(reflow).toHaveBeenCalled(), { timeout: 2000 });
+      cw.value = 500;
+      expect(typeof resizeObserverCallback).toBe('function');
+      resizeObserverCallback([]);
+      expect(reflow).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(reflow).toHaveBeenCalledOnce();
 
-    expect(rebuild, 'a container resize must not rebuild the page DOM').not.toHaveBeenCalled();
+      expect(rebuild, 'a container resize must not rebuild the page DOM').not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('an observer-driven resize leaves the real overlay in place', async () => {

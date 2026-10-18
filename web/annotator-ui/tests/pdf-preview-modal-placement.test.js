@@ -2597,6 +2597,75 @@ describe('pdf-preview-modal placement helpers', () => {
       controller: h.getUndoStacks().controller.map((op) => op.newContent || op.type),
     });
 
+    it('conflict recovery keeps unrelated undo and redo history in order on all three stacks', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      const edit = (identifier, suffix) => ({
+        type: 'edit', identifier, pageIdx: 0, oldContent: `old ${suffix}`, newContent: `new ${suffix}`,
+      });
+      // Ordinary, nested deletion, and markup operation identities all refer to A.
+      h.controller.pushUndoOperation({ type: 'delete', pageIdx: 0, annotation: { stable_id: 'owned-comment', xref: 42 } });
+      h.controller.pushUndoOperation(edit('B', 'first'));
+      h.controller.pushUndoOperation(edit('B', 'second'));
+      h.pushLocalUndo({ type: 'create-drawing', pageIdx: 0, annotationId: 'owned-comment' });
+      h.pushLocalUndo(edit('B', 'local first'));
+      h.pushLocalUndo(edit('B', 'local second'));
+      h.pushLocalUndo(edit('C', 'first'));
+      h.pushLocalUndo(edit('C', 'second'));
+      h.dispatchUndo();
+      await settle();
+      h.dispatchUndo();
+      await settle();
+      const before = h.getUndoStacks();
+      const finish = pending(h.updateAnnotation);
+      const first = h.options.helpers.updateAnnotationRequest('owned-comment', { content: 'overlap one' }).catch(() => {});
+      await h.options.helpers.updateAnnotationRequest('owned-comment', { content: 'overlap two' }).catch(() => {});
+      finish({ success: true });
+      await first;
+      expect(h.getUndoStacks()).toEqual({
+        local: before.local.filter((op) => op.identifier === 'B'),
+        controller: before.controller.filter((op) => op.identifier === 'B'),
+      });
+      const calls = h.updateAnnotation.mock.calls.length;
+      h.dispatchRedo();
+      await settle();
+      h.dispatchRedo();
+      await settle();
+      expect(h.updateAnnotation.mock.calls.slice(calls).map((call) => [call[2], call[3].content])).toEqual([
+        ['C', 'new first'], ['C', 'new second'],
+      ]);
+    });
+
+    it.each(['drawing', 'textbox', 'Highlight'])('a delayed conflict refresh cannot resurrect deleted %s', async (type) => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      const original = entries(h)[0];
+      original.type = type;
+      let stored = { ...original };
+      h.updateAnnotation.mockImplementation(async (_a, _s, _id, body) => {
+        stored = { ...stored, ...body }; // A source-less PUT preserves the stored source.
+        return { success: true, annotation: { ...stored } };
+      });
+      const finishWrite = pending(h.updateAnnotation);
+      const finishRefresh = pending(h.adapter.listAnnotations);
+      const first = h.options.helpers.updateAnnotationRequest('owned-comment', { color: 'red' }).catch(() => {});
+      const second = h.options.helpers.updateAnnotationRequest('owned-comment', { content: 'Changed' }).catch(() => {});
+      await vi.waitFor(() => expect(h.adapter.listAnnotations).toHaveBeenCalledTimes(1));
+      const obsoleteSnapshot = { success: true, annotations: { 0: [{ ...stored }] } };
+      h.adapter.deleteAnnotation.mockImplementation(async () => { stored = null; return { success: true }; });
+      h.adapter.listAnnotations.mockImplementation(async () => ({ success: true, annotations: { 0: stored ? [{ ...stored }] : [] } }));
+      await h.controller.deleteAnnotation(0, 'owned-comment');
+      expect(entries(h)).toEqual([]);
+      finishRefresh(obsoleteSnapshot);
+      await second;
+      expect(stored).toBeNull();
+      expect(entries(h)).toEqual([]);
+      // Also release the other overlapping write; it must not bring A back either.
+      finishWrite({ success: true, annotation: original });
+      await first;
+      expect(entries(h)).toEqual([]);
+    });
+
     it('refreshes and clears ambiguous history when a move overlaps a redo', async () => {
       const h = await splitHarness();
       serveAnnotation(h);
@@ -2656,8 +2725,13 @@ describe('pdf-preview-modal placement helpers', () => {
       await settle();
       expect(h.updateAnnotation).toHaveBeenCalledTimes(calls); // never sends the incorrect Original snapshot
       await saveSidebarEdit(h, 'Fourth edit');
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(calls + 1);
+      expect(h.updateAnnotation.mock.calls.at(-1)[3]).toEqual({ content: 'Fourth edit' });
+      expect(server.stored.content).toBe('Fourth edit');
+      expect(entries(h)[0]._originalContent).toBe('Fourth edit');
       h.dispatchUndo();
       await settle();
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(calls + 2);
       expect(h.updateAnnotation.mock.calls.at(-1)[3]).toEqual({ content: 'Third edit' });
       expect(server.stored.content).toBe('Third edit');
     });
@@ -2949,6 +3023,52 @@ describe('pdf-preview-modal placement helpers', () => {
     };
 
     const submissionsOf = (request) => request.mock.calls.map(([, submission]) => submission);
+
+    it.each([
+      ['Escape', { key: 'Escape' }],
+      ['Ctrl+Enter', { key: 'Enter', ctrlKey: true }],
+    ])('a stale inline %s save leaves the new document editing state alone', async (_name, key) => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      inlineLabelFor(h, h.annotation.content);
+      h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
+      const textarea = h.marker.querySelector('.inline-annotation-editor');
+      expect(textarea).not.toBeNull();
+      textarea.value = 'Inline save';
+      const finish = pending(h.updateAnnotation);
+      document.dispatchEvent(new window.KeyboardEvent('keydown', { ...key, bubbles: true }));
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledOnce());
+      const label = textarea.closest('.annotation-label');
+      document.removeEventListener('keydown', label._escapeHandler, true);
+      label.remove(); // Document replacement detaches the previous overlay.
+      await openOtherSubmission(h);
+      await settle(); // Finish the new document's own layout timers before taking its snapshot.
+      h.options.setEditingAnnotationId('ann-0-B');
+      const before = document.body.innerHTML;
+      finish({ success: true, annotation: { ...h.annotation, content: 'Inline save' } });
+      await settle();
+      expect(h.options.getEditingAnnotationId()).toBe('ann-0-B');
+      expect(document.body.innerHTML).toBe(before);
+      expect(h.getUndoStacks()).toEqual({ local: [], controller: [] });
+    });
+
+    it('a stale inline placeholder deletion does not collapse or rerender after a document switch', async () => {
+      const h = await splitHarness();
+      entries(h)[0]._isTemporary = true;
+      const label = inlineLabelFor(h, 'New comment...');
+      const finish = pending(h.adapter.deleteAnnotation);
+      const saving = window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, '');
+      await vi.waitFor(() => expect(h.adapter.deleteAnnotation).toHaveBeenCalledOnce());
+      await openOtherSubmission(h);
+      h.options.setEditingAnnotationId('ann-0-B');
+      const before = document.body.innerHTML;
+      finish({ success: true });
+      await saving;
+      await settle();
+      expect(label.classList.contains('label-editing')).toBe(true);
+      expect(h.options.getEditingAnnotationId()).toBe('ann-0-B');
+      expect(document.body.innerHTML).toBe(before);
+    });
 
     it('an undo answered after another submission opened changes nothing there', async () => {
       const h = await splitHarness();
