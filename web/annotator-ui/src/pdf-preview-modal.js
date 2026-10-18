@@ -4168,7 +4168,7 @@
             dropMissingHighlightUndo();
             return HISTORY_DROPPED;
         }
-        showToast('error', message);
+        showToast('error', translatePdfPreviewText(message));
         return HISTORY_FAILED;
     }
 
@@ -4477,7 +4477,7 @@
 
         if (!apiIdentifier) {
             console.error(`Unable to resolve annotation identifier for ${verb} ${operation.type}`);
-            showToast('error', failureMessage);
+            showToast('error', translatePdfPreviewText(failureMessage));
             return HISTORY_FAILED;
         }
 
