@@ -2726,5 +2726,66 @@ describe('pdf-preview-modal placement helpers', () => {
         expect(redoRequest.mock.calls.at(-1)).toEqual(redoRequest.mock.calls.at(-2));
       },
     );
+
+    // Review finding 4: a step whose annotation the server no longer has is dropped, not re-queued, so it cannot
+    // block the history behind it.
+    it('drops an edit redo whose annotation the server no longer has, and redoes the next one', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'First edit');
+      await saveSidebarEdit(h, 'Second edit');
+      for (let undone = 1; undone <= 2; undone += 1) {
+        h.dispatchUndo();
+        await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2 + undone));
+        await settle();
+      }
+      notFound(h.updateAnnotation);
+
+      h.dispatchRedo(); // redoes the first edit: another reviewer deleted the annotation meanwhile
+      await vi.waitFor(() => expect(errorToasts()).toContain('Annotation no longer exists'));
+      await settle();
+      expect(errorToasts()).not.toContain('Failed to redo edit');
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(6));
+
+      // The next Ctrl+Y redid the second edit, not the dropped first one.
+      expect(h.updateAnnotation.mock.calls[5]).toEqual(h.updateAnnotation.mock.calls[1]);
+    });
+
+    it('drops an edit undo whose annotation the server no longer has, and undoes the next one', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'First edit');
+      await saveSidebarEdit(h, 'Second edit');
+      await settle();
+      notFound(h.updateAnnotation);
+
+      h.dispatchUndo(); // undoes the second edit, but the annotation is gone
+      await vi.waitFor(() => expect(errorToasts()).toContain('Annotation no longer exists'));
+      await settle();
+      expect(errorToasts()).not.toContain('Failed to undo edit');
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
+
+      // The next Ctrl+Z undid the first edit, back to the original text.
+      expect(h.updateAnnotation.mock.calls[3][3]).toEqual({ content: 'Teacher feedback' });
+    });
+
+    it('drops a pen-stroke delete redo whose markup the server no longer has', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { h, deleteAnnotation } = await strokeDeletedThenRestored();
+      notFound(deleteAnnotation);
+
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(errorToasts()).toContain('Annotation no longer exists'));
+      await settle();
+      expect(errorToasts()).not.toContain('Failed to redo deletion');
+      h.dispatchRedo();
+      await settle();
+
+      expect(deleteAnnotation).toHaveBeenCalledTimes(2);
+    });
   });
 });
