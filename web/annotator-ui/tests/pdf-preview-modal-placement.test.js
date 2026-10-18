@@ -2597,6 +2597,126 @@ describe('pdf-preview-modal placement helpers', () => {
       controller: h.getUndoStacks().controller.map((op) => op.newContent || op.type),
     });
 
+    async function numericIdentityHarness() {
+      const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
+      window.PdfPreviewModalMarkupSelection = selection;
+      const h = await splitHarness();
+      const a = {
+        stable_id: 'A', id: 'A', identifier: 'A', requestIdentifier: 'A', xref: 42,
+        page_index: 0, type: 'drawing', source: 'HUMAN', content: 'A content',
+      };
+      const b = {
+        stable_id: '42', id: '42', identifier: '42', requestIdentifier: 'id:42', xref: 99,
+        page_index: 0, type: 'Text', source: 'HUMAN', content: 'B original', rect: [50, 50, 150, 70],
+      };
+      h.options.setAnnotationsData({ 0: [b, a] });
+      const stored = new Map([[a.stable_id, { ...a }], [b.stable_id, { ...b }]]);
+      h.adapter.listAnnotations = vi.fn(async () => ({ success: true, annotations: { 0: [...stored.values()] } }));
+      h.updateAnnotation.mockImplementation(async (_a, _s, identifier, body) => {
+        const id = identifier.startsWith('id:') ? identifier.slice(3) : identifier;
+        const current = stored.get(id);
+        if (!current) throw new Error(`Unexpected update target: ${identifier}`);
+        const annotation = { ...current, ...body };
+        stored.set(id, annotation);
+        return { success: true, annotation: { ...annotation } };
+      });
+      h.adapter.deleteAnnotation.mockImplementation(async (_a, _s, id) => {
+        stored.delete(id);
+        return { success: true };
+      });
+      h.adapter.createAnnotation.mockImplementation(async (_a, _s, body) => ({
+        success: true, annotation: { ...body, stable_id: 'A-restored', xref: 100 },
+      }));
+      selection.deleteSelected.mockReturnValue({
+        type: 'stroke', pageIdx: 0,
+        entry: { annotationId: 'A', content: a.content, points: [{ x: 10, y: 92 }, { x: 20, y: 102 }] },
+      });
+      async function editB(text) {
+        const oldContent = stored.get('42').content;
+        await h.options.helpers.updateAnnotationRequest('id:42', { content: text });
+        // Bare numeric stable identifiers are a supported history representation.
+        h.controller.pushUndoOperation({
+          type: 'edit', identifier: '42', requestId: 'id:42', xref: '99', pageIdx: 0,
+          oldContent, newContent: text,
+        });
+        await settle();
+      }
+      return { ...h, a, b, editB, deleteA: () => selection.onDeleteRequested() };
+    }
+
+    it('conflict recovery preserves numeric stable ID history in order on all three stacks', async () => {
+      const h = await numericIdentityHarness();
+      h.controller.pushUndoOperation({ type: 'delete', pageIdx: 0, annotation: { ...h.a } });
+      h.pushLocalUndo({ type: 'create-drawing', pageIdx: 0, annotationId: 'A' });
+      for (const text of ['B first', 'B second', 'B third', 'B fourth']) await h.editB(text);
+      h.dispatchUndo();
+      await settle();
+      h.dispatchUndo();
+      await settle();
+      const before = structuredClone(h.getUndoStacks());
+      const finish = pending(h.updateAnnotation);
+      const first = h.options.helpers.updateAnnotationRequest('A', { content: 'overlap one' }).catch(() => {});
+      await h.options.helpers.updateAnnotationRequest('A', { content: 'overlap two' }).catch(() => {});
+      finish({ success: true });
+      await first;
+
+      expect.soft(h.getUndoStacks()).toEqual({
+        local: before.local.filter((op) => op.identifier === '42'),
+        controller: before.controller.filter((op) => op.identifier === '42'),
+      });
+      const calls = h.updateAnnotation.mock.calls.length;
+      h.dispatchRedo();
+      await settle();
+      h.dispatchRedo();
+      await settle();
+      expect.soft(h.updateAnnotation.mock.calls.slice(calls).map((call) => [call[2], call[3].content])).toEqual([
+        ['id:42', 'B third'], ['id:42', 'B fourth'],
+      ]);
+      h.dispatchUndo();
+      await settle();
+      expect(h.updateAnnotation.mock.calls.slice(calls + 2).map((call) => [call[2], call[3].content])).toEqual([
+        ['id:42', 'B third'],
+      ]);
+    });
+
+    it('markup recreation preserves numeric stable ID history and its undo target and content', async () => {
+      const h = await numericIdentityHarness();
+      await h.editB('B first');
+      await h.editB('B second');
+      const before = structuredClone(h.getUndoStacks());
+      h.deleteA();
+      await settle();
+      expect(h.adapter.deleteAnnotation).toHaveBeenCalledWith('assignment-1', 'submission-1', 'A', expect.anything());
+      // Leave B history on both undo stacks and in redo before recreating A.
+      await h.editB('B third');
+      await h.editB('B fourth');
+      h.dispatchUndo();
+      await settle();
+      h.dispatchUndo();
+      await settle();
+      h.dispatchUndo(); // recreate A; the next undo belongs to B
+      await settle();
+      expect(h.adapter.createAnnotation).toHaveBeenCalledOnce();
+      expect.soft(h.getUndoStacks()).toEqual(before);
+      const calls = h.updateAnnotation.mock.calls.length;
+      h.dispatchUndo();
+      await settle();
+      expect.soft(h.updateAnnotation.mock.calls.slice(calls).map((call) => [call[2], call[3].content])).toEqual([
+        ['id:42', 'B first'],
+      ]);
+      h.dispatchRedo(); // B second
+      await settle();
+      h.dispatchRedo(); // A deletion
+      await settle();
+      h.dispatchRedo(); // B third
+      await settle();
+      h.dispatchRedo(); // B fourth
+      await settle();
+      expect(h.updateAnnotation.mock.calls.slice(calls + 1).map((call) => [call[2], call[3].content])).toEqual([
+        ['id:42', 'B second'], ['id:42', 'B third'], ['id:42', 'B fourth'],
+      ]);
+    });
+
     it('conflict recovery keeps unrelated undo and redo history in order on all three stacks', async () => {
       const h = await splitHarness();
       serveAnnotation(h);

@@ -777,57 +777,67 @@ describe('pdf-viewer non-destructive container reflow', () => {
   });
 
   it('an observer-driven resize leaves the real overlay in place', async () => {
-    // The test above mocks both methods, so it proves routing and nothing else:
-    // any OTHER destructive call in the observer body would be invisible to it.
-    // This one lets the real code run and checks the node identity that #472 is
-    // actually about.
-    const cw = { value: 816 };
-    const viewer = await makeViewer(cw);
-    const before = expectedDisplay(viewer);
-    const { wrapper, overlay, canvas } = buildRenderedPage(viewer, 1, before.w, before.h);
-    viewer._skeletonBaseViewport = { width: PAGE_W * viewer.scale, height: PAGE_H * viewer.scale };
-    viewer.lastRenderContainerWidth = viewer.getEffectiveContainerWidth();
-    const bitmapW = canvas.width;
+    vi.useFakeTimers();
+    try {
+      // The test above mocks both methods, so it proves routing and nothing else:
+      // any OTHER destructive call in the observer body would be invisible to it.
+      // This one lets the real code run and checks the node identity that #472 is
+      // actually about.
+      const cw = { value: 816 };
+      const viewer = await makeViewer(cw);
+      const before = expectedDisplay(viewer);
+      const { wrapper, overlay, canvas } = buildRenderedPage(viewer, 1, before.w, before.h);
+      viewer._skeletonBaseViewport = { width: PAGE_W * viewer.scale, height: PAGE_H * viewer.scale };
+      viewer.lastRenderContainerWidth = viewer.getEffectiveContainerWidth();
+      const bitmapW = canvas.width;
 
-    cw.value = 516;
-    resizeObserverCallback([]);
-    await vi.waitFor(
-      () => expect(wrapper.style.width).not.toBe(`${before.w}px`),
-      { timeout: 2000 },
-    );
+      cw.value = 516;
+      resizeObserverCallback([]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(wrapper.style.width).not.toBe(`${before.w}px`);
 
-    expect(document.querySelector('#pdfGradedContainer .drawing-canvas-overlay')).toBe(overlay);
-    expect(overlay.isConnected).toBe(true);
-    expect(canvas.width).toBe(bitmapW);
-    expect(viewer.pageViewports.get(1)).toBeTruthy();
+      expect(document.querySelector('#pdfGradedContainer .drawing-canvas-overlay')).toBe(overlay);
+      expect(overlay.isConnected).toBe(true);
+      expect(canvas.width).toBe(bitmapW);
+      expect(viewer.pageViewports.get(1)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('re-arms the observer dead-band so a width round trip is not swallowed', async () => {
-    // `lastRenderContainerWidth` has exactly two consumers, both the
-    // ResizeObserver's 16px dead-band. The reflow's write to it is the only
-    // thing that re-arms that band now that the destructive paths no longer run
-    // on a resize: without it the record permanently says "laid out for the
-    // width before the first reflow", so going 800 -> 500 -> 800 leaves the
-    // pages stuck narrow inside a wide container. Asserted behaviourally, not
-    // by reading the field.
-    const cw = { value: 816 };
-    const viewer = await makeViewer(cw);
-    const before = expectedDisplay(viewer);
-    const { wrapper } = buildRenderedPage(viewer, 1, before.w, before.h);
-    viewer._skeletonBaseViewport = { width: PAGE_W * viewer.scale, height: PAGE_H * viewer.scale };
-    viewer.lastRenderContainerWidth = viewer.getEffectiveContainerWidth();
-    const wideWidth = wrapper.style.width;
+    vi.useFakeTimers();
+    try {
+      // `lastRenderContainerWidth` has exactly two consumers, both the
+      // ResizeObserver's 16px dead-band. The reflow's write to it is the only
+      // thing that re-arms that band now that the destructive paths no longer run
+      // on a resize: without it the record permanently says "laid out for the
+      // width before the first reflow", so going 800 -> 500 -> 800 leaves the
+      // pages stuck narrow inside a wide container. Asserted behaviourally, not
+      // by reading the field.
+      const cw = { value: 816 };
+      const viewer = await makeViewer(cw);
+      const before = expectedDisplay(viewer);
+      const { wrapper } = buildRenderedPage(viewer, 1, before.w, before.h);
+      viewer._skeletonBaseViewport = { width: PAGE_W * viewer.scale, height: PAGE_H * viewer.scale };
+      viewer.lastRenderContainerWidth = viewer.getEffectiveContainerWidth();
+      const wideWidth = wrapper.style.width;
 
-    cw.value = 516;
-    resizeObserverCallback([]);
-    await vi.waitFor(() => expect(wrapper.style.width).not.toBe(wideWidth), { timeout: 2000 });
-    const narrowWidth = wrapper.style.width;
+      cw.value = 516;
+      resizeObserverCallback([]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(wrapper.style.width).not.toBe(wideWidth);
+      const narrowWidth = wrapper.style.width;
 
-    cw.value = 816;                       // back to where we started
-    resizeObserverCallback([]);
-    await vi.waitFor(() => expect(wrapper.style.width).not.toBe(narrowWidth), { timeout: 2000 });
+      cw.value = 816;                       // back to where we started
+      resizeObserverCallback([]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(wrapper.style.width).not.toBe(narrowWidth);
 
-    expect(wrapper.style.width).toBe(wideWidth);
+      expect(wrapper.style.width).toBe(wideWidth);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reflows an ordinary small resize, not just a fullscreen-sized one', async () => {
