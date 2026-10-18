@@ -8498,8 +8498,11 @@
 
         const modal = new bootstrap.Modal(modalElement);
         const resolvedAssignmentId = assignmentId ?? openContext.assignmentId ?? null;
-        // A redo must never replay an operation into another document (issue #540).
+        // Another document starts a fresh annotation history: an undo or a redo must never replay an operation
+        // recorded on one submission against another (issue #540). The annotation controller's own undo stack
+        // already starts empty with each modal; this module-level copy outlived it.
         if (submissionId !== currentSubmissionId || resolvedAssignmentId !== currentAssignmentId) {
+            undoStack = [];
             clearRedoStack();
         }
         currentSubmissionId = submissionId;

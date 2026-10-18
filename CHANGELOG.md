@@ -10,6 +10,7 @@ All notable changes to `aems-pdf-annotator` are recorded here. Format follows [K
 
 ### Fixed
 
+- Ctrl+Z after opening another submission in the review modal no longer replays the previous submission's last operation against the new one. The modal's undo history now starts empty for each document, as the annotation controller's already did.
 - Split-view comments now move to the teacher panel after a text-anchored ownership transfer, and back to the AI panel when undoing a same-page ownership move. PDF author naming is unchanged.
 
 ## 0.3.0 — 2026-05-21
