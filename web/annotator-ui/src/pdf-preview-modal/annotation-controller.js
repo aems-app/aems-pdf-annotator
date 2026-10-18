@@ -2736,6 +2736,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 var persistedBefore = current && typeof current._originalContent === 'string'
                     ? current._originalContent.trim()
                     : originalContent;
+                // The old source comes from the same entry: an overlapping first save may have transferred ownership.
+                var sourceBefore = current && _h.resolveAnnotationSource
+                    ? _h.resolveAnnotationSource(current)
+                    : originalSource;
 
                 var responsePageIdx = data.annotation.page_index;
                 var annotations = _getAnnotationsData();
@@ -2757,9 +2761,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                                 pageIdx: pageIdx,
                                 oldContent: persistedBefore,
                                 newContent: newContent,
-                                oldSource: originalSource,
+                                oldSource: sourceBefore,
                                 newSource: newSource,
-                                isOwnershipTransfer: originalSource === 'AI' && newSource === 'HUMAN',
+                                isOwnershipTransfer: sourceBefore === 'AI' && newSource === 'HUMAN',
                             });
                         }
                     }

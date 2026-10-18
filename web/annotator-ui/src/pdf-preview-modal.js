@@ -3267,7 +3267,9 @@
                 // the sidebar Save already stored, pushes no entry.
                 const oldContent = persistedBefore.trim();
                 if (oldContent !== trimmedContent) {
-                    const oldSource = resolveAnnotationSource(annotation || {});
+                    // The old source is read from the same entry as the old text, as it stood when the response
+                    // arrived: an overlapping first save may already have transferred ownership.
+                    const oldSource = resolveAnnotationSource(current || {});
                     const newSource = resolveAnnotationSource(data.annotation);
                     pushUndoOperation({
                         type: 'edit',
