@@ -456,6 +456,48 @@ describe('pdf-preview-modal placement helpers', () => {
     h.handle.destroy();
   });
 
+  // Issue #462 (criterion 29): an edit saved through the inline label pushed no undo entry, so Ctrl+Z left the
+  // edited text in place. Undo must restore the previous text and, after an ownership transfer, the AI source.
+  it('Ctrl+Z restores an inline text edit and its source', async () => {
+    const h = await createSplitOwnershipHarness();
+    const label = document.createElement('div');
+    label.className = 'annotation-label label-expanded label-editing';
+    label.dataset.fullText = h.annotation.content;
+    label.dataset.originalFullText = h.annotation.content;
+    h.marker.appendChild(label);
+    h.updateAnnotation.mockResolvedValueOnce({
+      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: 'Edited inline' },
+    });
+    await window.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Edited inline');
+    h.expectBucket('HUMAN');
+
+    h.dispatchUndo();
+    await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+    expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback', source: 'AI' });
+    await vi.waitFor(() => h.expectBucket('AI'));
+    expect(Object.values(h.options.getAnnotationsData()).flat()[0].content).toBe('Teacher feedback');
+    h.handle.destroy();
+  });
+
+  it('Ctrl+Z restores a sidebar text edit and its source', async () => {
+    const h = await createSplitOwnershipHarness();
+    h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
+    const textarea = document.getElementById('edit-annotation-text-owned-comment');
+    textarea.value = 'Edited feedback';
+    h.updateAnnotation.mockResolvedValueOnce({
+      success: true, annotation: { ...h.annotation, source: 'HUMAN', content: textarea.value },
+    });
+    await h.controller.saveAnnotationEdit('owned-comment');
+    h.expectBucket('HUMAN');
+
+    h.dispatchUndo();
+    await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+    expect(h.updateAnnotation.mock.calls[1][3]).toEqual({ content: 'Teacher feedback', source: 'AI' });
+    await vi.waitFor(() => h.expectBucket('AI'));
+    expect(Object.values(h.options.getAnnotationsData()).flat()[0].content).toBe('Teacher feedback');
+    h.handle.destroy();
+  });
+
   it('re-buckets a sidebar text edit when the server transfers ownership', async () => {
     const h = await createSplitOwnershipHarness();
     h.controller.beginEdit(0, 'owned-comment', 'ann-0-owned-comment');
