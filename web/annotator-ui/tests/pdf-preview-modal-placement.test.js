@@ -2017,8 +2017,9 @@ describe('pdf-preview-modal placement helpers', () => {
       return { h, updateAnnotation, resized };
     }
 
-    // A sidebar delete, then its undo, which recreates the annotation with a new xref (or none).
-    async function deletedThenRestored({ withoutXref = false } = {}) {
+    // A sidebar delete, then (unless undo is false) its undo, which recreates the annotation with a new xref
+    // (or none).
+    async function deletedThenRestored({ withoutXref = false, undo = true } = {}) {
       let fixture;
       let nextXref = 43;
       const createAnnotation = vi.fn(async (_assignment, _submission, body) => ({
@@ -2030,6 +2031,8 @@ describe('pdf-preview-modal placement helpers', () => {
       await h.controller.deleteAnnotation(0, 'owned-comment');
       expect(deleteAnnotation).toHaveBeenCalledTimes(1);
       expect(entries(h)).toEqual([]);
+      await settle();
+      if (!undo) return { h, createAnnotation, deleteAnnotation };
 
       h.dispatchUndo();
       await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledTimes(1));
@@ -2038,8 +2041,9 @@ describe('pdf-preview-modal placement helpers', () => {
       return { h, createAnnotation, deleteAnnotation };
     }
 
-    // A pen stroke deleted with the Delete key, then its undo, which recreates it as stroke-2.
-    async function strokeDeletedThenRestored() {
+    // A pen stroke deleted with the Delete key, then (unless undo is false) its undo, which recreates it as
+    // stroke-2.
+    async function strokeDeletedThenRestored({ undo = true } = {}) {
       const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
       window.PdfPreviewModalMarkupSelection = selection;
       const createAnnotation = vi.fn(async (_assignment, _submission, body) => ({
@@ -2067,6 +2071,8 @@ describe('pdf-preview-modal placement helpers', () => {
       selection.onDeleteRequested();
       await vi.waitFor(() => expect(h.getUndoStacks().local).toHaveLength(1));
       expect(h.handle.getAnnotations()).toEqual({});
+      await settle();
+      if (!undo) return { h, createAnnotation, deleteAnnotation };
 
       h.dispatchUndo();
       await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledTimes(1));
@@ -2074,7 +2080,7 @@ describe('pdf-preview-modal placement helpers', () => {
         expect.objectContaining({ stable_id: 'stroke-2' }),
       ]));
       await settle();
-      return { h, deleteAnnotation };
+      return { h, createAnnotation, deleteAnnotation };
     }
 
     it('redoes a highlight resize through the modal fallback when the controller has no highlight support', async () => {
@@ -2616,5 +2622,109 @@ describe('pdf-preview-modal placement helpers', () => {
       h.dispatchRedo(); // Ctrl+Y still redoes it
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
     });
+
+    // Review finding 3: a request the server refuses ({success: false}) is a failure. Nothing is applied locally,
+    // both undo stacks keep their contents, and the step can be retried.
+    const refuse = (request) => request.mockResolvedValueOnce({ success: false, error: 'locked' });
+
+    // Each flow performs its action and names the requests its undo and its redo make.
+    const REFUSABLE_FLOWS = {
+      edit: {
+        undoMessage: 'Failed to undo edit',
+        redoMessage: 'Failed to redo edit',
+        async act() {
+          const h = await splitHarness();
+          serveAnnotation(h);
+          await saveSidebarEdit(h, 'Edited feedback');
+          await settle();
+          return { h, undoRequest: h.updateAnnotation, redoRequest: h.updateAnnotation };
+        },
+      },
+      move: {
+        undoMessage: 'Failed to undo move',
+        redoMessage: 'Failed to redo move',
+        async act() {
+          const h = await splitHarness();
+          serveAnnotation(h);
+          await window.PdfPreviewModal.__test.updateAnnotationPosition(0, 0, 'owned-comment', h.marker, true);
+          await settle();
+          return { h, undoRequest: h.updateAnnotation, redoRequest: h.updateAnnotation };
+        },
+      },
+      delete: {
+        undoMessage: 'Failed to undo deletion',
+        async act() {
+          const { h, createAnnotation, deleteAnnotation } = await deletedThenRestored({ undo: false });
+          return { h, undoRequest: createAnnotation, redoRequest: deleteAnnotation };
+        },
+      },
+      'pen-stroke delete': {
+        undoMessage: 'Failed to undo deletion',
+        redoMessage: 'Failed to redo deletion',
+        async act() {
+          const { h, createAnnotation, deleteAnnotation } = await strokeDeletedThenRestored({ undo: false });
+          return { h, undoRequest: createAnnotation, redoRequest: deleteAnnotation };
+        },
+      },
+    };
+
+    it.each(['edit', 'move', 'delete', 'pen-stroke delete'])(
+      'a refused undo of a %s changes nothing and can be retried',
+      async (name) => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const flow = REFUSABLE_FLOWS[name];
+        const { h, undoRequest, redoRequest } = await flow.act();
+        const annotationsBefore = h.handle.getAnnotations();
+        const stacksBefore = h.getUndoStacks();
+        const undoCalls = undoRequest.mock.calls.length;
+        const redoCalls = redoRequest.mock.calls.length;
+        refuse(undoRequest);
+
+        h.dispatchUndo();
+        await vi.waitFor(() => expect(errorToasts()).toContain(flow.undoMessage));
+        await settle();
+
+        expect(undoRequest).toHaveBeenCalledTimes(undoCalls + 1);
+        expect(h.handle.getAnnotations()).toEqual(annotationsBefore);
+        expect(h.getUndoStacks()).toEqual(stacksBefore);
+        // Nothing was undone, so nothing can be redone; Ctrl+Z sends the same undo again.
+        h.dispatchRedo();
+        await settle();
+        expect(redoRequest).toHaveBeenCalledTimes(redoCalls + (redoRequest === undoRequest ? 1 : 0));
+        h.dispatchUndo();
+        await vi.waitFor(() => expect(undoRequest).toHaveBeenCalledTimes(undoCalls + 2));
+        expect(undoRequest.mock.calls.at(-1)).toEqual(undoRequest.mock.calls.at(-2));
+      },
+    );
+
+    it.each(['edit', 'move', 'pen-stroke delete'])(
+      'a refused redo of a %s changes nothing and can be retried',
+      async (name) => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const flow = REFUSABLE_FLOWS[name];
+        const { h, undoRequest, redoRequest } = await flow.act();
+        const undoCalls = undoRequest.mock.calls.length;
+        h.dispatchUndo();
+        await vi.waitFor(() => expect(undoRequest).toHaveBeenCalledTimes(undoCalls + 1));
+        await settle();
+        const annotationsBefore = h.handle.getAnnotations();
+        const stacksBefore = h.getUndoStacks();
+        const redoCalls = redoRequest.mock.calls.length;
+        refuse(redoRequest);
+
+        h.dispatchRedo();
+        await vi.waitFor(() => expect(errorToasts()).toContain(flow.redoMessage));
+        await settle();
+
+        expect(redoRequest).toHaveBeenCalledTimes(redoCalls + 1);
+        // The server kept its state, so the page does too, and nothing went back on the undo stacks: Ctrl+Z
+        // cannot replay the undo over an annotation that was never removed again.
+        expect(h.handle.getAnnotations()).toEqual(annotationsBefore);
+        expect(h.getUndoStacks()).toEqual(stacksBefore);
+        h.dispatchRedo();
+        await vi.waitFor(() => expect(redoRequest).toHaveBeenCalledTimes(redoCalls + 2));
+        expect(redoRequest.mock.calls.at(-1)).toEqual(redoRequest.mock.calls.at(-2));
+      },
+    );
   });
 });
