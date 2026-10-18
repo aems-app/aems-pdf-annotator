@@ -23,6 +23,7 @@ async function createUndoHarness({
   annotationControllerFactory = null,
 } = {}) {
   let modalHelpers;
+  let controllerOptions;
   let overlayHelpers;
   const markerClickHandlers = [];
 
@@ -41,6 +42,7 @@ async function createUndoHarness({
   window.PdfPreviewModalAnnotationController = {
     createAnnotationController: (options) => {
       modalHelpers = options.helpers;
+      controllerOptions = options;
       if (annotationControllerFactory) return annotationControllerFactory(options);
       if (annotations) options.setAnnotationsData(annotations);
       return {
@@ -125,6 +127,7 @@ async function createUndoHarness({
     handle,
     adapter,
     clickMarker: (data) => markerClickHandlers.forEach((handler) => handler(data)),
+    getAnnotationsData: () => controllerOptions.getAnnotationsData(),
     buildApiAnnotationIdentifier: modalHelpers.buildApiAnnotationIdentifier,
     unobserveAnnotationMarker: overlayHelpers?.unobserveAnnotationMarker,
     pushLocalUndo: modalHelpers.pushUndoOperation,
@@ -1911,13 +1914,14 @@ describe('pdf-preview-modal placement helpers', () => {
       h.handle.destroy();
     });
 
-    it('redoes a highlight resize through the modal fallback when the controller has no highlight support', async () => {
+    // A highlight resized through the modal's own fallback: the controller has no highlight support. The fake
+    // endpoint keeps its state, and a highlight PUT recreates the PDF annotation, so each answer has a new xref.
+    async function fallbackHighlightResized() {
       const highlight = {
         stable_id: 'hl-1', xref: 70, page_index: 0, type: 'Highlight', content: 'Check the sign',
         quads: [[50, 50, 150, 70]], anchor_text: 'answer text', rect: [50, 50, 150, 70], source: 'AI',
       };
       let state = { ...highlight };
-      // A highlight PUT recreates the PDF annotation, so every response carries a new xref.
       const updateAnnotation = vi.fn(async (_assignment, _submission, _identifier, body) => {
         state = { ...state, ...body, xref: state.xref + 1 };
         return { success: true, annotation: { ...state } };
@@ -1943,20 +1947,15 @@ describe('pdf-preview-modal placement helpers', () => {
       });
       const resized = { quads: [[50, 722, 220, 742]], anchor_text: 'resized answer text', source: 'HUMAN' };
       expect(h.handle.getAnnotations()[0][0]).toMatchObject(resized);
+      return { h, updateAnnotation, resized };
+    }
 
-      await undoThenRedo(h, updateAnnotation);
-
-      expect(updateAnnotation.mock.calls[1][3]).toMatchObject({ anchor_text: 'answer text', source: 'AI' });
-      expect(updateAnnotation.mock.calls[2]).toEqual(updateAnnotation.mock.calls[0]);
-      expect(h.handle.getAnnotations()[0][0]).toMatchObject(resized);
-      h.handle.destroy();
-    });
-
-    it('Ctrl+Y re-deletes an annotation whose deletion was undone, with the original request', async () => {
+    // A sidebar delete, then its undo, which recreates the annotation with a new xref (or none).
+    async function deletedThenRestored({ withoutXref = false } = {}) {
       let fixture;
       let nextXref = 43;
       const createAnnotation = vi.fn(async (_assignment, _submission, body) => ({
-        success: true, annotation: { ...fixture, ...body, xref: nextXref++ },
+        success: true, annotation: { ...fixture, ...body, xref: withoutXref ? null : nextXref++ },
       }));
       const deleteAnnotation = vi.fn().mockResolvedValue({ success: true });
       const h = await splitHarness({ createAnnotation, deleteAnnotation });
@@ -1968,21 +1967,12 @@ describe('pdf-preview-modal placement helpers', () => {
       h.dispatchUndo();
       await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledTimes(1));
       await vi.waitFor(() => h.expectBucket('AI'));
-      h.dispatchRedo();
-      await vi.waitFor(() => expect(deleteAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+      return { h, createAnnotation, deleteAnnotation };
+    }
 
-      expect(deleteAnnotation.mock.calls[1]).toEqual(deleteAnnotation.mock.calls[0]);
-      await vi.waitFor(() => expect(entries(h)).toEqual([]));
-      expect(historyOps(h, 'delete')).toEqual({ local: [expect.anything()], controller: [expect.anything()] });
-      // Undo recreates it again, with the same request as the first undo and its AI ownership.
-      h.dispatchUndo();
-      await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledTimes(2));
-      expect(createAnnotation.mock.calls[1]).toEqual(createAnnotation.mock.calls[0]);
-      await vi.waitFor(() => h.expectBucket('AI'));
-      h.handle.destroy();
-    });
-
-    it('Ctrl+Y re-deletes a pen stroke whose deletion was undone', async () => {
+    // A pen stroke deleted with the Delete key, then its undo, which recreates it as stroke-2.
+    async function strokeDeletedThenRestored() {
       const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
       window.PdfPreviewModalMarkupSelection = selection;
       const createAnnotation = vi.fn(async (_assignment, _submission, body) => ({
@@ -2016,6 +2006,41 @@ describe('pdf-preview-modal placement helpers', () => {
       await vi.waitFor(() => expect(h.handle.getAnnotations()[0]).toEqual([
         expect.objectContaining({ stable_id: 'stroke-2' }),
       ]));
+      await settle();
+      return { h, deleteAnnotation };
+    }
+
+    it('redoes a highlight resize through the modal fallback when the controller has no highlight support', async () => {
+      const { h, updateAnnotation, resized } = await fallbackHighlightResized();
+
+      await undoThenRedo(h, updateAnnotation);
+
+      expect(updateAnnotation.mock.calls[1][3]).toMatchObject({ anchor_text: 'answer text', source: 'AI' });
+      expect(updateAnnotation.mock.calls[2]).toEqual(updateAnnotation.mock.calls[0]);
+      expect(h.handle.getAnnotations()[0][0]).toMatchObject(resized);
+      h.handle.destroy();
+    });
+
+    it('Ctrl+Y re-deletes an annotation whose deletion was undone, with the original request', async () => {
+      const { h, createAnnotation, deleteAnnotation } = await deletedThenRestored();
+
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(deleteAnnotation).toHaveBeenCalledTimes(2));
+
+      expect(deleteAnnotation.mock.calls[1]).toEqual(deleteAnnotation.mock.calls[0]);
+      await vi.waitFor(() => expect(entries(h)).toEqual([]));
+      expect(historyOps(h, 'delete')).toEqual({ local: [expect.anything()], controller: [expect.anything()] });
+      // Undo recreates it again, with the same request as the first undo and its AI ownership.
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledTimes(2));
+      expect(createAnnotation.mock.calls[1]).toEqual(createAnnotation.mock.calls[0]);
+      await vi.waitFor(() => h.expectBucket('AI'));
+      h.handle.destroy();
+    });
+
+    it('Ctrl+Y re-deletes a pen stroke whose deletion was undone', async () => {
+      const { h, deleteAnnotation } = await strokeDeletedThenRestored();
+
       h.dispatchRedo();
       await vi.waitFor(() => expect(deleteAnnotation).toHaveBeenCalledTimes(2));
 
@@ -2249,6 +2274,256 @@ describe('pdf-preview-modal placement helpers', () => {
       expect(updateAnnotation.mock.calls[100][2]).toBe('controller-0');
       expect(updateAnnotation.mock.calls[149][2]).toBe('controller-49');
       h.handle.destroy();
+    });
+
+    // A request that can be retried later keeps its operation queued; one whose annotation is gone drops it.
+    const networkDown = (request) => request.mockRejectedValueOnce(new Error('network down'));
+    const notFound = (request) => request.mockRejectedValueOnce(
+      Object.assign(new Error('Annotation not found'), { status: 404 }),
+    );
+
+    it.each([
+      ['a network error keeps it queued', networkDown, 'Failed to redo move', true],
+      ['an answer that the annotation is gone drops it', notFound, 'Annotation no longer exists', false],
+    ])('a move redo that fails: %s', async (_name, fail, toast, queued) => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await window.PdfPreviewModal.__test.updateAnnotationPosition(0, 0, 'owned-comment', h.marker, true);
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+      fail(h.updateAnnotation);
+
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(errorToasts()).toContain(toast));
+      await settle();
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(3);
+      h.dispatchRedo();
+      await settle();
+
+      expect(h.updateAnnotation.mock.calls.slice(3)).toEqual(queued ? [h.updateAnnotation.mock.calls[0]] : []);
+    });
+
+    it.each([
+      [
+        'a refusal keeps it queued',
+        (request) => request.mockResolvedValueOnce({ success: false, error: 'locked' }),
+        'Failed to redo deletion',
+        true,
+      ],
+      [
+        'a refusal because the annotation is gone drops it',
+        (request) => request.mockResolvedValueOnce({ success: false, status: 404, error: 'Annotation not found' }),
+        'Annotation no longer exists',
+        false,
+      ],
+      ['a network error keeps it queued', networkDown, 'Failed to redo deletion', true],
+      ['an error that the annotation is gone drops it', notFound, 'Annotation no longer exists', false],
+    ])('a delete redo that fails: %s', async (_name, fail, toast, queued) => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      // The recreated annotation has no xref, so the redo finds it by its stable id alone.
+      const { h, deleteAnnotation } = await deletedThenRestored({ withoutXref: true });
+      fail(deleteAnnotation);
+
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(errorToasts()).toContain(toast));
+      await settle();
+      expect(deleteAnnotation).toHaveBeenCalledTimes(2);
+      expect(entries(h)).toHaveLength(1);
+      h.dispatchRedo();
+      await settle();
+
+      expect(deleteAnnotation.mock.calls.slice(2)).toEqual(queued ? [deleteAnnotation.mock.calls[0]] : []);
+    });
+
+    it('drops a delete redo whose recreated annotation is gone', async () => {
+      const { h, deleteAnnotation } = await deletedThenRestored();
+      const pageAnnotations = h.options.getAnnotationsData()[0];
+      const removed = pageAnnotations.splice(0, pageAnnotations.length); // another reviewer deleted it
+
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(errorToasts()).toContain('Annotation no longer exists'));
+      await settle();
+      // Dropped, not re-queued: with the annotation back, there is still nothing to redo.
+      pageAnnotations.push(...removed);
+      h.dispatchRedo();
+      await settle();
+
+      expect(deleteAnnotation).toHaveBeenCalledTimes(1);
+    });
+
+    it('a pen-stroke delete redo that fails stays queued', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { h, deleteAnnotation } = await strokeDeletedThenRestored();
+      networkDown(deleteAnnotation);
+
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(errorToasts()).toContain('Failed to redo deletion'));
+      await settle();
+      expect(h.handle.getAnnotations()[0]).toHaveLength(1);
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(deleteAnnotation).toHaveBeenCalledTimes(3));
+
+      await vi.waitFor(() => expect(h.handle.getAnnotations()).toEqual({}));
+    });
+
+    it.each([
+      [
+        'a refusal keeps it queued',
+        ({ request }) => { request.mockResolvedValueOnce({ success: false, error: 'conflict' }); },
+        'Failed to redo highlight change',
+        true,
+      ],
+      ['a network error keeps it queued', ({ request }) => { networkDown(request); }, 'Failed to redo highlight change', true],
+      [
+        'a refusal because the highlight is gone drops it',
+        ({ request }) => { request.mockResolvedValueOnce({ success: false, status: 404 }); },
+        'Annotation no longer exists',
+        false,
+      ],
+      ['an error that the highlight is gone drops it', ({ request }) => { notFound(request); }, 'Annotation no longer exists', false],
+      [
+        'a highlight deleted meanwhile drops it',
+        ({ h }) => {
+          const pageAnnotations = h.getAnnotationsData()[0];
+          const removed = pageAnnotations.splice(0, pageAnnotations.length);
+          return () => pageAnnotations.push(...removed);
+        },
+        'Annotation no longer exists',
+        false,
+      ],
+    ])('a highlight redo through the modal fallback that fails: %s', async (_name, fail, toast, queued) => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { h, updateAnnotation } = await fallbackHighlightResized();
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(updateAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+      const restore = fail({ h, request: updateAnnotation }) || (() => {});
+
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(errorToasts()).toContain(toast));
+      await settle();
+      restore();
+      const callsAfterFailure = updateAnnotation.mock.calls.length;
+      h.dispatchRedo();
+      await settle();
+
+      expect(updateAnnotation.mock.calls.slice(callsAfterFailure)).toEqual(
+        queued ? [updateAnnotation.mock.calls[0]] : [],
+      );
+    });
+
+    it('ignores Ctrl+Z while a redo is still in flight', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'First edit');
+      await saveSidebarEdit(h, 'Second edit');
+      h.dispatchUndo(); // undoes the second edit
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
+      await settle();
+      let finishRedo;
+      h.updateAnnotation.mockImplementationOnce(() => new Promise((done) => { finishRedo = done; }));
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
+
+      h.dispatchUndo(); // the first edit is on the undo stack, but the redo has not landed
+      await settle();
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(4);
+
+      finishRedo({ success: true, annotation: { ...h.annotation, content: 'Second edit', source: 'HUMAN' } });
+      await settle();
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(5));
+      // The redone second edit is undone again, not the first.
+      expect(h.updateAnnotation.mock.calls[4]).toEqual(h.updateAnnotation.mock.calls[2]);
+    });
+
+    it('redoes once when Ctrl+Y is pressed again while a redo is in flight', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'First edit');
+      await saveSidebarEdit(h, 'Second edit');
+      for (let undone = 1; undone <= 2; undone += 1) {
+        h.dispatchUndo();
+        await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2 + undone));
+        await settle();
+      }
+      let finishRedo;
+      h.updateAnnotation.mockImplementationOnce(() => new Promise((done) => { finishRedo = done; }));
+      h.dispatchRedo(); // redoes the first edit
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(5));
+
+      h.dispatchRedo(); // the second edit is still on the redo stack
+      await settle();
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(5);
+
+      finishRedo({ success: true, annotation: { ...h.annotation, content: 'First edit', source: 'HUMAN' } });
+      await settle();
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(6));
+      expect(h.updateAnnotation.mock.calls[4]).toEqual(h.updateAnnotation.mock.calls[0]);
+      expect(h.updateAnnotation.mock.calls[5]).toEqual(h.updateAnnotation.mock.calls[1]);
+    });
+
+    it('does not record an operation that lands while a redo is in flight, as during an undo', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+      let finishRedo;
+      h.updateAnnotation.mockImplementationOnce(() => new Promise((done) => { finishRedo = done; }));
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
+
+      // A marker move lands while the redo request is still out.
+      await window.PdfPreviewModal.__test.updateAnnotationPosition(0, 0, 'owned-comment', h.marker, false);
+      finishRedo({ success: true, annotation: { ...h.annotation, content: 'Edited feedback', source: 'HUMAN' } });
+      await settle();
+
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(4);
+      expect(historyOps(h, 'move').local).toEqual([]);
+      expect(historyOps(h, 'edit')).toEqual({ local: [expect.anything()], controller: [expect.anything()] });
+    });
+
+    it('reopening the same document keeps its redo history', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+
+      h.handle.close();
+      await h.handle.open();
+      h.dispatchRedo();
+
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
+      expect(h.updateAnnotation.mock.calls[2]).toEqual(h.updateAnnotation.mock.calls[0]);
+    });
+
+    it.each([
+      ['Y without a modifier', { key: 'y' }],
+      ['Ctrl+Shift+Y', { key: 'Y', ctrlKey: true, shiftKey: true }],
+      ['Ctrl+X', { key: 'x', ctrlKey: true }],
+      ['Ctrl with no key', { ctrlKey: true }],
+    ])('%s does not redo', async (_name, init) => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+
+      const event = h.dispatchRedo(init);
+      await settle();
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(2);
+      h.dispatchRedo(); // Ctrl+Y still redoes it
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
     });
   });
 });

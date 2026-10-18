@@ -671,6 +671,11 @@ describe('annotation-controller state ownership', () => {
 
     expect(controller.getUndoStack()).toEqual([]);
     expect(clearRedoStack).toHaveBeenCalledOnce();
+    // A host without a redo history is fine too.
+    const standalone = mod.createAnnotationController({ annotationsState: { undoStack: [] }, getAnnotationsData: () => ({}) });
+    standalone.pushUndoOperation({ type: 'edit', identifier: 'ann-2' });
+    expect(() => standalone.clearUndoStack()).not.toThrow();
+    expect(standalone.getUndoStack()).toEqual([]);
   });
 
   function createHighlightRedoController(mod, { updateAnnotationRequest, showToast = vi.fn() }) {
