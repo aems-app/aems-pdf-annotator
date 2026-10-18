@@ -2074,6 +2074,7 @@ describe('pdf-preview-modal placement helpers', () => {
       await saveSidebarEdit(h, 'Edited feedback');
       h.dispatchUndo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+      await settle(); // the undo has landed, so its operation is on the redo stack
       const field = document.createElement(tag);
       document.body.appendChild(field);
 
@@ -2138,6 +2139,7 @@ describe('pdf-preview-modal placement helpers', () => {
       await undoThenRedo(h, h.updateAnnotation);
       h.dispatchUndo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
+      await settle(); // the undo has landed, so its operation is on the redo stack
 
       h.controller.clearUndoStack();
       h.dispatchRedo();
@@ -2154,6 +2156,7 @@ describe('pdf-preview-modal placement helpers', () => {
       await undoThenRedo(h, h.updateAnnotation);
       h.dispatchUndo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
+      await settle(); // the undo has landed, so its operation is on the redo stack
 
       h.handle.close();
       const next = window.PdfPreviewModal.createPdfPreviewModal({
