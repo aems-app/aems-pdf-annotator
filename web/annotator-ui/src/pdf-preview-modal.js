@@ -65,6 +65,9 @@
 
     // Phase 5A: annotation controller instance (created by composition root)
     let _currentAnnotationCtrl = null;
+    // Controllers and compatibility state are shared by the one preview shell.
+    // A new package handle supersedes the previous handle, even before open().
+    let _activeModalState = null;
     // Guard flag: prevents infinite recursion when annotation controller
     // delegates back into the monolith helpers it was given.
     let _annotationCtrlDelegating = false;
@@ -3560,6 +3563,21 @@
         return epoch === historyDocumentEpoch;
     }
 
+    function resetDocumentHistory() {
+        historyDocumentEpoch += 1;
+        _savingAnnotationId = null;
+        _updatingPriorityId = null;
+        _isDraggingAnnotation = false;
+        editingAnnotationId = null;
+        inlineEditingLabel = null;
+        isUndoing = false;
+        isRedoing = false;
+        undoStack = [];
+        clearRedoStack();
+        _currentAnnotationCtrl?.clearUndoStack?.();
+        annotationWrites.clear();
+    }
+
     const HISTORY_IDENTITY_FIELDS = ['annotationId', 'identifier', 'requestId', 'requestIdentifier', 'stable_id', 'stableId', 'id'];
 
     // Bare identifiers (including numeric stable IDs) belong only to the stable namespace.
@@ -4672,12 +4690,19 @@
                     }
                 }
             } else {
-                // Stored, but not read back: show the stored value. The source changes only when the request named
-                // one, because the server keeps the stored source otherwise.
+                // Stored, but not read back: an explicit source wins; otherwise a changed field transfers AI
+                // ownership just as the server did on the original action.
                 const entry = findAnnotationEntry(operation.pageIdx, operation.identifier || operation.requestId);
                 if (entry) {
+                    const oldValue = operation.type === 'edit'
+                        ? String(entry._originalContent ?? entry.content ?? '').trim()
+                        : deriveAnnotationPriority(entry);
+                    const newValue = String(updateData[spec.field] ?? '').trim();
+                    const oldSource = resolveAnnotationSource(entry);
+                    const source = updateData.source || (oldSource === 'AI' && oldValue !== newValue ? 'HUMAN' : oldSource);
+                    if (oldSource === 'AI' && source === 'HUMAN' && !entry.original_source) entry.original_source = 'AI';
+                    entry.source = source;
                     spec.localFields.forEach((localField) => { entry[localField] = updateData[spec.field]; });
-                    if (updateData.source) entry.source = updateData.source;
                 }
             }
 
@@ -7626,8 +7651,13 @@
                         const annIdx = findAnnotationIndex(pageIdx, lookupIdentifier);
                         if (annIdx >= 0) {
                             const existingAnn = annotationsData[pageIdx][annIdx];
-                            // Update priority/color locally. The source stays: the request named none, and the
-                            // server keeps the stored source then (it never transfers ownership on a colour change).
+                            // The server auto-transfers a changed AI colour even when read-back fails.
+                            const newSource = originalSource === 'AI' && originalColor !== priority.toLowerCase()
+                                ? 'HUMAN' : originalSource;
+                            existingAnn.source = newSource;
+                            if (originalSource === 'AI' && newSource === 'HUMAN' && !existingAnn.original_source) {
+                                existingAnn.original_source = 'AI';
+                            }
                             existingAnn.priority = priority;
                             existingAnn.color = priority;
                             existingAnn._hasBeenEdited = true;
@@ -7644,8 +7674,8 @@
                                 oldColor: originalColor,
                                 newColor: priority,
                                 oldSource: originalSource,
-                                newSource: originalSource,
-                                isOwnershipTransfer: false,
+                                newSource: newSource,
+                                isOwnershipTransfer: originalSource === 'AI' && newSource === 'HUMAN',
                             }, { epoch: requestEpoch });
                         }
                     }
@@ -8900,6 +8930,20 @@
     });
 
     async function _openPdfPreviewInternal(submissionId, studentName, assignmentId = null, context = null) {
+        const openContext = context || {};
+        const resolvedAssignmentId = assignmentId ?? openContext.assignmentId ?? null;
+        // Retire history before any readiness return/await. AEMS creates a fresh handle per open, but the
+        // legacy path can also reuse a controller; both stacks and pending writes must leave with the document.
+        if (submissionId !== currentSubmissionId || resolvedAssignmentId !== currentAssignmentId) {
+            resetDocumentHistory();
+        }
+        const requestEpoch = currentHistoryEpoch();
+        currentSubmissionId = submissionId;
+        currentAssignmentId = resolvedAssignmentId;
+        currentCanvasUserName = openContext.canvasUserName || currentCanvasUserName || null;
+        _annotationAdapter = openContext.modeAdapter || null;
+        _annotationAdapterError = null;
+
         if (!ensureModalViewers()) {
             console.error('PDF.js is not yet ready for preview.');
             const unsubscribe = () => {
@@ -8907,13 +8951,13 @@
             };
             const retryHandler = () => {
                 unsubscribe();
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 _openPdfPreviewInternal(submissionId, studentName, assignmentId, context);
             };
             window.addEventListener('pdfjsready', retryHandler, { once: true });
             return;
         }
 
-        const openContext = context || {};
         const explicitMode = openContext.mode || null;
         const isOfflineMode = explicitMode === 'offline' || window.__WIZARD_MODE === 'offline';
 
@@ -8934,31 +8978,11 @@
         if (modalElement._preventEscapeHandler) {
             document.removeEventListener('keydown', modalElement._preventEscapeHandler, true);
         }
+        if (modalElement._undoHandler) {
+            document.removeEventListener('keydown', modalElement._undoHandler, true);
+        }
 
         const modal = new bootstrap.Modal(modalElement);
-        const resolvedAssignmentId = assignmentId ?? openContext.assignmentId ?? null;
-        // Another document starts a fresh annotation history: an undo or a redo must never replay an operation
-        // recorded on one submission against another (issue #540). The annotation controller's own undo stack
-        // already starts empty with each modal; this module-level copy outlived it.
-        if (submissionId !== currentSubmissionId || resolvedAssignmentId !== currentAssignmentId) {
-            historyDocumentEpoch += 1;
-            _savingAnnotationId = null;
-            _updatingPriorityId = null;
-            _isDraggingAnnotation = false;
-            editingAnnotationId = null;
-            inlineEditingLabel = null;
-            isUndoing = false;
-            isRedoing = false;
-            undoStack = [];
-            clearRedoStack();
-        }
-        const requestEpoch = currentHistoryEpoch();
-        currentSubmissionId = submissionId;
-        currentAssignmentId = resolvedAssignmentId;
-        currentCanvasUserName = openContext.canvasUserName || currentCanvasUserName || null;
-        _annotationAdapter = openContext.modeAdapter || null;
-        _annotationAdapterError = null;
-
         // Initialize annotation adapter for this modal session when the caller
         // did not provide one explicitly (legacy shim path).
         if (!_annotationAdapter) {
@@ -9212,6 +9236,7 @@
 
         // Add Ctrl+Z undo and Ctrl+Y / Ctrl+Shift+Z redo functionality
         const handleUndo = async (e) => {
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             // Ctrl (Windows/Linux) or Cmd (Mac)
             const action = resolveHistoryShortcut(e);
             if (action) {
@@ -9632,6 +9657,14 @@
 
         var state = ModalState.createModalState(opts);
         var _destroyed = false;
+        // This is the real AEMS document boundary. Do it before tearing down the previous controllers, whose
+        // outstanding callbacks must already be stale, and before PDF.js readiness can defer open().
+        resetDocumentHistory();
+        _activeModalState = state;
+        annotationsData = {};
+        currentSubmissionId = state.options.submissionId;
+        currentAssignmentId = state.options.assignmentId ?? null;
+        _annotationAdapter = state.options.modeAdapter || null;
 
         // Phase 5A: Create shell controller if module is loaded
         var Shell = window.PdfPreviewModalShell;
@@ -10014,6 +10047,7 @@
         var handle = {
             async open() {
                 if (_destroyed) throw new Error('Modal has been destroyed');
+                if (_activeModalState !== state) throw new Error('Modal has been superseded');
                 await _openPdfPreviewInternal(
                     state.options.submissionId,
                     state.options.studentName,
@@ -10029,6 +10063,7 @@
             },
 
             close() {
+                if (_activeModalState !== state) return;
                 var modalEl = document.getElementById('pdfPreviewModal');
                 if (modalEl) {
                     var bsModal = bootstrap.Modal.getInstance(modalEl);
@@ -10039,6 +10074,8 @@
             destroy() {
                 if (_destroyed) return;
                 _destroyed = true;
+                if (_activeModalState !== state) return;
+                resetDocumentHistory();
                 handle.close();
                 stopAnnotationsPolling();
                 _annotationAdapter = null;
@@ -10049,10 +10086,12 @@
                 if (_currentOverlayRenderer) { _currentOverlayRenderer.destroy(); _currentOverlayRenderer = null; }
                 if (_currentDocCtrl) { _currentDocCtrl.destroy(); _currentDocCtrl = null; }
                 if (_currentShell) { _currentShell.destroy(); _currentShell = null; }
+                _activeModalState = null;
             },
 
             async refresh() {
                 if (_destroyed) throw new Error('Modal has been destroyed');
+                if (_activeModalState !== state) throw new Error('Modal has been superseded');
                 await loadAnnotations(currentSubmissionId, currentAssignmentId);
             },
 
