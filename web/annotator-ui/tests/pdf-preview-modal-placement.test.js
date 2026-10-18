@@ -2561,26 +2561,130 @@ describe('pdf-preview-modal placement helpers', () => {
       expect(h.updateAnnotation.mock.calls[5]).toEqual(h.updateAnnotation.mock.calls[1]);
     });
 
-    it('does not record an operation that lands while a redo is in flight, as during an undo', async () => {
+    // Review finding 2: an operation the user completes while an undo or redo request is in flight is a new
+    // operation like any other. It is recorded and clears redo, and the step finishing late cannot put its own
+    // operation above it.
+    const moveMarker = (h) => window.PdfPreviewModal.__test.updateAnnotationPosition(
+      0, 0, 'owned-comment', h.marker, false,
+    );
+    const stackTypes = (h) => ({
+      local: h.getUndoStacks().local.map((op) => op.newContent || op.type),
+      controller: h.getUndoStacks().controller.map((op) => op.newContent || op.type),
+    });
+
+    it('records an operation that lands while a redo is in flight, below which the redone one goes', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'First edit');
+      await saveSidebarEdit(h, 'Second edit');
+      for (let undone = 1; undone <= 2; undone += 1) {
+        h.dispatchUndo();
+        await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2 + undone));
+        await settle();
+      }
+      const finishRedo = pending(h.updateAnnotation);
+      h.dispatchRedo(); // redoes the first edit
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(5));
+
+      await moveMarker(h); // lands while the redo request is still out
+      finishRedo({ success: true, annotation: { ...h.annotation, content: 'First edit' } });
+      await settle();
+
+      expect(stackTypes(h)).toEqual({ local: ['First edit', 'move'], controller: ['First edit'] });
+      const calls = h.updateAnnotation.mock.calls.length;
+      h.dispatchRedo(); // the move cleared the second edit's redo
+      await settle();
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(calls);
+      h.dispatchUndo(); // the move is the newest operation
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(calls + 1));
+      expect(h.updateAnnotation.mock.calls.at(-1)[3]).toHaveProperty('rect');
+    });
+
+    it('records a sidebar edit that lands while a redo is in flight on both stacks, above the redone one', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'First edit');
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+      await settle();
+      const finishRedo = pending(h.updateAnnotation);
+      h.dispatchRedo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
+
+      await saveSidebarEdit(h, 'Third edit'); // lands while the redo request is still out
+      finishRedo({ success: true, annotation: { ...h.annotation, content: 'First edit' } });
+      await settle();
+
+      expect(stackTypes(h)).toEqual({
+        local: ['First edit', 'Third edit'],
+        controller: ['First edit', 'Third edit'],
+      });
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(5));
+      await settle();
+      expect(stackTypes(h)).toEqual({ local: ['First edit'], controller: ['First edit'] });
+    });
+
+    it('records an operation that lands while an undo is in flight; the undone one is then not redoable', async () => {
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      await settle();
+      const finishUndo = pending(h.updateAnnotation);
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+
+      await moveMarker(h); // lands while the undo request is still out
+      finishUndo({ success: true, annotation: { ...h.annotation } });
+      await settle();
+
+      expect(stackTypes(h)).toEqual({ local: ['move'], controller: [] });
+      h.dispatchRedo();
+      await settle();
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(3);
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
+      expect(h.updateAnnotation.mock.calls.at(-1)[3]).toHaveProperty('rect');
+    });
+
+    it('puts a failed undo back below an operation recorded while it was in flight', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const h = await splitHarness();
+      serveAnnotation(h);
+      await saveSidebarEdit(h, 'Edited feedback');
+      await settle();
+      const finishUndo = pending(h.updateAnnotation);
+      h.dispatchUndo();
+      await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
+
+      await moveMarker(h);
+      finishUndo({ success: false, error: 'locked' });
+      await settle();
+
+      expect(stackTypes(h)).toEqual({ local: ['Edited feedback', 'move'], controller: ['Edited feedback'] });
+    });
+
+    it('does not re-queue a failed redo once an operation was recorded while it was in flight', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
       const h = await splitHarness();
       serveAnnotation(h);
       await saveSidebarEdit(h, 'Edited feedback');
       h.dispatchUndo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
       await settle();
-      let finishRedo;
-      h.updateAnnotation.mockImplementationOnce(() => new Promise((done) => { finishRedo = done; }));
+      const finishRedo = pending(h.updateAnnotation);
       h.dispatchRedo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
 
-      // A marker move lands while the redo request is still out.
-      await window.PdfPreviewModal.__test.updateAnnotationPosition(0, 0, 'owned-comment', h.marker, false);
-      finishRedo({ success: true, annotation: { ...h.annotation, content: 'Edited feedback' } });
+      await moveMarker(h);
+      finishRedo({ success: false, error: 'locked' });
+      await settle();
+      const calls = h.updateAnnotation.mock.calls.length;
+      h.dispatchRedo();
       await settle();
 
-      expect(h.updateAnnotation).toHaveBeenCalledTimes(4);
-      expect(historyOps(h, 'move').local).toEqual([]);
-      expect(historyOps(h, 'edit')).toEqual({ local: [expect.anything()], controller: [expect.anything()] });
+      expect(h.updateAnnotation).toHaveBeenCalledTimes(calls);
+      expect(stackTypes(h)).toEqual({ local: ['move'], controller: [] });
     });
 
     it('reopening the same document keeps its redo history', async () => {
