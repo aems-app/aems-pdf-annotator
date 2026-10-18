@@ -3252,6 +3252,24 @@
                 // Keep compact and expanded label text in sync after save.
                 label.dataset.fullText = trimmedContent;
 
+                // An inline edit is undoable exactly like a sidebar edit (issue #462): the same 'edit' operation,
+                // which performUndo replays by restoring the previous content and, after an ownership transfer,
+                // the previous source.
+                const oldSource = resolveAnnotationSource(annotation || {});
+                const newSource = resolveAnnotationSource(data.annotation);
+                pushUndoOperation({
+                    type: 'edit',
+                    identifier,
+                    xref: marker.dataset.annotationXref || null,
+                    requestId: marker.dataset.annotationRequestId || null,
+                    pageIdx,
+                    oldContent: (annotation?.content ?? originalFullText).trim(),
+                    newContent: trimmedContent,
+                    oldSource,
+                    newSource,
+                    isOwnershipTransfer: oldSource === 'AI' && newSource === 'HUMAN',
+                });
+
                 markLocalAnnotationChange(); // Prevent polling reload
             }
         } catch (error) {
