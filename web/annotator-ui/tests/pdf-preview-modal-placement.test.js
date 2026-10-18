@@ -1641,10 +1641,8 @@ describe('pdf-preview-modal placement helpers', () => {
     expect(updateAnnotation.mock.calls[0][2]).toBe('newer-annotation');
 
     rejectFirstRequest(new Error('request failed'));
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // Let the failed undo finish handling its error, however many microtask turns that takes, before Ctrl+Z.
+    await vi.advanceTimersByTimeAsync(0);
     harness.dispatchUndo();
     await Promise.resolve();
 
