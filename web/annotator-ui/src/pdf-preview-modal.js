@@ -154,13 +154,16 @@
     }
 
     async function requestPreviewFullscreen() {
+        const requestEpoch = currentHistoryEpoch();
         if (_currentShell) { _currentShell.requestFullscreen(); return; }
         if (!pdfPreviewModalEl) return;
         try {
             if (pdfPreviewModalEl.requestFullscreen) {
                 await pdfPreviewModalEl.requestFullscreen();
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
             } else if (pdfPreviewModalEl.webkitRequestFullscreen) {
                 await pdfPreviewModalEl.webkitRequestFullscreen();
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
             } else {
                 updatePreviewFullscreenUi(true);
             }
@@ -174,6 +177,7 @@
                 }
             }
         } catch (error) {
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             console.error('Fullscreen request failed:', error);
             updatePreviewFullscreenUi(true);
         }
@@ -938,10 +942,12 @@
     }
 
     async function handleFullscreenResize() {
+        const requestEpoch = currentHistoryEpoch();
         if (_currentDocCtrl) return _currentDocCtrl.handleResize();
 
         // Fallback: original monolith code
         const redrawAll = async () => {
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             // For continuous scroll, re-render all pages
             if (window.__pdfGradedViewer?.pdf) {
                 // Reflow, not reRenderAllPages(true). force=true bypassed the
@@ -951,6 +957,7 @@
                 // fullscreen toggle -- and unlike the shell path there is no
                 // isDrawingActive() deferral here. That is #472 unfixed.
                 await window.__pdfGradedViewer.relayoutPagesForContainer();
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 // Guarded: this raw pair used to run unguarded here, bypassing
                 // the very deferral added for the viewer callback, and would
                 // wipe uncommitted ink 400 ms after a fullscreen toggle.
@@ -964,6 +971,7 @@
             // Re-highlight search if active
             if (pdfSearchState.matches.length > 0 && pdfSearchState.currentIndex >= 0) {
                 setTimeout(() => {
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     highlightSearchMatch(pdfSearchState.matches[pdfSearchState.currentIndex]);
                 }, 100);
             }
@@ -1485,9 +1493,11 @@
     }
 
     async function _buildAnnotationAdapter() {
+        const requestEpoch = currentHistoryEpoch();
         const previewHost = window.AEMSPdfAnnotatorHost || null;
         if (previewHost && typeof previewHost.createDefaultHostApi === 'function') {
             const hostApi = await previewHost.createDefaultHostApi();
+            if (!isCurrentHistoryEpoch(requestEpoch)) return null;
             if (hostApi) {
                 _annotationAdapterError = null;
                 return hostApi;
@@ -1542,13 +1552,17 @@
      * @param {Object} body - Raw update body (will be JSON-stringified by adapter)
      * @returns {Promise<Object>} Parsed JSON response with updated annotation
      */
-    async function updateAnnotationRequest(annotationId, body) {
-        const epoch = currentHistoryEpoch();
+    function annotationWriteIdentity(annotationId) {
         const local = Object.keys(annotationsData)
             .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
-        const identity = local ? buildApiAnnotationIdentifier({
+        return local ? buildApiAnnotationIdentifier({
             identifier: local.stable_id || local.id || local.identifier, xref: local.xref,
         }) : annotationId;
+    }
+
+    async function updateAnnotationRequest(annotationId, body) {
+        const epoch = currentHistoryEpoch();
+        const identity = annotationWriteIdentity(annotationId);
         const key = `${epoch}:${identity}`;
         let writes = annotationWrites.get(key);
         if (!writes) {
@@ -1585,10 +1599,25 @@
     // Without server revisions or before-images, overlapping writes cannot supply trustworthy undo snapshots.
     // Read the server's current annotation instead of applying either response, and discard ambiguous history.
     async function refreshConflictingAnnotation(annotationId, epoch, writes) {
-        undoStack = [];
-        clearRedoStack();
-        if (_currentAnnotationCtrl?.clearUndoStack) _currentAnnotationCtrl.clearUndoStack();
-        historySequence += 1;
+        if (!isCurrentHistoryEpoch(epoch) || writes.deleted) return;
+        const local = Object.keys(annotationsData)
+            .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
+        const parts = resolveAnnotationIdParts({ identifier: annotationId, xref: local?.xref });
+        const refersToConflict = (operation) => {
+            const refers = (target) => target && (
+                ['annotationId', 'identifier', 'requestId', 'requestIdentifier', 'stable_id', 'id'].some((key) => {
+                    if (target[key] == null) return false;
+                    const candidate = resolveAnnotationIdParts({ identifier: target[key] });
+                    return (parts.stableId != null && candidate.stableId === parts.stableId)
+                        || (parts.xref != null && candidate.xref === parts.xref);
+                }) || (parts.xref != null && String(target.xref) === String(parts.xref))
+            );
+            return [operation, operation.annotation, operation.snapshot, operation.undoTarget, operation.redoTarget].some(refers);
+        };
+        undoStack = undoStack.filter((operation) => !refersToConflict(operation));
+        redoStack = redoStack.filter((entry) => !refersToConflict(entry.operation));
+        _currentAnnotationCtrl?.removeUndoOperations?.(refersToConflict);
+        // Conflicting requests are dropped by their own outcome. Do not overtake a history step for another annotation.
         try {
             let data;
             let version;
@@ -1596,6 +1625,7 @@
                 version = writes.version;
                 data = await listAnnotationsRequest();
                 if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+                if (writes.deleted) return;
             } while (version !== writes.version);
             if (!data?.success || !data.annotations) throw new Error('Annotation refresh failed');
             const current = Object.values(data.annotations).flat().find((ann) =>
@@ -1627,9 +1657,20 @@
      * @returns {Promise<Object>} Parsed JSON response confirming deletion
      */
     async function deleteAnnotationRequest(annotationId) {
-        return _requireAnnotationAdapter().deleteAnnotation(currentAssignmentId, currentSubmissionId, annotationId, {
+        const epoch = currentHistoryEpoch();
+        const key = `${epoch}:${annotationWriteIdentity(annotationId)}`;
+        const data = await _requireAnnotationAdapter().deleteAnnotation(currentAssignmentId, currentSubmissionId, annotationId, {
             offline: _isOfflineMode()
         });
+        if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+        if (data?.success) {
+            const writes = annotationWrites.get(key);
+            if (writes) {
+                writes.version += 1;
+                writes.deleted = true;
+            }
+        }
+        return data;
     }
 
     /**
@@ -1711,7 +1752,9 @@
             // Immediately fetch the new version to prevent subsequent poll cycles
             // from treating our own change as external
             if (_annotationAdapter && currentSubmissionId) {
+                const requestEpoch = currentHistoryEpoch();
                 getAnnotationsVersionRequest().then(function (data) {
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (data && data.version) {
                         _currentVersionSync.markLocalChange(data.version);
                     }
@@ -1723,9 +1766,11 @@
     }
 
     async function checkAnnotationsVersion() {
+        const requestEpoch = currentHistoryEpoch();
         if (!currentSubmissionId || !_annotationAdapter) return;
         try {
             const data = await getAnnotationsVersionRequest();
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (!data.success) return;
 
             // Compare version - if changed and NOT our own change, reload annotations
@@ -1736,6 +1781,7 @@
                 } else {
                     // This is a change from another session - reload
                     await loadAnnotations(currentSubmissionId, currentAssignmentId);
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 }
             }
             currentAnnotationsVersion = data.version;
@@ -2890,6 +2936,7 @@
 
     // Enter edit mode with textarea
     function expandInlineLabelEdit(label) {
+        const requestEpoch = currentHistoryEpoch();
         if (!label) return;
 
         // Get latest fullText from dataset (may have been updated after save)
@@ -2995,6 +3042,7 @@
         textarea.addEventListener('blur', async () => {
             // Small delay to check if clicking on another element within the label
             setTimeout(async () => {
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 if (shouldIgnoreDetachedInlineBlur(textarea, label)) {
                     return;
                 }
@@ -3019,6 +3067,7 @@
                         }
                     }
                     await saveAndCollapseInlineLabel(label, textarea.value);
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 }
             }, 100);
         });
@@ -3028,6 +3077,7 @@
         // CRITICAL: Use capture phase keydown listener - same pattern as sidebar
         // This must be registered on document level like preventModalCloseOnEscape
         const escapeHandler = async (e) => {
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (e.key === 'Escape' && label.classList.contains('label-editing')) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -3038,6 +3088,7 @@
 
                 // Save unless content is empty (match panel behavior)
                 await saveAndCollapseInlineLabel(label, textarea.value);
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
 
                 // Also clear panel editing mode
                 editingAnnotationId = null;
@@ -3047,6 +3098,7 @@
                 e.preventDefault();
                 document.removeEventListener('keydown', escapeHandler, true);
                 await saveAndCollapseInlineLabel(label, textarea.value);
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 editingAnnotationId = null;
                 inlineEditingLabel = null;
                 renderAnnotationsList();
@@ -3277,6 +3329,7 @@
             if (isTemporary && !hasEditedFlags) {
                 // Delete the temporary annotation
                 await deleteAnnotationSilently(pageIdx, identifier);
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 collapseInlineLabel(label);
                 scheduleAnnotationUpdate();
                 return;
@@ -3852,7 +3905,7 @@
                     });
                 })
                 .then(function (data) {
-                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (data && data.success && data.annotation) {
                         stroke.annotationId = data.annotation.stable_id || data.annotation.xref;
                         upsertAnnotationEntryLocal(data.annotation, pageIdx);
@@ -3915,7 +3968,7 @@
                     : createAnnotationRequest(textboxBody)
                 )
                 .then(function (data) {
-                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (data.success && data.annotation) {
                         entry.annotationId = data.annotation.stable_id || data.annotation.xref;
                         upsertAnnotationEntryLocal(data.annotation, entry.pageIdx);
@@ -4101,7 +4154,7 @@
                 }
 
                 try {
-                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     var data = await updateAnnotationRequest(buildApiAnnotationIdentifier({ identifier: item.entry.annotationId }) || item.entry.annotationId, body);
                     if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (data.success && data.annotation) {
@@ -4355,6 +4408,7 @@
         // Call the API to recreate the annotation
         try {
             const data = await step.create(annotationData);
+            if (!step.isCurrent()) return HISTORY_STALE;
             if (!data || !data.success) {
                 return historyRequestFailure(data || {}, 'Failed to undo deletion');
             }
@@ -4390,6 +4444,7 @@
 
         try {
             const data = await step.remove(currentTarget.apiIdentifier);
+            if (!step.isCurrent()) return HISTORY_STALE;
             if (!data || !data.success) {
                 return historyRequestFailure(data || {}, 'Failed to redo deletion');
             }
@@ -4453,6 +4508,7 @@
 
         try {
             const data = await step.update(apiIdentifier, updateData);
+            if (!step.isCurrent()) return HISTORY_STALE;
             if (!data || !data.success) {
                 return historyRequestFailure(data || {}, `Failed to ${verb} move`);
             }
@@ -4587,6 +4643,7 @@
 
         try {
             const data = await step.update(apiIdentifier, updateData);
+            if (!step.isCurrent()) return HISTORY_STALE;
             if (!data || !data.success) {
                 // Refused: the server kept its state, so nothing changes here either.
                 return historyRequestFailure(data || {}, failureMessage);
@@ -4663,6 +4720,7 @@
         }
         try {
             const data = await step.create(body);
+            if (!step.isCurrent()) return HISTORY_STALE;
             if (!data || !data.success) {
                 return historyRequestFailure(data || {}, 'Failed to undo deletion');
             }
@@ -4701,6 +4759,7 @@
         const { identifier, pageIdx } = operation.redoTarget;
         try {
             const data = await step.remove(buildApiAnnotationIdentifier({ identifier }) || identifier);
+            if (!step.isCurrent()) return HISTORY_STALE;
             if (!data || !data.success) {
                 // Refused: the server kept the markup, so the page keeps it too.
                 return historyRequestFailure(data || {}, 'Failed to redo deletion');
@@ -4760,6 +4819,7 @@
         const recreateRequest = await markupCreateRequest(annotation, operation.pageIdx);
         try {
             const data = await step.remove(buildApiAnnotationIdentifier({ identifier: annotationId }) || annotationId);
+            if (!step.isCurrent()) return HISTORY_STALE;
             if (!data || !data.success) {
                 return historyRequestFailure(data || {}, 'Failed to undo creation');
             }
@@ -4779,6 +4839,7 @@
     async function redoCreateMarkupOperation(operation, step) {
         try {
             const data = await step.create(cloneHistoryBody(operation.redoBody));
+            if (!step.isCurrent()) return HISTORY_STALE;
             if (!data || !data.success) {
                 return historyRequestFailure(data || {}, 'Failed to redo creation');
             }
@@ -4886,6 +4947,7 @@
 
         try {
             const outcome = await undoOperation(entry.operation, step);
+            if (!step.isCurrent()) return HISTORY_STALE;
             if (outcome === HISTORY_FAILED) {
                 // Push operation back onto the stacks it came from if failed
                 restoreUndoEntry(entry);
@@ -4922,6 +4984,7 @@
         try {
             // Only operations canRedoOperation admitted are on the redo stack.
             const outcome = await REDO_STEPS[entry.operation.type].redo(entry.operation, step);
+            if (!step.isCurrent()) return HISTORY_STALE;
             if (outcome === HISTORY_APPLIED) {
                 restoreUndoEntry(entry);
             } else if (outcome === HISTORY_FAILED && !step.overtaken()) {
@@ -6422,7 +6485,7 @@
             debugLog('[TETHER] Failed to persist ownership transfer:', err);
             revertAnchoredOwnership(marker);
         } finally {
-            _isDraggingAnnotation = false;
+            if (isCurrentHistoryEpoch(requestEpoch)) _isDraggingAnnotation = false;
         }
     }
 
@@ -6620,7 +6683,7 @@
             // Network / exception path: revert the optimistic repaint too.
             if (_currentOverlayRenderer) _currentOverlayRenderer.renderAnnotations(true);
         } finally {
-            if (HighlightAnchor) HighlightAnchor.deselect();
+            if (isCurrentHistoryEpoch(requestEpoch) && HighlightAnchor) HighlightAnchor.deselect();
         }
     }
 
@@ -6708,7 +6771,9 @@
         let data;
         try {
             data = await step.update(currentTarget.apiIdentifier, updateData);
+            if (!step.isCurrent()) throw STALE_HISTORY_STEP;
         } catch (error) {
+            if (!step.isCurrent()) throw STALE_HISTORY_STEP;
             if (isMissingAnnotationFailure(error)) {
                 return dropMissingHighlightUndo();
             }
@@ -7584,19 +7649,12 @@
                 // Keep priority UX local and immediate without rebuilding the panel.
                 updateAnnotationPriorityUi(pageIdx, priorityIdentifierCandidates, priority);
 
-                // Clear flag after successful update, but with delay to ensure blur handler has checked it
-                // Blur handler runs after 200ms, so wait at least 300ms before clearing
-                setTimeout(() => {
-                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                    _updatingPriorityId = null;
-                }, 300);
-
                 markLocalAnnotationChange(); // Prevent polling from reloading for our own change
                 // Keep editing mode active if user was editing this annotation
                 if (isEditingThisAnnotation) {
                     editingAnnotationId = annotationDomIdComposite;
                     setTimeout(() => {
-                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
+                        if (!isCurrentHistoryEpoch(requestEpoch)) return;
                         // Restore sidebar textarea
                         const textareaId = `edit-annotation-text-${lookupIdentifier}`;
                         const textarea = document.getElementById(textareaId);
@@ -7648,11 +7706,6 @@
 
         } catch (error) {
             if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
-            // Clear flag on error, but with delay to ensure blur handler has checked it
-            setTimeout(() => {
-                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                _updatingPriorityId = null;
-            }, 300);
             console.error('Error updating annotation priority:', error);
             if (originalAnn && annotationsData[pageIdx]) {
                 const annIdx = findAnnotationIndex(pageIdx, lookupIdentifier);
@@ -7675,6 +7728,13 @@
                 originalColor
             );
             showToast('error', error.message || 'Failed to update priority. Please try again.');
+        } finally {
+            // Keep the flag through the pending blur check, including conflict recovery exits.
+            if (isCurrentHistoryEpoch(requestEpoch)) {
+                setTimeout(() => {
+                    if (isCurrentHistoryEpoch(requestEpoch)) _updatingPriorityId = null;
+                }, 300);
+            }
         }
     }
 
@@ -7817,13 +7877,16 @@
             console.error('Revert to AI failed:', err);
             showToast('error', err && err.message ? err.message : 'Revert failed.');
         } finally {
-            if (sourceButton) sourceButton.disabled = false;
-            if (spinner) spinner.classList.add('d-none');
-            if (icon) icon.classList.remove('d-none');
+            if (isCurrentHistoryEpoch(requestEpoch)) {
+                if (sourceButton) sourceButton.disabled = false;
+                if (spinner) spinner.classList.add('d-none');
+                if (icon) icon.classList.remove('d-none');
+            }
         }
     }
 
     async function updateAnnotationPosition(sourcePageIdx, targetPageIdx, identifier, marker, isOwnershipTransfer = false) {
+        const requestEpoch = currentHistoryEpoch();
         // Add timeout wrapper to prevent infinite hangs
         const timeoutPromise = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('Annotation update timeout after 30 seconds')), 30000)
@@ -7835,6 +7898,7 @@
                 timeoutPromise
             ]);
         } catch (error) {
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             console.error('Annotation position update failed:', error);
             if (error.message.includes('timeout')) {
                 showToast('error', 'Annotation update timed out. Please try again.');
@@ -8355,7 +8419,7 @@
         } finally {
             // FIX Issue #32: Clear drag flag AFTER async operation completes
             // This prevents blur handler from deleting temporary annotation during cross-page move
-            _isDraggingAnnotation = false;
+            if (isCurrentHistoryEpoch(requestEpoch)) _isDraggingAnnotation = false;
         }
     }
 
@@ -8376,6 +8440,7 @@
     }
 
     async function getPdfPageText(pageNum) {
+        const requestEpoch = currentHistoryEpoch();
         // Note: no delegation stub needed — this internal function is only called
         // by other search functions which are themselves delegated.
         if (pdfSearchState.pageTextCache.has(pageNum)) {
@@ -8386,7 +8451,9 @@
             return '';
         }
         const page = await pdf.getPage(pageNum);
+        if (!isCurrentHistoryEpoch(requestEpoch)) return;
         const textContent = await page.getTextContent();
+        if (!isCurrentHistoryEpoch(requestEpoch)) return;
         const text = textContent.items.map((item) => item.str).join(' ');
         const normalized = text.toLowerCase();
         pdfSearchState.pageTextCache.set(pageNum, normalized);
@@ -8395,6 +8462,7 @@
 
     // FIX Issue #31: Check if PDF has searchable text and hide search if not
     async function checkPdfSearchable() {
+        const requestEpoch = currentHistoryEpoch();
         if (_currentDocCtrl) return _currentDocCtrl.checkPdfSearchable();
         const searchWrapper = document.getElementById('pdfSearchWrapper');
         if (!searchWrapper) return;
@@ -8416,13 +8484,16 @@
         for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
             try {
                 const page = await pdf.getPage(pageNum);
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 const textContent = await page.getTextContent();
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 const text = textContent.items.map((item) => item.str).join('').trim();
                 if (text.length > 10) { // More than just whitespace/artifacts
                     hasText = true;
                     break;
                 }
             } catch (error) {
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 console.warn(`[SEARCH] Error checking page ${pageNum} for text:`, error);
             }
         }
@@ -8477,6 +8548,7 @@
     }
 
     async function buildPdfSearchMatches(term) {
+        const requestEpoch = currentHistoryEpoch();
         // Note: no delegation stub needed — called by handleSearchNavigation
         // which is delegated.
         const pdf = window.__pdfGradedViewer?.pdf;
@@ -8498,6 +8570,7 @@
 
         for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
             const text = await getPdfPageText(pageNum);
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (!text) continue;
             let offset = text.indexOf(normalizedTerm);
             while (offset !== -1) {
@@ -8535,6 +8608,7 @@
     }
 
     async function highlightSearchMatch(match) {
+        const requestEpoch = currentHistoryEpoch();
         if (_currentDocCtrl) return _currentDocCtrl.highlightSearchMatch(match);
 
         // Fallback: original monolith code
@@ -8553,12 +8627,15 @@
         const viewport = viewer.getViewportForPage(match.page);
         if (!viewport) {
             // If viewport not yet available, wait for page to render
-            setTimeout(() => highlightSearchMatch(match), 100);
+            setTimeout(() => { if (isCurrentHistoryEpoch(requestEpoch)) highlightSearchMatch(match); }, 100);
             return;
         }
 
         const page = await viewer.pdf.getPage(match.page);
+
+        if (!isCurrentHistoryEpoch(requestEpoch)) return;
         const textContent = await page.getTextContent();
+        if (!isCurrentHistoryEpoch(requestEpoch)) return;
 
         // Clear all search highlights across all pages
         clearSearchHighlights();
@@ -8702,7 +8779,7 @@
         }
         const pageIdx = (viewer.currentPage || 1) - 1;
         try {
-            if (!isCurrentHistoryEpoch(requestEpoch)) return;
+        if (!isCurrentHistoryEpoch(requestEpoch)) return;
             const data = await createAnnotationRequest({
                 content: comment.trim(),
                 page_index: pageIdx,
@@ -8720,6 +8797,7 @@
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (window.__pdfGradedViewer) {
                 await window.__pdfGradedViewer.renderPage(targetPage + 1);
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
             }
             // Success: silent to keep UI smooth
             return true;
@@ -8801,12 +8879,14 @@
         submitBtn?.setAttribute('disabled', 'disabled');
         addCommentSpinner?.classList.remove('d-none');
         const addCommentVerdictEl = document.getElementById('addCommentVerdict');
+        const requestEpoch = currentHistoryEpoch();
         const success = await addManualAnnotation({
             comment: addCommentText?.value || '',
             priority: addCommentPriority?.value || 'amber',
             kind: addCommentType?.value || 'text',
             is_verdict: addCommentVerdictEl?.checked || false,
         });
+        if (!isCurrentHistoryEpoch(requestEpoch)) return;
         addCommentSpinner?.classList.add('d-none');
         submitBtn?.removeAttribute('disabled');
         if (success && addCommentModalInstance) {
@@ -8857,11 +8937,17 @@
         // already starts empty with each modal; this module-level copy outlived it.
         if (submissionId !== currentSubmissionId || resolvedAssignmentId !== currentAssignmentId) {
             historyDocumentEpoch += 1;
+            _savingAnnotationId = null;
+            _updatingPriorityId = null;
+            _isDraggingAnnotation = false;
+            editingAnnotationId = null;
+            inlineEditingLabel = null;
             isUndoing = false;
             isRedoing = false;
             undoStack = [];
             clearRedoStack();
         }
+        const requestEpoch = currentHistoryEpoch();
         currentSubmissionId = submissionId;
         currentAssignmentId = resolvedAssignmentId;
         currentCanvasUserName = openContext.canvasUserName || currentCanvasUserName || null;
@@ -8871,7 +8957,9 @@
         // Initialize annotation adapter for this modal session when the caller
         // did not provide one explicitly (legacy shim path).
         if (!_annotationAdapter) {
-            _annotationAdapter = await _buildAnnotationAdapter();
+            const adapter = await _buildAnnotationAdapter();
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
+            _annotationAdapter = adapter;
             if (!_annotationAdapter && _annotationAdapterError) {
                 console.error('[pdf-preview-modal] %s', _annotationAdapterError);
             }
@@ -8908,7 +8996,9 @@
                 // 180 ms after the pane is activated, with no drawing guard.
                 // This was the last such path and an external review found it
                 // after the teardown had twice been declared gone.
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 window.__pdfGradedViewer.relayoutPagesForContainer().then(() => {
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (typeof renderAnnotationsList === 'function') {
                         renderAnnotationsList();
                     }
@@ -8924,6 +9014,7 @@
         // CRITICAL: Prevent modal AND fullscreen from closing on Escape when editing annotation
         // Attach to document with capture phase to intercept BEFORE browser's fullscreen handler
         const preventModalCloseOnEscape = async (e) => {
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (e.key !== 'Escape') return;
 
             // Case 0: INLINE editing (on PDF) -> save and exit inline edit (stay in fullscreen/modal)
@@ -8939,6 +9030,7 @@
 
                 // Save and collapse
                 await saveAndCollapseInlineLabel(inlineEditingLabel, content);
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
 
                 // Clear tracking and panel editing mode
                 inlineEditingLabel = null;
@@ -9016,6 +9108,7 @@
                     if ((ann._isTemporary || neverEdited || isPlaceholder) && !hasBeenEdited && !contentWasEdited) {
                         const requestId = ann.requestIdentifier || matchedId;
                         await deleteAnnotationSilently(idx, requestId);
+                        if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     } else if (contentWasEdited) {
                         // User typed something - preserve the content by updating the annotation
                         ann.content = currentContent;
@@ -9040,6 +9133,7 @@
                             const ann = pageAnnotations.find((a) => buildDomIdCandidates(a, pageIdx).some((c) => c.id === matchCandidate.id));
                             if (ann) {
                                 await handleAnnotationMatch(ann, pageIdx, matchCandidate.id, matchCandidate.source);
+                                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                             }
                         }
                     }
@@ -9052,6 +9146,7 @@
                         const matchCandidate = candidates.find((c) => c.domId === editingAnnotationId);
                         if (matchCandidate) {
                             await handleAnnotationMatch(ann, pageIdx, matchCandidate.id, matchCandidate.source);
+                            if (!isCurrentHistoryEpoch(requestEpoch)) return;
                             break;
                         }
                     }
@@ -9066,6 +9161,7 @@
                             const matchCandidate = candidates.find((c) => c.domId === editingAnnotationId);
                             if (matchCandidate) {
                                 await handleAnnotationMatch(ann, parseInt(searchPageIdx, 10), matchCandidate.id, matchCandidate.source);
+                                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                                 foundAnnotation = true;
                                 break;
                             }
@@ -9197,6 +9293,7 @@
         // This prevents the ResizeObserver from triggering a re-render
         // (which causes visible flicker) after the initial render.
         const _pdfLoadHandler = async () => {
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             modalElement.removeEventListener('shown.bs.modal', _pdfLoadHandler);
 
             debugLog('[FRONTEND] Modal delay complete, fetching graded PDF...');
@@ -9216,6 +9313,7 @@
                     _currentDocCtrl.activateTab('graded');
 
                     const result = await _currentDocCtrl.loadGradedPdf(resolvedAssignmentId, submissionId);
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
 
                     if (result) {
                         // Graded PDF loaded successfully — set up UI
@@ -9239,6 +9337,7 @@
                                 showOriginalBtn.classList.add('active');
                                 showAnnotatedBtn?.classList.remove('active');
                                 setTimeout(() => {
+                                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                                     _currentDocCtrl.loadOriginalPdf(resolvedAssignmentId, submissionId).catch((loadError) => {
                                         console.error('[FRONTEND] Original PDF load error:', loadError);
                                     });
@@ -9268,12 +9367,14 @@
                         if (annotationsBanner) { annotationsBanner.classList.remove('d-none'); }
 
                         setTimeout(() => {
+                            if (!isCurrentHistoryEpoch(requestEpoch)) return;
                             _currentDocCtrl.loadOriginalPdf(resolvedAssignmentId, submissionId).catch((loadError) => {
                                 console.error('[FRONTEND] Original PDF load error:', loadError);
                             });
                         }, 200);
                     }
                 } catch (error) {
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     // Error from controller — fall back to original
                     debugLog('[FRONTEND] Error from document controller, loading original...', error);
                     document.getElementById('pdfGradedTabContainer')?.classList.add('d-none');
@@ -9287,6 +9388,7 @@
                     if (annotationsBannerError) { annotationsBannerError.classList.remove('d-none'); }
 
                     setTimeout(() => {
+                        if (!isCurrentHistoryEpoch(requestEpoch)) return;
                         _currentDocCtrl.loadOriginalPdf(resolvedAssignmentId, submissionId).catch((loadError) => {
                             console.error('[FRONTEND] Original PDF load error:', loadError);
                         });
@@ -9314,6 +9416,7 @@
                             }
                         );
                     } catch (adapterErr) {
+                        if (!isCurrentHistoryEpoch(requestEpoch)) return;
                         var requiresLocalAnnotatedPdf = !!(adapterErr && adapterErr.localAnnotatedPdfRequired);
                         debugLog('[FRONTEND] Adapter fetchAnnotatedPdf failed:', adapterErr);
                         if (requiresLocalAnnotatedPdf) {
@@ -9322,6 +9425,7 @@
                     }
                 }
 
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 // Server / offline fallback only if adapter didn't provide blob
                 if (!gradedBlob) {
                     const gradedPdfUrl = isOfflineMode
@@ -9331,8 +9435,10 @@
                         headers: withCsrf(),
                         credentials: 'same-origin'
                     });
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (response.ok) {
                         gradedBlob = await response.blob();
+                        if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     }
                 }
 
@@ -9377,6 +9483,7 @@
                             showOriginalBtn.classList.add('active');
                             showAnnotatedBtn?.classList.remove('active');
                             setTimeout(() => {
+                                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                                 ensureOriginalPdfLoaded().catch((loadError) => {
                                     console.error('[FRONTEND] Original PDF load error:', loadError);
                                 });
@@ -9401,6 +9508,7 @@
                     const maxPolls = 20; // Max 2 seconds (20 * 100ms)
 
                     const checkVisibility = () => {
+                        if (!isCurrentHistoryEpoch(requestEpoch)) return;
                         pollAttempts++;
                         const width = container?.clientWidth || 0;
                         debugLog(`[FRONTEND] Poll attempt ${pollAttempts}: container width = ${width}px`);
@@ -9409,6 +9517,7 @@
                             debugLog('[FRONTEND] Container is visible! Loading graded PDF...');
                             if (window.__pdfGradedViewer) {
                                 window.__pdfGradedViewer.loadPDF(url).then(() => {
+                                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                                     // FIX Issue #31: Check if PDF is searchable after loading
                                     checkPdfSearchable();
                                 }).catch(err => console.error('[FRONTEND] PDF load error:', err));
@@ -9418,6 +9527,7 @@
                             console.error(`[FRONTEND] Container still hidden after ${maxPolls} polls! Loading anyway...`);
                             if (window.__pdfGradedViewer) {
                                 window.__pdfGradedViewer.loadPDF(url).then(() => {
+                                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                                     checkPdfSearchable();
                                 }).catch(err => console.error('[FRONTEND] PDF load error:', err));
                             }
@@ -9455,12 +9565,14 @@
 
                     // Load original PDF (original tab is already active)
                     setTimeout(() => {
+                        if (!isCurrentHistoryEpoch(requestEpoch)) return;
                         ensureOriginalPdfLoaded().catch((loadError) => {
                             console.error('[FRONTEND] Original PDF load error:', loadError);
                         });
                     }, 200);
                 }
             } catch (error) {
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 // Error fetching graded PDF - load original instead
                 debugLog('[FRONTEND] Error fetching graded PDF, loading original...', error);
                 const gradedTabContainer = document.getElementById('pdfGradedTabContainer');
@@ -9483,6 +9595,7 @@
 
                 // Load original PDF (original tab is already active)
                 setTimeout(() => {
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     ensureOriginalPdfLoaded().catch((loadError) => {
                         console.error('[FRONTEND] Original PDF load error:', loadError);
                     });
@@ -10024,6 +10137,7 @@
      * @returns {Promise<void>}
      */
     window.loadPdfForComparison = async function (url) {
+        const requestEpoch = currentHistoryEpoch();
         if (!url) {
             console.error('[Comparison] No PDF URL provided');
             return;
@@ -10043,7 +10157,9 @@
         try {
             // Load the PDF
             await waitForDrawingPersistence();
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             await viewer.loadPDF(url);
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
 
             // Update comparison mode page info
             if (window.PdfPreviewModalComparison) {

@@ -571,6 +571,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             return operation;
         }
 
+        // Conflict recovery discards only ambiguous snapshots; preserving order and redo is the caller's job.
+        function removeUndoOperations(matches) {
+            _undoStack = _undoStack.filter(function (operation) { return !matches(operation); });
+            _syncAnnotationsState({ undoStack: _undoStack.slice() });
+        }
+
         function clearUndoStack() {
             _undoStack = [];
             _syncAnnotationsState({ undoStack: [] });
@@ -1044,6 +1050,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 data = await request(currentTarget.apiIdentifier, step.updateData);
                 if (!_isCurrentEpoch(requestEpoch)) return;
             } catch (error) {
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 if (_isMissingAnnotationFailure(error)) {
                     return _dropMissingHighlightUndo();
                 }
@@ -1705,6 +1712,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         }
 
         async function cancelAnnotationEdit(pageIdx, identifier) {
+            var requestEpoch = _currentHistoryEpoch();
             if (identifier) {
                 if (pageIdx === null || Number.isNaN(pageIdx)) {
                     if (_h.showToast) {
@@ -1731,6 +1739,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     }
                     if (_h.deleteAnnotationSilently) {
                         await _h.deleteAnnotationSilently(pageIdx, (annotation && annotation.requestIdentifier) || identifier);
+                        if (!_isCurrentEpoch(requestEpoch)) return;
                     }
                     _setEditingAnnotationId(null);
                     _syncAnnotationsState({ editingId: null });
@@ -2194,6 +2203,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         }
 
         function beginEdit(pageIdx, identifier, domId) {
+            var requestEpoch = _currentHistoryEpoch();
             var ann = _h.findAnnotationEntry ? _h.findAnnotationEntry(pageIdx, identifier) : null;
             if (ann && ann._originalContent === undefined) {
                 ann._originalContent = ann.content || '';
@@ -2232,6 +2242,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
 
             setTimeout(function () {
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 var stableId = _h.normalizeAnnotationIdentifierValue
                     ? _h.normalizeAnnotationIdentifierValue(identifier)
                     : identifier;
@@ -2412,6 +2423,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         if (optimisticAnnotation._isTemporary && !hasEditedFlags && !contentWasEdited && (neverEdited || isPlaceholder)) {
                             var requestId = optimisticAnnotation.requestIdentifier || identifier;
                             await deleteAnnotationSilently(targetPage, requestId);
+                            if (!_isCurrentEpoch(requestEpoch)) return;
                             _setEditingId(null);
                             _scheduleAnnotationUpdate();
                         } else if (contentWasEdited && currentContent) {
@@ -2496,6 +2508,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                                         optimisticAnnotation.requestIdentifier ||
                                         identifier;
                                     await deleteAnnotationSilently(targetPage, latestRequestId);
+                                    if (!_isCurrentEpoch(requestEpoch)) return;
                                     _setEditingId(null);
                                     _scheduleAnnotationUpdate();
                                 }
@@ -2796,6 +2809,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     textarea.removeEventListener('keydown', textarea._escapeHandler, true);
                 }
                 await deleteAnnotationSilently(pageIdx, requestIdentifier || stableIdentifier);
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 _setEditingId(null);
                 _renderAfterMutation();
                 return Promise.resolve();
@@ -2875,7 +2889,6 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
 
                 _setEditingId(null);
-                _savingAnnotationId = null;
                 markLocalChange();
                 _renderAfterMutation();
                 if (originalSource === 'AI' && data.annotation && data.annotation.source === 'HUMAN' && _h.showToast) {
@@ -2883,7 +2896,6 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
             } catch (error) {
                 if (_ignoreMutationFailure(error, requestEpoch)) return;
-                _savingAnnotationId = null;
                 console.error('[ANNOTATION-CTRL] Error saving annotation:', error);
                 var currentAnnotations = _getAnnotationsData();
                 if (originalAnn && currentAnnotations[pageIdx]) {
@@ -2897,6 +2909,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     _h.showToast('error', error.message || 'Failed to save annotation. Please try again.');
                 }
             } finally {
+                if (_savingAnnotationId === currentEditingId) _savingAnnotationId = null;
                 if (_isCurrentEpoch(requestEpoch)) {
                     saveBtn.disabled = false;
                     if (spinner) {
@@ -3318,6 +3331,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             peekUndoOperation: peekUndoOperation,
             popUndoOperation: popUndoOperation,
             clearUndoStack: clearUndoStack,
+            removeUndoOperations: removeUndoOperations,
             persistHighlightExtend: persistHighlightExtend,
             performHighlightExtendUndo: performHighlightExtendUndo,
             performHighlightExtendRedo: performHighlightExtendRedo,
