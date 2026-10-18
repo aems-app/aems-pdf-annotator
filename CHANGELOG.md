@@ -6,9 +6,15 @@ All notable changes to `aems-pdf-annotator` are recorded here. Format follows [K
 
 ### Added
 
-- Redo in the review modal (issue #540). Ctrl+Y and Ctrl+Shift+Z (Cmd+Y and Cmd+Shift+Z on macOS) re-apply the last undone edit, priority change, move, highlight resize, delete or pen-stroke delete, with the same request as the original action, so the annotation, its ownership included, returns to its post-action state. Any new operation, clearing the undo history, and opening another document clear the redo history. Inside text fields the browser keeps its own redo. A redo whose request fails stays queued, and one whose annotation no longer exists is dropped.
+- Redo in the review modal (issue #540). Ctrl+Y and Ctrl+Shift+Z (Cmd+Y and Cmd+Shift+Z on macOS) re-apply the last undone edit, priority change, move, highlight resize, delete, pen-stroke delete, or creation of a pen stroke or text box, with the same request as the original action, so the annotation, its ownership included, returns to its post-action state. Any new operation, clearing the undo history, and opening another document clear the redo history. Inside text fields the browser keeps its own redo. A redo whose request fails or is refused stays queued, and one whose annotation no longer exists is dropped.
+- Ctrl+Z undoes creating a pen stroke or a text box. It deletes the markup the way the Delete key does, and redo brings it back as it was when undone.
 
 ### Fixed
+
+- An undo or redo the server refuses no longer counts as done: nothing changes on the page, and it can be retried. A pen-stroke deletion refused on redo no longer disappears from the page, and a later undo no longer creates a duplicate.
+- An undo or redo still in flight when another submission opens no longer changes that submission or its history.
+- An operation completed while an undo or redo is in flight is recorded and can be undone. It clears redo, and the late step goes below it.
+- A priority change the server stores without echoing the annotation no longer shows it as transferred to the teacher.
 
 - Ctrl+Z after opening another submission in the review modal no longer replays the previous submission's last operation against the new one. The modal's undo history now starts empty for each document, as the annotation controller's already did.
 - Split-view comments now move to the teacher panel after a text-anchored ownership transfer, and back to the AI panel when undoing a same-page ownership move. PDF author naming is unchanged.

@@ -4156,6 +4156,8 @@
         const copy = Object.assign({}, body);
         if (Array.isArray(copy.rect)) copy.rect = copy.rect.slice();
         if (Array.isArray(copy.quads)) copy.quads = cloneHighlightQuads(copy.quads);
+        // Drawing points are [x, y] pairs: arrays of arrays, cloned the way quads are.
+        if (Array.isArray(copy.points)) copy.points = cloneHighlightQuads(copy.points);
         return copy;
     }
 
@@ -4595,6 +4597,82 @@
         }
     }
 
+    // The create request that rebuilds a pen stroke or text box as the page shows it now, which can differ from
+    // when it was created (a text box's text, a moved stroke). A stored rect is top-left; the request takes PDF
+    // space, while drawing points are stored in PDF space already. The source is named, so the markup keeps
+    // its ownership.
+    async function markupCreateRequest(annotation, pageIdx) {
+        const body = {
+            page_index: pageIdx,
+            content: annotation.content || '',
+            type: annotation.type,
+            color: deriveAnnotationPriority(annotation) || 'amber',
+            source: resolveAnnotationSource(annotation),
+        };
+        if (annotation.stroke_color_rgb) body.stroke_color_rgb = annotation.stroke_color_rgb;
+        if (annotation.type === 'drawing') {
+            body.drawing_style = annotation.drawing_style;
+            body.points = annotation.points;
+            body.stroke_width = annotation.stroke_width;
+            body.stroke_opacity = annotation.stroke_opacity;
+        } else {
+            body.rect = await convertHighlightTopLeftRectToPdf(annotation.rect, pageIdx);
+        }
+        return cloneHistoryBody(body);
+    }
+
+    function refreshMarkupPage(pageIdx) {
+        refreshMarkupFromAnnotations();
+        renderAnnotationsForPage(pageIdx + 1, true);
+        renderAnnotationsList();
+        markLocalAnnotationChange();
+    }
+
+    // Undo of a pen stroke or text box the user created: the Delete key's request and local removal. The redo
+    // then recreates it from the request recorded here, as it was when undone.
+    async function undoCreateMarkupOperation(operation, step) {
+        const annotationId = operation.annotationId;
+        const annotation = findAnnotationEntry(operation.pageIdx, annotationId);
+        if (!annotation) {
+            dropMissingHighlightUndo();
+            return HISTORY_DROPPED;
+        }
+        const recreateRequest = await markupCreateRequest(annotation, operation.pageIdx);
+        try {
+            const data = await step.remove(buildApiAnnotationIdentifier({ identifier: annotationId }) || annotationId);
+            if (!data || !data.success) {
+                return historyRequestFailure(data || {}, 'Failed to undo creation');
+            }
+            removeAnnotationEntryLocal(operation.pageIdx, annotationId);
+            refreshMarkupPage(operation.pageIdx);
+            operation.redoBody = recreateRequest;
+            return HISTORY_APPLIED;
+        } catch (undoErr) {
+            console.error('Failed to undo markup creation:', undoErr);
+            return historyRequestFailure(undoErr, 'Failed to undo creation');
+        }
+    }
+
+    // Redo of a markup creation: the recorded create request. The markup comes back under a new identifier,
+    // which the operation takes, so its next undo deletes the recreated markup.
+    async function redoCreateMarkupOperation(operation, step) {
+        try {
+            const data = await step.create(cloneHistoryBody(operation.redoBody));
+            if (!data || !data.success) {
+                return historyRequestFailure(data || {}, 'Failed to redo creation');
+            }
+            if (data.annotation) {
+                upsertAnnotationEntryLocal(data.annotation, operation.pageIdx);
+                operation.annotationId = data.annotation.stable_id || data.annotation.xref;
+            }
+            refreshMarkupPage(operation.pageIdx);
+            return HISTORY_APPLIED;
+        } catch (redoErr) {
+            console.error('Failed to redo markup creation:', redoErr);
+            return historyRequestFailure(redoErr, 'Failed to redo creation');
+        }
+    }
+
     function undoOperation(operation, step) {
         switch (operation.type) {
         case 'delete':
@@ -4608,15 +4686,17 @@
             return applyFieldOperation(operation, false, step);
         case 'delete-markup':
             return undoDeleteMarkupOperation(operation, step);
+        case 'create-drawing':
+        case 'create-textbox':
+            return undoCreateMarkupOperation(operation, step);
         default:
-            // Recorded but not undoable (create-drawing, create-textbox): consumed silently.
+            // A type this modal does not know how to undo: consumed silently.
             return HISTORY_DROPPED;
         }
     }
 
     // The redo of each operation type that has one, and whether an undone operation has what that redo needs
-    // recorded by the original action or by its undo. Types without an entry, such as create-drawing and
-    // create-textbox (whose undo is a no-op), never reach the redo stack.
+    // recorded by the original action or by its undo. Types without an entry never reach the redo stack.
     const REDO_STEPS = {
         edit: { isReady: () => true, redo: (operation, step) => applyFieldOperation(operation, true, step) },
         priority: { isReady: () => true, redo: (operation, step) => applyFieldOperation(operation, true, step) },
@@ -4631,6 +4711,8 @@
         },
         delete: { isReady: (operation) => !!operation.redoTarget, redo: redoDeleteOperation },
         'delete-markup': { isReady: (operation) => !!operation.redoTarget, redo: redoDeleteMarkupOperation },
+        'create-drawing': { isReady: (operation) => !!operation.redoBody, redo: redoCreateMarkupOperation },
+        'create-textbox': { isReady: (operation) => !!operation.redoBody, redo: redoCreateMarkupOperation },
     };
 
     function canRedoOperation(operation) {
