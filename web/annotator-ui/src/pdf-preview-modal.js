@@ -3254,21 +3254,29 @@
 
                 // An inline edit is undoable exactly like a sidebar edit (issue #462): the same 'edit' operation,
                 // which performUndo replays by restoring the previous content and, after an ownership transfer,
-                // the previous source.
-                const oldSource = resolveAnnotationSource(annotation || {});
-                const newSource = resolveAnnotationSource(data.annotation);
-                pushUndoOperation({
-                    type: 'edit',
-                    identifier,
-                    xref: marker.dataset.annotationXref || null,
-                    requestId: marker.dataset.annotationRequestId || null,
-                    pageIdx,
-                    oldContent: (annotation?.content ?? originalFullText).trim(),
-                    newContent: trimmedContent,
-                    oldSource,
-                    newSource,
-                    isOwnershipTransfer: oldSource === 'AI' && newSource === 'HUMAN',
-                });
+                // the previous source. The old text is the last PERSISTED one (_originalContent): content can
+                // hold a draft (the priority path keeps it while editing). A save that persisted nothing new,
+                // such as the blur handler re-saving what the sidebar Save already stored, pushes no entry.
+                const persistedBefore = typeof annotation?._originalContent === 'string'
+                    ? annotation._originalContent
+                    : originalFullText;
+                const oldContent = persistedBefore.trim();
+                if (oldContent !== trimmedContent) {
+                    const oldSource = resolveAnnotationSource(annotation || {});
+                    const newSource = resolveAnnotationSource(data.annotation);
+                    pushUndoOperation({
+                        type: 'edit',
+                        identifier,
+                        xref: marker.dataset.annotationXref || null,
+                        requestId: marker.dataset.annotationRequestId || null,
+                        pageIdx,
+                        oldContent,
+                        newContent: trimmedContent,
+                        oldSource,
+                        newSource,
+                        isOwnershipTransfer: oldSource === 'AI' && newSource === 'HUMAN',
+                    });
+                }
 
                 markLocalAnnotationChange(); // Prevent polling reload
             }
