@@ -542,6 +542,15 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             return typeof _h.getHistoryEpoch === 'function' ? _h.getHistoryEpoch() : undefined;
         }
 
+        function _isCurrentEpoch(epoch) {
+            return typeof _h.isCurrentHistoryEpoch !== 'function' || _h.isCurrentHistoryEpoch(epoch);
+        }
+
+        function _ignoreMutationFailure(error, epoch) {
+            return !_isCurrentEpoch(epoch) || (typeof _h.isConcurrentAnnotationWrite === 'function'
+                && _h.isConcurrentAnnotationWrite(error));
+        }
+
         function getUndoStack() {
             return _undoStack;
         }
@@ -850,6 +859,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         }
 
         async function persistHighlightExtend(marker, annotation, payload) {
+            var requestEpoch = _currentHistoryEpoch();
             payload = payload || {};
             if (!_h.buildApiAnnotationIdentifier || !_h.updateAnnotationRequest) {
                 throw new Error('Annotation update helpers are unavailable.');
@@ -894,8 +904,15 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 anchor_text: payload.anchorText,
                 source: 'HUMAN',
             };
-            var requestEpoch = _currentHistoryEpoch();
-            var data = await _h.updateAnnotationRequest(apiIdentifier, requestBody);
+            if (!_isCurrentEpoch(requestEpoch)) return;
+            var data;
+            try {
+                data = await _h.updateAnnotationRequest(apiIdentifier, requestBody);
+            } catch (error) {
+                if (_ignoreMutationFailure(error, requestEpoch)) return { success: false, stale: true };
+                throw error;
+            }
+            if (!_isCurrentEpoch(requestEpoch)) return;
             if (!data || !data.success) {
                 return data || { success: false };
             }
@@ -999,6 +1016,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         // options.request replaces _h.updateAnnotationRequest for this step: the host passes one that sends
         // nothing, and resolves nothing, once the document the step began on has closed (issue #540).
         async function _applyHighlightExtendStep(operation, isRedo, options) {
+            var requestEpoch = _currentHistoryEpoch();
             var direction = isRedo ? 'redo' : 'undo';
             // A redo needs the request it replays; an extend recorded without one cannot be redone.
             if (!operation || operation.type !== 'highlight-extend' || (isRedo && !operation.redoBody)) {
@@ -1017,11 +1035,14 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
 
             var step = await _highlightExtendStep(operation, isRedo);
+            if (!_isCurrentEpoch(requestEpoch)) return;
             var request = (options && options.request) || _h.updateAnnotationRequest;
 
             var data;
             try {
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 data = await request(currentTarget.apiIdentifier, step.updateData);
+                if (!_isCurrentEpoch(requestEpoch)) return;
             } catch (error) {
                 if (_isMissingAnnotationFailure(error)) {
                     return _dropMissingHighlightUndo();
@@ -2097,6 +2118,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         }
 
         async function loadAnnotations(submissionId, assignmentId) {
+            var requestEpoch = _currentHistoryEpoch();
             if (_destroyed) {
                 return Promise.resolve();
             }
@@ -2106,7 +2128,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             // external reload cannot race either a pointer-down stroke or the
             // create request that publishes a just-finished stroke.
             await waitForDrawingIdle();
-            if (_destroyed) return Promise.resolve();
+            if (_destroyed || !_isCurrentEpoch(requestEpoch)) return Promise.resolve();
 
             var sub = submissionId || _getCurrentSubmissionId();
             var asgn = assignmentId || _getCurrentAssignmentId();
@@ -2124,6 +2146,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 var data = _h.listAnnotationsRequest
                     ? await _h.listAnnotationsRequest(sub, asgn)
                     : { success: false, annotations: {} };
+                if (!_isCurrentEpoch(requestEpoch)) return;
 
                 if (data && data.success) {
                     var normalizedData = _h.normalizeAnnotationsPayload
@@ -2134,6 +2157,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                     if (_h.cleanupPlaceholderAnnotations) {
                         await _h.cleanupPlaceholderAnnotations();
+                        if (!_isCurrentEpoch(requestEpoch)) return;
                     }
 
                     if (listEl) {
@@ -2160,6 +2184,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
                 return data;
             } catch (error) {
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 console.error('Error loading annotations:', error);
                 if (listEl) {
                     listEl.innerHTML = '<div class="text-danger small text-center p-3">Error loading annotations</div>';
@@ -2221,6 +2246,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         }
 
         async function createTemporaryAnnotation(rect, pageIdx, options) {
+            var requestEpoch = _currentHistoryEpoch();
             if (!_getCurrentSubmissionId()) {
                 if (_h.showToast) {
                     _h.showToast('error', 'Select a submission first.');
@@ -2301,6 +2327,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             _renderAfterMutation();
 
             setTimeout(function () {
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 if (_getEditingAnnotationId() === null || !_h.escapeCssAttribute) {
                     return;
                 }
@@ -2345,6 +2372,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }, 50);
 
             setTimeout(function () {
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 var requestIdentifier = optimisticAnnotation.requestIdentifier || identifier;
                 var textarea = document.getElementById('edit-annotation-text-' + identifier)
                     || document.getElementById('edit-annotation-text-' + requestIdentifier)
@@ -2394,6 +2422,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                             _scheduleAnnotationUpdate();
                         }
                     } catch (err) {
+                        if (_ignoreMutationFailure(err, requestEpoch)) return;
                         console.error('[ANNOTATION-CTRL] Escape handler error:', err);
                         _setEditingId(null);
                         _scheduleAnnotationUpdate();
@@ -2425,6 +2454,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     }
 
                     setTimeout(async function () {
+                        if (!_isCurrentEpoch(requestEpoch)) return;
                         try {
                             // Ignore blur events caused by rerender/removal of the
                             // old temporary textarea after the create POST returns.
@@ -2471,6 +2501,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                                 }
                             }
                         } catch (err) {
+                            if (_ignoreMutationFailure(err, requestEpoch)) return;
                             console.error('[ANNOTATION-CTRL] Blur handler error:', err);
                             _setEditingId(null);
                             _scheduleAnnotationUpdate();
@@ -2492,6 +2523,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         throw new Error('Annotation create request helper is unavailable.');
                     }
 
+                    if (!_isCurrentEpoch(requestEpoch)) return;
                     var data = await _h.createAnnotationRequest({
                         content: 'New comment...',
                         page_index: targetPage,
@@ -2500,6 +2532,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         rect: apiRect,
                         canvas_user_name: _canvasUserName || null,
                     });
+                    if (!_isCurrentEpoch(requestEpoch)) return;
 
                     if (abortController.signal.aborted) {
                         return;
@@ -2596,6 +2629,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         _renderAfterMutation({ renderOverlays: false });
                         if (draftContent !== null && draftContent !== undefined) {
                             setTimeout(function () {
+                                if (!_isCurrentEpoch(requestEpoch)) return;
                                 var restoredSidebarTextarea = document.getElementById('edit-annotation-text-' + restoreIdentifier)
                                     || document.querySelector('.auto-resize-textarea[id^="edit-annotation-text-"]');
                                 if (restoredSidebarTextarea) {
@@ -2615,6 +2649,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     } else {
                         _renderAfterMutation();
                         setTimeout(function () {
+                            if (!_isCurrentEpoch(requestEpoch)) return;
                             if (!restoreIdentifier) {
                                 return;
                             }
@@ -2627,6 +2662,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                                 return;
                             }
                             setTimeout(function () {
+                                if (!_isCurrentEpoch(requestEpoch)) return;
                                 var restoredSidebarTextarea = document.getElementById('edit-annotation-text-' + restoreIdentifier)
                                     || document.querySelector('.auto-resize-textarea[id^="edit-annotation-text-"]');
                                 if (restoredSidebarTextarea) {
@@ -2643,6 +2679,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         }, 0);
                     }
                 } catch (error) {
+                    if (_ignoreMutationFailure(error, requestEpoch)) return;
                     if (error && error.name === 'AbortError') {
                         return;
                     }
@@ -2665,8 +2702,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         _h.showToast('error', error.message || 'Failed to create annotation.');
                     }
                 } finally {
-                    delete optimisticAnnotation._abortController;
-                    delete optimisticAnnotation._createPromise;
+                    if (_isCurrentEpoch(requestEpoch)) {
+                        delete optimisticAnnotation._abortController;
+                        delete optimisticAnnotation._createPromise;
+                    }
                 }
             })();
 
@@ -2674,6 +2713,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         }
 
         async function saveAnnotationEdit(identifier, sourceButton) {
+            var requestEpoch = _currentHistoryEpoch();
             var stableIdentifier = _h.normalizeAnnotationIdentifierValue
                 ? _h.normalizeAnnotationIdentifierValue(identifier)
                 : identifier;
@@ -2732,7 +2772,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             if (originalAnn && originalAnn._createPromise) {
                 try {
                     await originalAnn._createPromise;
+                    if (!_isCurrentEpoch(requestEpoch)) return;
                 } catch (error) {
+                    if (_ignoreMutationFailure(error, requestEpoch)) return;
                     console.error('[ANNOTATION-CTRL] Initial create failed before save:', error);
                     if (_h.showToast) {
                         _h.showToast('error', 'Please wait for comment creation to finish, then try again.');
@@ -2783,8 +2825,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     xref: existingXref,
                     requestId: requestIdentifier,
                 });
-                var requestEpoch = _currentHistoryEpoch();
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 var data = await _h.updateAnnotationRequest(apiIdentifier, { content: newContent });
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 if (!data.success || !data.annotation) {
                     throw new Error((data && data.error) || 'Update failed');
                 }
@@ -2839,6 +2882,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     _h.showToast('info', (_h.translatePdfPreviewText ? _h.translatePdfPreviewText('Annotation ownership transferred to you') : 'Annotation ownership transferred to you'));
                 }
             } catch (error) {
+                if (_ignoreMutationFailure(error, requestEpoch)) return;
                 _savingAnnotationId = null;
                 console.error('[ANNOTATION-CTRL] Error saving annotation:', error);
                 var currentAnnotations = _getAnnotationsData();
@@ -2853,18 +2897,21 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     _h.showToast('error', error.message || 'Failed to save annotation. Please try again.');
                 }
             } finally {
-                saveBtn.disabled = false;
-                if (spinner) {
-                    spinner.classList.add('d-none');
-                }
-                if (btnText) {
-                    btnText.textContent = 'Save';
+                if (_isCurrentEpoch(requestEpoch)) {
+                    saveBtn.disabled = false;
+                    if (spinner) {
+                        spinner.classList.add('d-none');
+                    }
+                    if (btnText) {
+                        btnText.textContent = 'Save';
+                    }
                 }
             }
             return Promise.resolve();
         }
 
         async function _revertAnnotationToAi(pageIdx, identifier, sourceButton) {
+            var requestEpoch = _currentHistoryEpoch();
             // Hosted Canvas server-mode only — gated by host capability
             // advertised through `_h.hostAdvertisesCapability('revertToAi')`.
             // Posts to the revert-to-ai endpoint, reloads annotations so
@@ -2902,24 +2949,31 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 stable = _h.normalizeAnnotationIdentifierValue
                     ? _h.normalizeAnnotationIdentifierValue(stable || identifier)
                     : (stable || identifier);
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 var data = await _h.revertAnnotationToAiRequest(stable || identifier);
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 if (!data || data.success !== true) {
                     throw new Error((data && (data.error || data.detail)) || 'Revert failed');
                 }
                 if (_h.showToast) _h.showToast('success', 'Annotation reverted to AI.');
                 if (typeof _h.loadAnnotations === 'function') {
-                    try { await _h.loadAnnotations(); } catch (e) { /* non-fatal */ }
+                    try { await _h.loadAnnotations(); } catch (e) {
+                        if (_ignoreMutationFailure(e, requestEpoch)) return; /* non-fatal */ }
                 }
             } catch (err) {
+                if (_ignoreMutationFailure(err, requestEpoch)) return;
                 if (_h.showToast) _h.showToast('error', err && err.message ? err.message : 'Revert failed.');
             } finally {
-                if (sourceButton) sourceButton.disabled = false;
-                if (spinner) spinner.classList.add('d-none');
-                if (iconEl) iconEl.classList.remove('d-none');
+                if (_isCurrentEpoch(requestEpoch)) {
+                    if (sourceButton) sourceButton.disabled = false;
+                    if (spinner) spinner.classList.add('d-none');
+                    if (iconEl) iconEl.classList.remove('d-none');
+                }
             }
         }
 
         async function deleteAnnotation(pageIdx, identifier, sourceButton) {
+            var requestEpoch = _currentHistoryEpoch();
             var stableIdentifier = _h.normalizeAnnotationIdentifierValue
                 ? _h.normalizeAnnotationIdentifierValue(identifier)
                 : identifier;
@@ -2970,10 +3024,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     var cancelBtn = actionRow.querySelector('.confirm-delete-cancel');
 
                     yesBtn.addEventListener('click', async function () {
+                        if (!_isCurrentEpoch(requestEpoch)) return;
                         sourceButton.dataset.confirmed = 'true';
                         await deleteAnnotation(pageIdx, identifier, sourceButton);
                     });
                     cancelBtn.addEventListener('click', function () {
+                        if (!_isCurrentEpoch(requestEpoch)) return;
                         actionRow.innerHTML = originalHtml;
                         renderSidebar();
                     });
@@ -3040,8 +3096,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     xref: existingXref,
                     requestId: requestIdentifier,
                 });
-                var requestEpoch = _currentHistoryEpoch();
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 var data = await _h.deleteAnnotationRequest(apiIdentifier);
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 if (!data.success) {
                     throw new Error((data && data.error) || 'Delete failed');
                 }
@@ -3077,6 +3134,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 markLocalChange();
                 _renderAfterMutation();
             } catch (error) {
+                if (_ignoreMutationFailure(error, requestEpoch)) return;
                 console.error('[ANNOTATION-CTRL] Error deleting annotation:', error);
                 var annotations = _getAnnotationsData();
                 if (originalAnn && annotations[pageIdx]) {
@@ -3095,23 +3153,26 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     _h.showToast('error', error.message || 'Failed to delete annotation. Please try again.');
                 }
             } finally {
-                if (deleteBtn) {
-                    deleteBtn.disabled = false;
-                    var spinner = deleteBtn.querySelector('.spinner-border');
-                    if (spinner) {
-                        spinner.classList.add('d-none');
+                if (_isCurrentEpoch(requestEpoch)) {
+                    if (deleteBtn) {
+                        deleteBtn.disabled = false;
+                        var spinner = deleteBtn.querySelector('.spinner-border');
+                        if (spinner) {
+                            spinner.classList.add('d-none');
+                        }
+                        var icon = deleteBtn.querySelector('i');
+                        if (icon) {
+                            icon.style.display = '';
+                        }
+                        delete deleteBtn.dataset.confirmed;
                     }
-                    var icon = deleteBtn.querySelector('i');
-                    if (icon) {
-                        icon.style.display = '';
-                    }
-                    delete deleteBtn.dataset.confirmed;
                 }
             }
             return Promise.resolve();
         }
 
         async function deleteAnnotationSilently(pageIdx, identifier) {
+            var requestEpoch = _currentHistoryEpoch();
             var stableIdentifier = _h.normalizeAnnotationIdentifierValue
                 ? _h.normalizeAnnotationIdentifierValue(identifier)
                 : identifier;
@@ -3152,7 +3213,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             if (annotationEntry && annotationEntry._createPromise) {
                 try {
                     await annotationEntry._createPromise;
+                    if (!_isCurrentEpoch(requestEpoch)) return;
                 } catch (error) {
+                    if (_ignoreMutationFailure(error, requestEpoch)) return;
                     debugLog('[ANNOTATION-CTRL] Pending create failed before silent delete:', error);
                 }
             }
@@ -3184,7 +3247,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     return Promise.resolve();
                 }
 
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 var data = await _h.deleteAnnotationRequest(apiIdentifier);
+                if (!_isCurrentEpoch(requestEpoch)) return;
                 if (data.success) {
                     if (annotationsData[pageIdx]) {
                         var removalIdx = _h.findAnnotationIndex ? _h.findAnnotationIndex(pageIdx, stableIdentifier) : -1;
@@ -3211,6 +3276,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     _renderAfterMutation();
                 }
             } catch (error) {
+                if (_ignoreMutationFailure(error, requestEpoch)) return;
                 console.error('[ANNOTATION-CTRL] Error deleting temporary annotation:', error);
             }
             return Promise.resolve();

@@ -1543,9 +1543,82 @@
      * @returns {Promise<Object>} Parsed JSON response with updated annotation
      */
     async function updateAnnotationRequest(annotationId, body) {
-        return _requireAnnotationAdapter().updateAnnotation(currentAssignmentId, currentSubmissionId, annotationId, body, {
-            offline: _isOfflineMode()
-        });
+        const epoch = currentHistoryEpoch();
+        const local = Object.keys(annotationsData)
+            .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
+        const identity = local ? buildApiAnnotationIdentifier({
+            identifier: local.stable_id || local.id || local.identifier, xref: local.xref,
+        }) : annotationId;
+        const key = `${epoch}:${identity}`;
+        let writes = annotationWrites.get(key);
+        if (!writes) {
+            writes = { pending: 0, version: 0, conflicted: false };
+            annotationWrites.set(key, writes);
+        }
+        writes.conflicted ||= writes.pending > 0;
+        writes.pending += 1;
+        writes.version += 1;
+        try {
+            let data;
+            let failure;
+            try {
+                data = await _requireAnnotationAdapter().updateAnnotation(currentAssignmentId, currentSubmissionId, annotationId, body, {
+                    offline: _isOfflineMode()
+                });
+            } catch (error) {
+                failure = error;
+            }
+            if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+            writes.version += 1;
+            if (writes.conflicted) {
+                await refreshConflictingAnnotation(identity, epoch, writes);
+                throw CONCURRENT_ANNOTATION_WRITE;
+            }
+            if (failure) throw failure;
+            return data;
+        } finally {
+            writes.pending -= 1;
+            if (!writes.pending) annotationWrites.delete(key);
+        }
+    }
+
+    // Without server revisions or before-images, overlapping writes cannot supply trustworthy undo snapshots.
+    // Read the server's current annotation instead of applying either response, and discard ambiguous history.
+    async function refreshConflictingAnnotation(annotationId, epoch, writes) {
+        undoStack = [];
+        clearRedoStack();
+        if (_currentAnnotationCtrl?.clearUndoStack) _currentAnnotationCtrl.clearUndoStack();
+        historySequence += 1;
+        try {
+            let data;
+            let version;
+            do {
+                version = writes.version;
+                data = await listAnnotationsRequest();
+                if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+            } while (version !== writes.version);
+            if (!data?.success || !data.annotations) throw new Error('Annotation refresh failed');
+            const current = Object.values(data.annotations).flat().find((ann) =>
+                buildApiAnnotationIdentifier({ identifier: ann.stable_id || ann.id, xref: ann.xref }) === annotationId);
+            // Replace just this annotation, including its persisted-content snapshot and ownership.
+            const affectedPages = new Set(Object.keys(annotationsData).map(Number));
+            Object.keys(annotationsData).forEach((pageIdx) => removeAnnotationEntryLocal(Number(pageIdx), annotationId));
+            if (current) {
+                upsertAnnotationEntryLocal(current, current.page_index);
+                affectedPages.add(current.page_index);
+            }
+            refreshMarkupFromAnnotations();
+            renderAnnotationsList();
+            affectedPages.forEach((pageIdx) => renderAnnotationsForPage(pageIdx + 1, true));
+            markLocalAnnotationChange();
+            if (!writes.notified) {
+                writes.notified = true;
+                showToast('error', translatePdfPreviewText('Concurrent annotation changes refreshed; undo history was cleared'));
+            }
+        } catch (_error) {
+            if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+            showToast('error', translatePdfPreviewText('Could not refresh concurrent annotation changes; undo history was cleared. Reload the document.'));
+        }
     }
 
     /**
@@ -3042,6 +3115,7 @@
                 marker.style.backgroundColor = `rgba(${r}, ${g}, ${b}, 0.25)`;
 
                 // Make API call in background without awaiting re-render
+                const requestEpoch = currentHistoryEpoch();
                 (async () => {
                     try {
                         const apiIdentifier = buildApiAnnotationIdentifier({
@@ -3053,12 +3127,14 @@
 
                         await updateAnnotationRequest(apiIdentifier, { color: priority });
 
+                        if (!isCurrentHistoryEpoch(requestEpoch)) return;
                         markLocalAnnotationChange();
                     } catch (error) {
+                        if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
                         console.error('Failed to update priority:', error);
                     } finally {
                         // Clear the flag after a delay
-                        setTimeout(() => { _updatingPriorityId = null; }, 300);
+                        setTimeout(() => { if (isCurrentHistoryEpoch(requestEpoch)) _updatingPriorityId = null; }, 300);
                     }
                 })();
 
@@ -3155,6 +3231,7 @@
 
     // Save edits and collapse label
     async function saveAndCollapseInlineLabel(label, newContent) {
+        const requestEpoch = currentHistoryEpoch();
         if (!label || !label.classList.contains('label-expanded')) {
             return;
         }
@@ -3217,9 +3294,9 @@
                 xref: marker.dataset.annotationXref,
                 requestId: marker.dataset.annotationRequestId,
             });
-
-            const requestEpoch = currentHistoryEpoch();
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             const data = await updateAnnotationRequest(apiIdentifier, { content: trimmedContent });
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
 
             if (data.success && data.annotation) {
                 // The undo entry's old text is read now, against the entry as it stands when the response arrives
@@ -3289,6 +3366,7 @@
                 markLocalAnnotationChange(); // Prevent polling reload
             }
         } catch (error) {
+            if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
             console.error('Error saving inline annotation:', error);
         }
 
@@ -3308,6 +3386,7 @@
     // Advances whenever another document opens: a history step that began under an earlier epoch neither sends
     // its request nor applies its answer (issue #540).
     let historyDocumentEpoch = 0;
+    const annotationWrites = new Map();
     // Numbers every new operation in the order it was recorded. A step that puts an operation back goes below
     // any operation numbered after it, and a step learns from it whether a new operation arrived meanwhile.
     let historySequence = 0;
@@ -3748,19 +3827,18 @@
     function wireMarkupModuleCallbacks() {
         if (DrawingCanvas) {
             DrawingCanvas.onStrokeComplete = function (pageIdx, stroke) {
+                var requestEpoch = currentHistoryEpoch();
                 var viewer = window.__pdfGradedViewer;
                 if (!viewer) return;
 
                 var saveToken = beginDrawingSave();
-                var requestEpoch;
                 resolveDrawingViewport(viewer, stroke.pageIdx + 1).then(function (viewport) {
-                    if (!viewport) return null;
+                    if (!viewport || !isCurrentHistoryEpoch(requestEpoch)) return null;
 
                     var pdfPoints = stroke.points.map(function (pt) {
                         return viewport.convertToPdfPoint(pt.x, pt.y);
                     });
 
-                    requestEpoch = currentHistoryEpoch();
                     return createAnnotationRequest({
                         page_index: pageIdx,
                         content: '',
@@ -3774,6 +3852,7 @@
                     });
                 })
                 .then(function (data) {
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (data && data.success && data.annotation) {
                         stroke.annotationId = data.annotation.stable_id || data.annotation.xref;
                         upsertAnnotationEntryLocal(data.annotation, pageIdx);
@@ -3786,6 +3865,7 @@
                     }
                 })
                 .catch(function (err) {
+                    if (!isCurrentHistoryEpoch(requestEpoch) || err === CONCURRENT_ANNOTATION_WRITE) return;
                     console.error('Failed to save drawing stroke:', err);
                 })
                 .finally(function () {
@@ -3796,6 +3876,7 @@
 
         if (TextboxModule) {
             TextboxModule.onTextboxCommitted = function (entry) {
+                var requestEpoch = currentHistoryEpoch();
                 var pageWrapper = null;
                 var wrappers = document.querySelectorAll('#pdfGradedContainer .pdf-page-wrapper');
                 if (wrappers[entry.pageIdx]) pageWrapper = wrappers[entry.pageIdx];
@@ -3829,13 +3910,12 @@
                     stroke_color_rgb: entry.color && entry.color.rgb ? entry.color.rgb : [0, 0, 0],
                     color: 'amber'
                 };
-
-                var requestEpoch = currentHistoryEpoch();
                 (isUpdate
                     ? updateAnnotationRequest(buildApiAnnotationIdentifier({ identifier: entry.annotationId }) || entry.annotationId, textboxBody)
                     : createAnnotationRequest(textboxBody)
                 )
                 .then(function (data) {
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (data.success && data.annotation) {
                         entry.annotationId = data.annotation.stable_id || data.annotation.xref;
                         upsertAnnotationEntryLocal(data.annotation, entry.pageIdx);
@@ -3850,17 +3930,21 @@
                     }
                 })
                 .catch(function (err) {
+                    if (!isCurrentHistoryEpoch(requestEpoch) || err === CONCURRENT_ANNOTATION_WRITE) return;
                     console.error('Failed to save text box:', err);
                 });
             };
 
             TextboxModule.onTextboxDeleted = function (entry) {
+                var requestEpoch = currentHistoryEpoch();
                 if (entry.annotationId) {
                     deleteAnnotationRequest(buildApiAnnotationIdentifier({ identifier: entry.annotationId }) || entry.annotationId)
                     .then(function () {
+                        if (!isCurrentHistoryEpoch(requestEpoch)) return;
                         removeAnnotationEntryLocal(entry.pageIdx, entry.annotationId);
                         refreshMarkupFromAnnotations();
                     }).catch(function (err) {
+                        if (!isCurrentHistoryEpoch(requestEpoch) || err === CONCURRENT_ANNOTATION_WRITE) return;
                         console.error('Failed to delete empty text box:', err);
                     });
                 }
@@ -3869,6 +3953,7 @@
 
         if (MarkupSelection) {
             MarkupSelection.onDeleteRequested = function () {
+                var requestEpoch = currentHistoryEpoch();
                 var item = MarkupSelection.deleteSelected();
                 if (!item) return;
 
@@ -3881,7 +3966,10 @@
                 // re-resolve the live offsets and falls back to [0, 0, 0, 0],
                 // which becomes a degenerate [0, page_h, 0, page_h] PDF rect
                 // that the agent rejects with HTTP 400 on the Ctrl-Z recreate.
+                var deletedAnnotation = findAnnotationEntry(item.pageIdx, annotationId);
                 var snapshot = item && item.entry ? {
+                    xref: deletedAnnotation?.xref,
+                    stable_id: deletedAnnotation?.stable_id,
                     content: item.entry.content,
                     color: item.entry.color && item.entry.color.name ? item.entry.color.name : (typeof item.entry.color === 'string' ? item.entry.color : 'amber'),
                     stroke_color_rgb: item.entry.color && item.entry.color.rgb ? item.entry.color.rgb : null,
@@ -3914,9 +4002,9 @@
                 }
 
                 if (annotationId) {
-                    var requestEpoch = currentHistoryEpoch();
                     deleteAnnotationRequest(buildApiAnnotationIdentifier({ identifier: annotationId }) || annotationId)
                     .then(function () {
+                        if (!isCurrentHistoryEpoch(requestEpoch)) return;
                         removeAnnotationEntryLocal(item.pageIdx, annotationId);
                         refreshMarkupFromAnnotations();
                         pushUndoOperation({
@@ -3928,12 +4016,14 @@
                         }, { epoch: requestEpoch });
                     })
                     .catch(function (err) {
+                        if (!isCurrentHistoryEpoch(requestEpoch) || err === CONCURRENT_ANNOTATION_WRITE) return;
                         console.error('Failed to delete markup:', err);
                     });
                 }
             };
 
             MarkupSelection.onMoveCompleted = async function (item) {
+                var requestEpoch = currentHistoryEpoch();
                 if (!item || !item.entry.annotationId) return;
 
                 var sourcePageIdx = item.sourcePageIdx !== undefined ? item.sourcePageIdx : item.pageIdx;
@@ -3957,6 +4047,7 @@
                     };
                 } else if (viewer.pdf && typeof viewer.pdf.getPage === 'function') {
                     var pdfPage = await viewer.pdf.getPage(targetPageIdx + 1);
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     var baseViewport = pdfPage.getViewport({ scale: 1 });
                     convertCanvasPointToPdf = function (x, y) {
                         return [
@@ -4010,7 +4101,9 @@
                 }
 
                 try {
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     var data = await updateAnnotationRequest(buildApiAnnotationIdentifier({ identifier: item.entry.annotationId }) || item.entry.annotationId, body);
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (data.success && data.annotation) {
                         item.entry.annotationId = data.annotation.stable_id || data.annotation.xref || item.entry.annotationId;
                         if (sourcePageIdx !== targetPageIdx) {
@@ -4020,6 +4113,7 @@
                         refreshMarkupFromAnnotations();
                     }
                 } catch (err) {
+                    if (!isCurrentHistoryEpoch(requestEpoch) || err === CONCURRENT_ANNOTATION_WRITE) return;
                     console.error('Failed to update markup position:', err);
                     refreshMarkupFromAnnotations();
                 }
@@ -4135,6 +4229,7 @@
     const HISTORY_STALE = 'stale';
 
     const STALE_HISTORY_STEP = new Error('The history step belongs to a document that is no longer open.');
+    const CONCURRENT_ANNOTATION_WRITE = new Error('Overlapping annotation writes require a server refresh.');
 
     // One undo or redo. Its requests go out only while the document it began on is still open, and their
     // answers count only if it still is when they arrive; otherwise they throw STALE_HISTORY_STEP.
@@ -4150,6 +4245,7 @@
             );
         };
         return {
+            isCurrent: () => !isStale(),
             create: guard(createAnnotationRequest),
             update: guard(updateAnnotationRequest),
             remove: guard(deleteAnnotationRequest),
@@ -4164,6 +4260,7 @@
         if (error === STALE_HISTORY_STEP) {
             return HISTORY_STALE;
         }
+        if (error === CONCURRENT_ANNOTATION_WRITE) return HISTORY_DROPPED;
         if (isMissingAnnotationFailure(error)) {
             dropMissingHighlightUndo();
             return HISTORY_DROPPED;
@@ -4443,6 +4540,7 @@
             const result = _currentAnnotationCtrl && typeof _currentAnnotationCtrl[controllerStep] === 'function'
                 ? await _currentAnnotationCtrl[controllerStep](operation, { request: step.update })
                 : await applyHighlightExtendFallback(operation, isRedo, step);
+            if (!step.isCurrent()) return HISTORY_STALE;
             // A highlight that no longer exists has already been reported; its operation is discarded.
             return result && result.missing ? HISTORY_DROPPED : HISTORY_APPLIED;
         } catch (highlightErr) {
@@ -4457,7 +4555,7 @@
     // localFields: what the local copy shows the value in, when the server answers without the annotation.
     const FIELD_HISTORY = {
         edit: {
-            field: 'content', oldKey: 'oldContent', newKey: 'newContent', label: 'edit', localFields: ['content'],
+            field: 'content', oldKey: 'oldContent', newKey: 'newContent', label: 'edit', localFields: ['content', '_originalContent'],
         },
         priority: {
             field: 'color', oldKey: 'oldColor', newKey: 'newColor', label: 'priority change',
@@ -4570,6 +4668,7 @@
             }
             if (data.annotation) {
                 const respPg = data.annotation.page_index;
+                remapMarkupHistory(operation.annotationId, data.annotation, operation);
                 // upsert (not push) so re-runs of an undo can't double-insert
                 upsertAnnotationEntryLocal(data.annotation, respPg);
                 // Redo deletes the recreated markup by the id its creation path uses.
@@ -4667,6 +4766,7 @@
             removeAnnotationEntryLocal(operation.pageIdx, annotationId);
             refreshMarkupPage(operation.pageIdx);
             operation.redoBody = recreateRequest;
+            operation.xref = annotation.xref;
             return HISTORY_APPLIED;
         } catch (undoErr) {
             console.error('Failed to undo markup creation:', undoErr);
@@ -4683,6 +4783,7 @@
                 return historyRequestFailure(data || {}, 'Failed to redo creation');
             }
             if (data.annotation) {
+                remapMarkupHistory(operation.annotationId, data.annotation, operation);
                 upsertAnnotationEntryLocal(data.annotation, operation.pageIdx);
                 operation.annotationId = data.annotation.stable_id || data.annotation.xref;
             }
@@ -4692,6 +4793,34 @@
             console.error('Failed to redo markup creation:', redoErr);
             return historyRequestFailure(redoErr, 'Failed to redo creation');
         }
+    }
+
+    // Recreation changes identity for the entire timeline, including entries currently on the redo stack.
+    function remapMarkupHistory(oldId, annotation, inFlight) {
+        const newId = annotation.stable_id || annotation.id || annotation.xref;
+        const oldXref = inFlight.snapshot?.xref ?? inFlight.xref;
+        const operations = new Set([
+            ...undoStack, ...redoStack.map((entry) => entry.operation),
+            ...(_currentAnnotationCtrl?.getUndoStack?.() || []), inFlight,
+        ]);
+        const remap = (target) => {
+            if (!target) return;
+            const identityKeys = ['annotationId', 'identifier', 'requestId', 'requestIdentifier', 'stable_id', 'id'];
+            const matches = identityKeys.some((key) => {
+                const parts = resolveAnnotationIdParts({ identifier: target[key] });
+                return String(target[key]) === String(oldId) || parts.stableId === String(oldId)
+                    || (oldXref != null && parts.xref === String(oldXref));
+            }) || (oldXref != null && String(target.xref) === String(oldXref));
+            if (!matches) return;
+            identityKeys.forEach((key) => {
+                if (target[key] != null) target[key] = newId;
+            });
+            if (target.xref != null) target.xref = annotation.xref;
+        };
+        operations.forEach((operation) => {
+            remap(operation);
+            ['redoTarget', 'undoTarget', 'annotation', 'snapshot'].forEach((key) => remap(operation[key]));
+        });
     }
 
     function undoOperation(operation, step) {
@@ -4764,12 +4893,13 @@
                 pushBounded(redoStack, entry);
             }
         } catch (error) {
+            if (!step.isCurrent()) return;
             console.error('Error during undo:', error);
             showToast('error', translatePdfPreviewText('Undo operation failed'));
             // Push operation back onto the stacks it came from if an error occurred
             restoreUndoEntry(entry);
         } finally {
-            isUndoing = false;
+            if (step.isCurrent()) isUndoing = false;
         }
     }
 
@@ -4798,13 +4928,14 @@
                 redoStack.push(entry);
             }
         } catch (error) {
+            if (!step.isCurrent()) return;
             console.error('Error during redo:', error);
             showToast('error', translatePdfPreviewText('Redo operation failed'));
             if (!step.overtaken()) {
                 redoStack.push(entry);
             }
         } finally {
-            isRedoing = false;
+            if (step.isCurrent()) isRedoing = false;
         }
     }
 
@@ -6139,6 +6270,7 @@
      * created but never edited (when Escape/blur deletion failed).
      */
     async function cleanupPlaceholderAnnotations() {
+        const requestEpoch = currentHistoryEpoch();
         const logCleanup = (...args) => {
             if (PDF_DEBUG) debugLog(...args);
         };
@@ -6200,7 +6332,9 @@
                     continue;
                 }
 
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 const data = await deleteAnnotationRequest(apiIdentifier);
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 if (data.success) {
                     // Remove from annotationsData
                     if (annotationsData[placeholder.pageIdx]) {
@@ -6216,6 +6350,7 @@
                     failedCount++;
                 }
             } catch (error) {
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 console.error(`[CLEANUP] ❌ Error deleting placeholder xref=${placeholder.xref}:`, error);
                 failedCount++;
             }
@@ -6250,6 +6385,7 @@
     }
 
     async function persistAnchoredOwnershipTransfer(marker, identifier) {
+        const requestEpoch = currentHistoryEpoch();
         try {
             const apiIdentifier = buildApiAnnotationIdentifier({
                 identifier: identifier,
@@ -6260,7 +6396,9 @@
                 revertAnchoredOwnership(marker);
                 return;
             }
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             const data = await updateAnnotationRequest(apiIdentifier, { source: 'HUMAN' });
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (!data || !data.success) {
                 revertAnchoredOwnership(marker);
                 return;
@@ -6280,6 +6418,7 @@
             markLocalAnnotationChange();
             renderAnnotationsList();
         } catch (err) {
+            if (!isCurrentHistoryEpoch(requestEpoch) || err === CONCURRENT_ANNOTATION_WRITE) return;
             debugLog('[TETHER] Failed to persist ownership transfer:', err);
             revertAnchoredOwnership(marker);
         } finally {
@@ -6342,6 +6481,7 @@
     }
 
     async function persistHighlightExtend(marker, ann, payload) {
+        const requestEpoch = currentHistoryEpoch();
         try {
             if (_currentAnnotationCtrl &&
                 typeof _currentAnnotationCtrl.persistHighlightExtend === 'function') {
@@ -6350,6 +6490,7 @@
                     ann,
                     payload
                 );
+                if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 if (!controllerData || !controllerData.success) {
                     if (_currentOverlayRenderer) _currentOverlayRenderer.renderAnnotations(true);
                 }
@@ -6389,8 +6530,9 @@
                 anchor_text: payload.anchorText,
                 source: 'HUMAN',
             };
-            const requestEpoch = currentHistoryEpoch();
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             const data = await updateAnnotationRequest(apiIdentifier, requestBody);
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (data && data.success) {
                 const responseAnn = data.annotation || null;
                 const undoXref = responseAnn && responseAnn.xref != null
@@ -6473,6 +6615,7 @@
                 if (_currentOverlayRenderer) _currentOverlayRenderer.renderAnnotations(true);
             }
         } catch (err) {
+            if (!isCurrentHistoryEpoch(requestEpoch) || err === CONCURRENT_ANNOTATION_WRITE) return;
             debugLog('[HIGHLIGHT-ANCHOR] Failed to persist extend/shorten:', err);
             // Network / exception path: revert the optimistic repaint too.
             if (_currentOverlayRenderer) _currentOverlayRenderer.renderAnnotations(true);
@@ -7111,6 +7254,7 @@
     }
 
     async function toggleAnnotationVerdict(pageIdx, identifier, clickedIcon = null) {
+        const requestEpoch = currentHistoryEpoch();
         const stableIdentifier = normalizeAnnotationIdentifierValue(identifier);
         if (!stableIdentifier) {
             showToast('error', 'Unable to determine which annotation to update.');
@@ -7159,7 +7303,9 @@
 
         try {
             // Preserve existing source explicitly. Verdict toggling should not reclassify AI comments as HUMAN.
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             const data = await updateAnnotationRequest(requestId, { is_verdict: newVerdict, source: currentSource });
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (!data.success) {
                 throw new Error(data.error || 'Failed to toggle verdict');
             }
@@ -7198,6 +7344,7 @@
 
             markLocalAnnotationChange();
         } catch (error) {
+            if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
             // Revert on failure
             ann.is_verdict = !newVerdict;
             applyVerdictIconState(clickedIcon, !newVerdict);
@@ -7219,6 +7366,7 @@
     }
 
     async function updateAnnotationPriority(pageIdx, identifier, priority) {
+        const requestEpoch = currentHistoryEpoch();
         const stableIdentifier = normalizeAnnotationIdentifierValue(identifier);
         const compositeParts = parseCompositeIdentifier(stableIdentifier);
         const lookupIdentifier = compositeParts.stableId || compositeParts.xref || stableIdentifier;
@@ -7342,9 +7490,9 @@
             }
 
             // Note: _updatingPriorityId and _isTemporary are already set in the click handler above
-
-            const requestEpoch = currentHistoryEpoch();
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             const data = await updateAnnotationRequest(apiIdentifier, { color: priority });
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
 
             // Check for explicit error in response
             if (!data.success) {
@@ -7439,6 +7587,7 @@
                 // Clear flag after successful update, but with delay to ensure blur handler has checked it
                 // Blur handler runs after 200ms, so wait at least 300ms before clearing
                 setTimeout(() => {
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     _updatingPriorityId = null;
                 }, 300);
 
@@ -7447,6 +7596,7 @@
                 if (isEditingThisAnnotation) {
                     editingAnnotationId = annotationDomIdComposite;
                     setTimeout(() => {
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                         // Restore sidebar textarea
                         const textareaId = `edit-annotation-text-${lookupIdentifier}`;
                         const textarea = document.getElementById(textareaId);
@@ -7497,8 +7647,10 @@
                 // Success: silent to keep UI smooth
 
         } catch (error) {
+            if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
             // Clear flag on error, but with delay to ensure blur handler has checked it
             setTimeout(() => {
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 _updatingPriorityId = null;
             }, 300);
             console.error('Error updating annotation priority:', error);
@@ -7617,6 +7769,7 @@
      * @param {HTMLElement|null} sourceButton - Optional button to spin-and-disable during the round-trip.
      */
     async function revertAnnotationToAi(pageIdx, identifier, sourceButton = null) {
+        const requestEpoch = currentHistoryEpoch();
         if (!identifier) {
             showToast('error', 'Unable to revert annotation: missing identifier.');
             return;
@@ -7642,7 +7795,9 @@
                 stable = resolvedStable?.stableId || stable;
             }
             stable = normalizeAnnotationIdentifierValue(stable || identifier);
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             var data = await revertAnnotationToAiRequest(stable || identifier);
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (!data || data.success !== true) {
                 throw new Error((data && (data.error || data.detail)) || 'Revert failed');
             }
@@ -7658,6 +7813,7 @@
                 console.warn('Revert succeeded but annotation reload failed:', e);
             }
         } catch (err) {
+            if (!isCurrentHistoryEpoch(requestEpoch) || err === CONCURRENT_ANNOTATION_WRITE) return;
             console.error('Revert to AI failed:', err);
             showToast('error', err && err.message ? err.message : 'Revert failed.');
         } finally {
@@ -7689,6 +7845,7 @@
     }
 
     async function updateAnnotationPositionInternal(sourcePageIdx, targetPageIdx, identifier, marker, isOwnershipTransfer = false) {
+        const requestEpoch = currentHistoryEpoch();
         if (!marker || !window.__pdfGradedViewer) {
             console.warn('[FRONTEND] Cannot update position: marker or viewer missing');
             return;
@@ -7756,7 +7913,9 @@
         let page;
         try {
             page = await viewer.pdf.getPage(pageNum);
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
         } catch (error) {
+            if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
             console.error('[FRONTEND] Error getting page', pageNum, error);
             showToast('error', 'Failed to load page for annotation update.');
             return;
@@ -7925,9 +8084,9 @@
                     logCrossPage(`[CROSS-PAGE] Preserving content: "${originalAnn.content.substring(0, 50)}..."`);
                 }
             }
-
-            const requestEpoch = currentHistoryEpoch();
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             const data = await updateAnnotationRequest(apiIdentifier, requestBody);
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
 
             if (data.success && data.annotation) {
                     const responsePageIdx = data.annotation.page_index;
@@ -8120,7 +8279,8 @@
                             _suppressSidebarRender = true;
                             updateMarkerPositionInPlace(marker, normalizedAnn, responsePageIdx);
                             markLocalAnnotationChange();
-                            setTimeout(() => { _suppressSidebarRender = false; }, 300);
+                            setTimeout(() => {
+                    if (!isCurrentHistoryEpoch(requestEpoch)) return; _suppressSidebarRender = false; }, 300);
                         }
                     }
 
@@ -8135,6 +8295,7 @@
                     throw new Error(data.error || 'Position update failed');
                 }
         } catch (error) {
+            if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
             console.error('Error updating annotation position:', error);
 
             // Restore original position/page on error
@@ -8524,6 +8685,7 @@
     let addCommentModalInstance = null;
 
     async function addManualAnnotation(options = {}) {
+        const requestEpoch = currentHistoryEpoch();
         const { comment, priority = 'amber', kind = 'text', is_verdict = false } = options;
         if (!currentSubmissionId) {
             showToast('error', 'Select a submission first.');
@@ -8540,6 +8702,7 @@
         }
         const pageIdx = (viewer.currentPage || 1) - 1;
         try {
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             const data = await createAnnotationRequest({
                 content: comment.trim(),
                 page_index: pageIdx,
@@ -8547,18 +8710,21 @@
                 kind,
                 is_verdict,
             });
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (!data.success || !data.annotation) {
                 throw new Error(data.error || 'Failed to add annotation');
             }
             const targetPage = data.annotation.page_index ?? pageIdx;
             currentAnnotationsPage = targetPage;
             await loadAnnotations(currentSubmissionId, currentAssignmentId);
+            if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (window.__pdfGradedViewer) {
                 await window.__pdfGradedViewer.renderPage(targetPage + 1);
             }
             // Success: silent to keep UI smooth
             return true;
         } catch (error) {
+            if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
             console.error('Error creating annotation:', error);
             showToast('error', error.message || 'Failed to create annotation.');
             return false;
@@ -8691,6 +8857,8 @@
         // already starts empty with each modal; this module-level copy outlived it.
         if (submissionId !== currentSubmissionId || resolvedAssignmentId !== currentAssignmentId) {
             historyDocumentEpoch += 1;
+            isUndoing = false;
+            isRedoing = false;
             undoStack = [];
             clearRedoStack();
         }
@@ -9650,6 +9818,7 @@
                     clearRedoStack: clearRedoStack,
                     getHistoryEpoch: currentHistoryEpoch,
                     isCurrentHistoryEpoch: isCurrentHistoryEpoch,
+                    isConcurrentAnnotationWrite: (error) => error === CONCURRENT_ANNOTATION_WRITE,
                     collapseInlineLabel: collapseInlineLabel,
                     expandInlineLabelEdit: expandInlineLabelEdit,
                     setupTextareaAutoResize: setupTextareaAutoResize,
