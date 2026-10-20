@@ -3202,11 +3202,15 @@
         label.appendChild(textarea);
         repositionInlineLabel(label);
 
-        // Focus textarea and put cursor at beginning
+        // The editor is attached: initialise focus and selection before user input
+        // can arrive. A delayed reset would overwrite typing or a moved selection.
+        focusElementWithoutScroll(textarea);
+        textarea.setSelectionRange(0, 0);
+
+        // Keep the layout pass deferred, but retire it with this editor instance.
         setTimeout(() => {
-            focusElementWithoutScroll(textarea);
-            // Put cursor at beginning of text
-            textarea.setSelectionRange(0, 0);
+            if (!isCurrentHistoryEpoch(requestEpoch) || !textarea.isConnected ||
+                label.querySelector('.inline-annotation-editor') !== textarea) return;
             autoResize();
         }, 50);
     }
