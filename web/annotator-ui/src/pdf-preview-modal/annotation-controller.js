@@ -1365,7 +1365,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         // Selection
         // -----------------------------------------------------------------
 
-        function highlightSelection(pageIdx, identifierValue) {
+        function highlightSelection(pageIdx, identifierValue, { focusListItem = true } = {}) {
             _setSelectedAnnotation({ pageIdx: pageIdx, identifier: identifierValue });
             _syncAnnotationsState({ selectedId: identifierValue || null });
             var stableId = _h.normalizeAnnotationIdentifierValue
@@ -1416,7 +1416,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                 if (target) {
                     target.classList.add('item-focused', 'active');
-                    if (typeof target.focus === 'function') {
+                    if (focusListItem && typeof target.focus === 'function') {
                         target.focus({ preventScroll: true });
                     }
                 }
@@ -2210,6 +2210,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
         function beginEdit(pageIdx, identifier, domId) {
             var requestEpoch = _currentHistoryEpoch();
+            var inlineEditor = null;
             var ann = _h.findAnnotationEntry ? _h.findAnnotationEntry(pageIdx, identifier) : null;
             if (ann && ann._originalContent === undefined) {
                 ann._originalContent = ann.content || '';
@@ -2241,9 +2242,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         });
                         if (_h.expandInlineLabelEdit) {
                             _h.expandInlineLabelEdit(label);
+                            inlineEditor = label.querySelector('.inline-annotation-editor');
                         }
                     }
-                    highlightSelection(pageIdx, identifier);
+                    highlightSelection(pageIdx, identifier, { focusListItem: !inlineEditor });
                 }
             }
 
@@ -2257,7 +2259,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     if (_h.setupTextareaAutoResize) {
                         _h.setupTextareaAutoResize(textarea);
                     }
-                    _focusElementWithoutScroll(textarea);
+                    // Opening an inline editor gives it focus synchronously.
+                    // Only sidebar-only editing needs this deferred focus.
+                    if (!inlineEditor) _focusElementWithoutScroll(textarea);
                 }
             }, 50);
         }
@@ -3369,9 +3373,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
             // --- Selection ---
             highlightSelection: highlightSelection,
-            selectAnnotation: function (id, pageIdx) {
+            selectAnnotation: function (id, pageIdx, options) {
                 if (_destroyed) return;
-                highlightSelection(pageIdx, id);
+                highlightSelection(pageIdx, id, options);
             },
 
             // --- High-level delegation methods ---
