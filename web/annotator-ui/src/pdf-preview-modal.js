@@ -1843,7 +1843,7 @@
                     }
                 }, 100);
 
-                highlightAnnotationSelection(pageIdx, identifier);
+                highlightAnnotationSelection(pageIdx, identifier, { focusListItem: false });
             }
         }
 
@@ -5724,9 +5724,9 @@
         }, 50);
     }
 
-    function highlightAnnotationSelection(pageIdx, identifierValue) {
+    function highlightAnnotationSelection(pageIdx, identifierValue, { focusListItem = true } = {}) {
         if (_currentAnnotationCtrl && !_annotationCtrlDelegating) {
-            return _currentAnnotationCtrl.selectAnnotation(identifierValue, pageIdx);
+            return _currentAnnotationCtrl.selectAnnotation(identifierValue, pageIdx, { focusListItem });
         }
         const stableId = normalizeAnnotationIdentifierValue(identifierValue);
         if (stableId === null || Number.isNaN(pageIdx)) {
@@ -5756,7 +5756,7 @@
             }
         });
 
-        // Highlight and focus the list item
+        // Highlight the list item; inline editing must retain textarea focus.
         const listEl = document.getElementById('pdfGradedCommentsList');
         if (listEl) {
             const escapedId = escapeCssAttribute(stableId);
@@ -5774,7 +5774,7 @@
             if (target) {
                 target.classList.add('item-focused', 'active');
                 // Focus without jumping the scroll too aggressively
-                if (typeof target.focus === 'function') {
+                if (focusListItem && typeof target.focus === 'function') {
                     target.focus({ preventScroll: true });
                 }
             }
@@ -9897,7 +9897,7 @@
                         setupTextareaAutoResize(textarea);
                     }
                 }, 100);
-                highlightAnnotationSelection(data.pageIdx, data.identifier);
+                highlightAnnotationSelection(data.pageIdx, data.identifier, { focusListItem: false });
             });
 
             _currentOverlayRenderer.onOverlayDblClicked(function (data) {
@@ -9941,9 +9941,9 @@
                 getPreviewFullscreenActive: function () { return previewFullscreenActive; },
                 isDrawingFn: isDrawingPersistenceActive,
                 helpers: {
-                    highlightAnnotationSelection: function (pageIdx, identifierValue) {
+                    highlightAnnotationSelection: function (pageIdx, identifierValue, options) {
                         _annotationCtrlDelegating = true;
-                        try { return highlightAnnotationSelection(pageIdx, identifierValue); }
+                        try { return highlightAnnotationSelection(pageIdx, identifierValue, options); }
                         finally { _annotationCtrlDelegating = false; }
                     },
                     renderAIAnnotationsList: function () {
