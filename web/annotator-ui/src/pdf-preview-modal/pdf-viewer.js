@@ -195,6 +195,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             }
 
             this.setupControls();
+            this.updateNavigationButtons();
         }
 
         // =====================================================================
@@ -264,6 +265,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 this.pdf.destroy();
                 this.pdf = null;
             }
+            this.updateNavigationButtons();
 
             debugLog(`[FRONTEND] PDFViewer ${this.containerId} destroyed`);
         }
@@ -1387,7 +1389,18 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
         // UI Updates
         // =====================================================================
 
+        updateNavigationButtons() {
+            const totalPages = this.pdf ? this.pdf.numPages : 0;
+            const prefix = this.controlsId.replace('Controls', '');
+            const prevBtn = document.getElementById(`${prefix}Prev`);
+            const nextBtn = document.getElementById(`${prefix}Next`);
+
+            if (prevBtn) prevBtn.disabled = totalPages <= 1 || this.currentPage <= 1;
+            if (nextBtn) nextBtn.disabled = totalPages <= 1 || this.currentPage >= totalPages;
+        }
+
         updatePageInfo() {
+            this.updateNavigationButtons();
             const totalPages = this.pdf ? this.pdf.numPages : 1;
             const pageInfo = document.querySelector(`#${this.controlsId.replace('Controls', '')}PageInfo`);
             if (pageInfo) {
