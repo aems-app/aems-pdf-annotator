@@ -41,6 +41,190 @@ describe('pdf-viewer page jumps', () => {
     delete window.pdfjsLib;
   });
 
+  describe('navigation button bounds', () => {
+    let viewer;
+    let controller;
+
+    const expectButtons = (prevDisabled, nextDisabled) => {
+      expect.soft(document.getElementById('pdfGradedPrev').disabled, 'Prev.disabled').toBe(prevDisabled);
+      expect.soft(document.getElementById('pdfGradedNext').disabled, 'Next.disabled').toBe(nextDisabled);
+    };
+
+    const loadDocument = async (numPages) => {
+      window.pdfjsLib = {
+        getDocument: vi.fn(() => ({
+          promise: Promise.resolve({ numPages, destroy: vi.fn() }),
+        })),
+      };
+      await viewer.loadPDF('/document.pdf');
+      expect(viewer.pdf.numPages).toBe(numPages);
+      expect(viewer.currentPage).toBe(1);
+    };
+
+    beforeEach(async () => {
+      await import('../src/pdf-preview-modal/pdf-viewer.js');
+      viewer = window.PdfPreviewModalViewer.createViewer(
+        'pdfGradedCanvas',
+        'pdfGradedContainer',
+        'pdfGradedLoading',
+        'pdfGradedControls',
+      );
+      // Keep navigation and loadPDF real; only replace the PDF rendering work,
+      // using the same fake document and page wrappers as the page-jump tests.
+      vi.spyOn(viewer, 'renderSkeleton').mockImplementation(async () => {
+        viewer.container.innerHTML = '';
+        for (let pageNum = 1; pageNum <= viewer.pdf.numPages; pageNum += 1) {
+          const wrapper = document.createElement('div');
+          wrapper.className = 'pdf-page-wrapper';
+          wrapper.dataset.pageNum = String(pageNum);
+          wrapper.scrollIntoView = vi.fn();
+          viewer.container.appendChild(wrapper);
+        }
+      });
+      vi.spyOn(viewer, 'renderSpecificPage').mockResolvedValue();
+    });
+
+    afterEach(() => {
+      controller?.destroy();
+      controller = undefined;
+      viewer.destroy();
+      delete window.__pdfGradedViewer;
+      delete window.PdfPreviewModalDocumentController;
+    });
+
+    it('disables Prev and enables Next on the first page of a multi-page document', async () => {
+      await loadDocument(3);
+      expectButtons(true, false);
+    });
+
+    it('disables Next and enables Prev after nextPage reaches the last page', async () => {
+      await loadDocument(3);
+      viewer.nextPage();
+      expect(viewer.currentPage).toBe(2);
+      expectButtons(false, false);
+      viewer.nextPage();
+      expect(viewer.currentPage).toBe(3);
+      expectButtons(false, true);
+    });
+
+    it('re-enables Next when previousPage leaves the last page', async () => {
+      await loadDocument(3);
+      await viewer.scrollToPage(3, false);
+      expectButtons(false, true);
+      viewer.previousPage();
+      expect(viewer.currentPage).toBe(2);
+      expectButtons(false, false);
+    });
+
+    it.each(['page input', 'page slider', 'goToPage'])(
+      'refreshes both bounds when jumping via the %s',
+      async (control) => {
+        await loadDocument(3);
+        document.body.insertAdjacentHTML('beforeend', '<input id="pdfGradedPageSlider" type="range" min="1" max="3">');
+        window.__pdfGradedViewer = viewer;
+        await import('../src/pdf-preview-modal/document-controller.js');
+        controller = window.PdfPreviewModalDocumentController.createDocumentController({}, {});
+
+        const jump = (pageNum) => {
+          if (control === 'goToPage') {
+            controller.goToPage(pageNum);
+          } else {
+            const isSlider = control === 'page slider';
+            const input = document.getElementById(isSlider ? 'pdfGradedPageSlider' : 'pdfGradedPageInput');
+            input.value = String(pageNum);
+            input.dispatchEvent(new Event(isSlider ? 'input' : 'change', { bubbles: true }));
+          }
+          expect(viewer.currentPage).toBe(pageNum);
+        };
+
+        jump(3);
+        expectButtons(false, true);
+        jump(1);
+        expectButtons(true, false);
+        jump(2);
+        expectButtons(false, false);
+      },
+    );
+
+    it('disables both buttons for a single-page document', async () => {
+      await loadDocument(1);
+      expectButtons(true, true);
+    });
+
+    it('disables both buttons before any document is loaded', () => {
+      expect(viewer.pdf).toBe(null);
+      expectButtons(true, true);
+    });
+
+    it('disables both buttons for a zero-page document', async () => {
+      await loadDocument(0);
+      expectButtons(true, true);
+    });
+
+    it('resets the bounds when reloading documents with different page counts', async () => {
+      await loadDocument(3);
+      await viewer.scrollToPage(3, false);
+      expectButtons(false, true);
+      await loadDocument(5);
+      expectButtons(true, false);
+      await loadDocument(1);
+      expectButtons(true, true);
+      await loadDocument(2);
+      expectButtons(true, false);
+    });
+
+    it('refreshes the bounds for scroll-driven current-page updates', async () => {
+      await loadDocument(3);
+      for (const pageNum of [3, 1, 2]) {
+        intersectionObserverCallback([{
+          target: viewer.container.querySelector(`[data-page-num="${pageNum}"]`),
+          isIntersecting: true,
+          intersectionRatio: 0.9,
+        }]);
+        expect(viewer.currentPage).toBe(pageNum);
+        expectButtons(pageNum === 1, pageNum === 3);
+      }
+    });
+
+    it('refreshes the bounds after rendering in single-page mode', async () => {
+      await loadDocument(3);
+      viewer.useSinglePageMode = true;
+      viewer.canvas = document.createElement('canvas');
+      viewer.canvas.getContext = vi.fn(() => ({}));
+      viewer.pdf.getPage = vi.fn().mockResolvedValue({
+        getViewport: () => ({ width: 600, height: 800 }),
+        render: () => ({ promise: Promise.resolve() }),
+      });
+      await viewer.renderPage(3);
+      expect(viewer.currentPage).toBe(3);
+      expectButtons(false, true);
+      await viewer.renderPage(1);
+      expect(viewer.currentPage).toBe(1);
+      expectButtons(true, false);
+    });
+
+    it('refreshes the bounds when page information receives a changed page count', async () => {
+      await loadDocument(3);
+      await viewer.scrollToPage(3, false);
+      expectButtons(false, true);
+      viewer.pdf.numPages = 4;
+      viewer.updatePageInfo();
+      expectButtons(false, false);
+      viewer.pdf.numPages = 3;
+      viewer.updatePageInfo();
+      expectButtons(false, true);
+    });
+
+    it('disables both buttons when the document is released', async () => {
+      await loadDocument(3);
+      await viewer.scrollToPage(2, false);
+      expectButtons(false, false);
+      viewer.destroy();
+      expect(viewer.pdf).toBe(null);
+      expectButtons(true, true);
+    });
+  });
+
   it('renders the jumped-to page and its neighbors immediately', async () => {
     await import('../src/pdf-preview-modal/pdf-viewer.js');
 
