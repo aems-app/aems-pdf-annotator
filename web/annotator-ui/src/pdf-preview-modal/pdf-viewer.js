@@ -101,6 +101,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             this.loadingEl = document.getElementById(loadingId);
             this.controlsId = controlsId;
             this.pdf = null;
+            this._loadSequence = 0;
             this.currentPage = 1;
             this.zoom = 1.0;
             this.scale = 1.5; // base scale
@@ -208,6 +209,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
          */
         destroy() {
             this._isDestroyed = true;
+            this._loadSequence += 1;
 
             // Remove keyboard listener
             if (this._keydownHandler) {
@@ -393,7 +395,32 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             this._skeletonBaseViewport = null;
         }
 
+        /** Clear a retired submission immediately and invalidate its pending loads/renders. */
+        clearPDF() {
+            this._loadSequence += 1;
+            this.renderTasks.forEach((task) => {
+                try { task.cancel(); } catch { /* Already finished. */ }
+            });
+            this.renderTasks.clear();
+            this.observer?.disconnect();
+            this.observer = null;
+            this._resetDocumentCaches();
+            if (this.pdf) this.pdf.destroy();
+            this.pdf = null;
+            this.currentPageObj = null;
+            this.currentViewport = null;
+            this.isRendering = false;
+            if (this.canvas) this.canvas.width = 0;
+            this.container?.replaceChildren();
+            if (this.container && this.loadingEl) this.container.appendChild(this.loadingEl);
+            this.showLoading(false);
+            this.updateNavigationButtons();
+        }
+
         async loadPDF(url) {
+            const loadSequence = ++this._loadSequence;
+            const isCurrent = () => !this._isDestroyed && loadSequence === this._loadSequence;
+            if (!isCurrent()) return false;
             debugLog(`[FRONTEND] loadPDF called for ${this.containerId}, URL: ${url.substring(0, 50)}...`);
             try {
                 // Loading a document replaces every page wrapper.  The graded
@@ -404,7 +431,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 // while this promise is pending.
                 if (typeof this._beforeDocumentReplace === 'function') {
                     await this._beforeDocumentReplace(this);
-                    if (this._isDestroyed) return;
+                    if (!isCurrent()) return false;
                 }
 
                 const lib = resolvePdfjsLib();
@@ -423,6 +450,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                     }
                 });
                 this.renderTasks.clear();
+                this.isRendering = false;
 
                 // Disconnect old observer
                 if (this.observer) {
@@ -435,10 +463,16 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                     this.container.scrollTop = 0;
                 }
 
-                this.pdf = await lib.getDocument({
+                const pdf = await lib.getDocument({
                     url,
                     withCredentials: url.startsWith('/') || url.startsWith(window.location.origin),
                 }).promise;
+                if (!isCurrent()) {
+                    await pdf.destroy();
+                    return false;
+                }
+                if (this.pdf && this.pdf !== pdf) this.pdf.destroy();
+                this.pdf = pdf;
                 debugLog(`[FRONTEND] PDF loaded: ${this.pdf.numPages} pages`);
                 this.currentPage = 1;
                 this.zoom = 1.0;
@@ -446,14 +480,17 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
 
                 if (this.useSinglePageMode) {
                     await this.renderPage(1);
+                    if (!isCurrent()) return false;
                     this.showLoading(false);
                 } else {
                     await this.renderSkeleton();
+                    if (!isCurrent()) return false;
 
                     // Explicitly render Page 1 before setting up observer
                     if (this.pdf && this.pdf.numPages > 0) {
                         try {
                             await this.renderSpecificPage(1);
+                            if (!isCurrent()) return false;
                         } catch (error) {
                             console.error('[FRONTEND] Failed to render first page:', error);
                             throw error;
@@ -463,10 +500,13 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                     this.setupIntersectionObserver();
                     this.showLoading(false);
                 }
+                return true;
             } catch (error) {
+                if (!isCurrent() || error?.name === 'AbortError') return false;
                 console.error('Error loading PDF:', error);
                 this.showLoading(false);
                 this._showError(error);
+                return false;
             }
         }
 
@@ -497,6 +537,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
 
         async renderSkeleton() {
             if (!this.pdf) return;
+            const loadSequence = this._loadSequence;
 
             // Guard against empty or corrupted PDFs
             if (!this.pdf.numPages || this.pdf.numPages < 1) {
@@ -506,6 +547,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             }
 
             const firstPage = await this.pdf.getPage(1);
+            if (this._isDestroyed || loadSequence !== this._loadSequence) return;
             const baseViewport = firstPage.getViewport({ scale: this.scale });
             // Kept so relayoutPagesForContainer() can size not-yet-rendered
             // pages the same way this loop does, without an async getPage().
@@ -629,6 +671,8 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             }
             this.renderingPages.add(pageNum);
             const startVersion = this.zoomVersion;
+            const loadSequence = this._loadSequence;
+            const isCurrent = () => !this._isDestroyed && loadSequence === this._loadSequence;
 
             debugLog(`[FRONTEND] Starting render for page ${pageNum}`);
 
@@ -646,6 +690,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 }
 
                 const page = await this.pdf.getPage(pageNum);
+                if (!isCurrent()) return;
                 const baseViewport = page.getViewport({ scale: this.scale });
                 const viewport = page.getViewport({ scale: this.scale * this.zoom });
 
@@ -686,6 +731,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 this.renderTasks.set(pageNum, renderTask);
 
                 await renderTask.promise;
+                if (!isCurrent()) return;
                 this.renderTasks.delete(pageNum);
 
                 // Discard result if zoom changed during render
@@ -722,25 +768,28 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 // Notify page rendered (guard against destroyed viewer in timeout)
                 if (this.isGradedViewer && this._onPageRendered) {
                     setTimeout(() => {
-                        if (!this._isDestroyed && this._onPageRendered) {
+                        if (isCurrent() && this._onPageRendered) {
                             this._onPageRendered(pageNum);
                         }
                     }, 50);
                 }
             } catch (error) {
+                if (!isCurrent()) return;
                 if (error && error.name === 'RenderingCancelledException') {
                     debugLog(`[FRONTEND] Render for page ${pageNum} was cancelled during reflow`);
                 } else {
                     console.error(`[FRONTEND] Error rendering page ${pageNum}:`, error);
                 }
             } finally {
-                this.renderingPages.delete(pageNum);
+                if (isCurrent()) this.renderingPages.delete(pageNum);
             }
         }
 
         async renderPage(pageNum) {
             if (this.useSinglePageMode) {
                 if (!this.pdf || this.isRendering || !this.canvas) return;
+                const loadSequence = this._loadSequence;
+                const isCurrent = () => !this._isDestroyed && loadSequence === this._loadSequence;
 
                 this.isRendering = true;
                 this.showLoading(true);
@@ -751,6 +800,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                     }
 
                     const page = await this.pdf.getPage(pageNum);
+                    if (!isCurrent()) return;
                     const baseViewport = page.getViewport({ scale: this.scale });
 
                     const containerWidth = this.getEffectiveContainerWidth();
@@ -769,13 +819,17 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                         annotationMode: this.isGradedViewer ? 0 : 2
                     };
 
-                    await page.render(renderContext).promise;
+                    const renderTask = page.render(renderContext);
+                    this.renderTasks.set(pageNum, renderTask);
+                    await renderTask.promise;
+                    if (!isCurrent()) return;
+                    this.renderTasks.delete(pageNum);
                     this.currentPage = pageNum;
                     this.updatePageInfo();
                     this.updateZoomLevel();
 
                     requestAnimationFrame(() => {
-                        if (this.canvas) {
+                        if (isCurrent() && this.canvas) {
                             this.canvas.style.opacity = '1';
                         }
                     });
@@ -783,6 +837,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                     this.showLoading(false);
                     this.isRendering = false;
                 } catch (error) {
+                    if (!isCurrent()) return;
                     console.error('Error rendering page:', error);
                     this.showLoading(false);
                     this.isRendering = false;

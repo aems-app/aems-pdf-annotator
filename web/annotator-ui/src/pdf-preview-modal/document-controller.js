@@ -386,7 +386,13 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
          *
          * @param {string|number} assignmentId
          * @param {string|number} submissionId
-         * @returns {Promise<{blob: Blob, url: string}|null>} null when no graded PDF
+         * Host API contract: modeAdapter.fetchAnnotatedPdf resolves a Blob on success,
+         * or {notFound: true} ONLY for a definitive HTTP 404. It may instead reject
+         * with an error carrying numeric status === 404. null/undefined and AbortError
+         * mean cancelled/no result, never absence. Other failures must reject.
+         *
+         * @returns {Promise<{blob: Blob, url: string}|{notFound: true}|null>}
+         * null means a cancelled, superseded, or destroyed load.
          */
         function loadGradedPdf(assignmentId, submissionId) {
             if (_gradedPdfLoadPromise) {
@@ -398,10 +404,12 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
             var gradedBlobPromise;
 
             if (adapter && typeof adapter.fetchAnnotatedPdf === 'function') {
-                gradedBlobPromise = adapter.fetchAnnotatedPdf(assignmentId, submissionId, {
-                    courseId: options.courseId || null,
-                    offline: mode === 'offline',
-                    annotatedPdfPolicy: options.annotatedPdfPolicy || 'server_allowed',
+                gradedBlobPromise = Promise.resolve().then(function () {
+                    return adapter.fetchAnnotatedPdf(assignmentId, submissionId, {
+                        courseId: options.courseId || null,
+                        offline: mode === 'offline',
+                        annotatedPdfPolicy: options.annotatedPdfPolicy || 'server_allowed',
+                    });
                 });
             } else {
                 var gradedPdfUrl = (mode === 'offline')
@@ -415,7 +423,8 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                     if (response.ok) {
                         return response.blob();
                     }
-                    return null;
+                    if (response.status === 404) return { notFound: true };
+                    throw Object.assign(new Error('HTTP ' + response.status), { status: response.status });
                 });
             }
 
@@ -423,6 +432,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                 if (_destroyed || !blob) {
                     return null;
                 }
+                if (blob.notFound === true) return { notFound: true };
 
                 // Track blob URL for cleanup
                 var url = URL.createObjectURL(blob);
@@ -433,7 +443,8 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                 // Load into viewer if available
                 var loadPromise;
                 if (window.__pdfGradedViewer) {
-                    loadPromise = window.__pdfGradedViewer.loadPDF(url).then(function () {
+                    loadPromise = window.__pdfGradedViewer.loadPDF(url).then(function (loaded) {
+                        if (_destroyed || loaded === false) return false;
                         _syncDocumentState({
                             gradedPdfLoaded: true,
                             currentPage: Math.max(0, (window.__pdfGradedViewer.currentPage || 1) - 1),
@@ -447,11 +458,14 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                     loadPromise = Promise.resolve();
                 }
 
-                return loadPromise.then(function () {
+                return loadPromise.then(function (loaded) {
+                    if (_destroyed || loaded === false) return null;
                     return { blob: blob, url: url };
                 });
             }).catch(function (error) {
                 _gradedPdfLoadPromise = null;
+                if (_destroyed || error?.name === 'AbortError') return null;
+                if (error?.status === 404) return { notFound: true };
                 throw error;
             });
 

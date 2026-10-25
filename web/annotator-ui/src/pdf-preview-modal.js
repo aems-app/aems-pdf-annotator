@@ -1456,6 +1456,8 @@
     // Annotation management for graded PDF
     let currentSubmissionId = null;
     let currentAssignmentId = null;
+    let previewSubmissionId = null;
+    let previewAssignmentId = null;
     let currentCanvasUserName = null;
     let annotationsData = {};
 
@@ -8953,6 +8955,14 @@
     async function _openPdfPreviewInternal(submissionId, studentName, assignmentId = null, context = null) {
         const openContext = context || {};
         const resolvedAssignmentId = assignmentId ?? openContext.assignmentId ?? null;
+        // Factory creation already updates currentSubmissionId. Track viewer ownership
+        // separately so both the factory and legacy open paths retire the old pages.
+        if (submissionId !== previewSubmissionId || resolvedAssignmentId !== previewAssignmentId) {
+            window.__pdfGradedViewer?.clearPDF?.();
+            window.__pdfOriginalViewer?.clearPDF?.();
+            previewSubmissionId = submissionId;
+            previewAssignmentId = resolvedAssignmentId;
+        }
         // Retire history before any readiness return/await. AEMS creates a fresh handle per open, but the
         // legacy path can also reuse a controller; both stacks and pending writes must leave with the document.
         if (submissionId !== currentSubmissionId || resolvedAssignmentId !== currentAssignmentId) {
@@ -9349,6 +9359,16 @@
 
             debugLog('[FRONTEND] Modal delay complete, fetching graded PDF...');
 
+            const showGradedPdfLoadError = (error) => {
+                if (!isCurrentHistoryEpoch(requestEpoch) || error?.name === 'AbortError') return;
+                // Reuse the viewer's existing Preview unavailable state and strings.
+                document.getElementById('pdfOriginalTab')?.classList.remove('active');
+                document.getElementById('pdfOriginalPane')?.classList.remove('show', 'active');
+                document.getElementById('pdfGradedTab')?.classList.add('active');
+                document.getElementById('pdfGradedPane')?.classList.add('show', 'active');
+                window.__pdfGradedViewer?._showError(error);
+            };
+
             // ---------------------------------------------------------------
             // Phase 5A: Delegate PDF loading to document controller when available.
             // The controller owns fetch, blob URL tracking, tab switching,
@@ -9365,8 +9385,9 @@
 
                     const result = await _currentDocCtrl.loadGradedPdf(resolvedAssignmentId, submissionId);
                     if (!isCurrentHistoryEpoch(requestEpoch)) return;
+                    if (!result) return; // Cancelled/destroyed/superseded is not absence.
 
-                    if (result) {
+                    if (!result.notFound) {
                         // Graded PDF loaded successfully — set up UI
                         const annotationsBannerHide = document.getElementById('pdfAnnotationsMissingBanner');
                         if (annotationsBannerHide) { annotationsBannerHide.classList.add('d-none'); }
@@ -9425,25 +9446,7 @@
                         }, 200);
                     }
                 } catch (error) {
-                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                    // Error from controller — fall back to original
-                    debugLog('[FRONTEND] Error from document controller, loading original...', error);
-                    document.getElementById('pdfGradedTabContainer')?.classList.add('d-none');
-                    if (originalTabContainer) { originalTabContainer.classList.remove('d-none'); }
-                    if (showOriginalBtnContainer) { showOriginalBtnContainer.classList.add('d-none'); }
-                    if (showOriginalBtn) { showOriginalBtn.onclick = null; }
-                    if (showAnnotatedBtnContainer) { showAnnotatedBtnContainer.classList.add('d-none'); }
-                    if (showAnnotatedBtn) { showAnnotatedBtn.onclick = null; }
-
-                    const annotationsBannerError = document.getElementById('pdfAnnotationsMissingBanner');
-                    if (annotationsBannerError) { annotationsBannerError.classList.remove('d-none'); }
-
-                    setTimeout(() => {
-                        if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                        _currentDocCtrl.loadOriginalPdf(resolvedAssignmentId, submissionId).catch((loadError) => {
-                            console.error('[FRONTEND] Original PDF load error:', loadError);
-                        });
-                    }, 200);
+                    showGradedPdfLoadError(error);
                 }
                 return;
             }
@@ -9468,17 +9471,10 @@
                         );
                     } catch (adapterErr) {
                         if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                        var requiresLocalAnnotatedPdf = !!(adapterErr && adapterErr.localAnnotatedPdfRequired);
-                        debugLog('[FRONTEND] Adapter fetchAnnotatedPdf failed:', adapterErr);
-                        if (requiresLocalAnnotatedPdf) {
-                            throw adapterErr;
-                        }
+                        if (adapterErr?.status === 404) gradedBlob = { notFound: true };
+                        else throw adapterErr;
                     }
-                }
-
-                if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                // Server / offline fallback only if adapter didn't provide blob
-                if (!gradedBlob) {
+                } else {
                     const gradedPdfUrl = isOfflineMode
                         ? `/offline/api/assessments/${resolvedAssignmentId}/submissions/${submissionId}/pdf-graded`
                         : `/api/canvas/submissions/${submissionId}/pdf-graded${resolvedAssignmentId ? `?assignment_id=${resolvedAssignmentId}` : ''}`;
@@ -9490,10 +9486,15 @@
                     if (response.ok) {
                         gradedBlob = await response.blob();
                         if (!isCurrentHistoryEpoch(requestEpoch)) return;
+                    } else if (response.status === 404) {
+                        gradedBlob = { notFound: true };
+                    } else {
+                        throw Object.assign(new Error('HTTP ' + response.status), { status: response.status });
                     }
                 }
 
-                if (gradedBlob) {
+                if (!isCurrentHistoryEpoch(requestEpoch) || !gradedBlob) return;
+                if (gradedBlob.notFound !== true) {
                     const blob = gradedBlob;
                     const url = URL.createObjectURL(blob);
                     document.getElementById('pdfGradedTabContainer').classList.remove('d-none');
@@ -9623,34 +9624,7 @@
                     }, 200);
                 }
             } catch (error) {
-                if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                // Error fetching graded PDF - load original instead
-                debugLog('[FRONTEND] Error fetching graded PDF, loading original...', error);
-                const gradedTabContainer = document.getElementById('pdfGradedTabContainer');
-                if (gradedTabContainer) {
-                    gradedTabContainer.classList.add('d-none');
-                }
-                if (originalTabContainer) {
-                    originalTabContainer.classList.remove('d-none');
-                }
-                if (showOriginalBtnContainer) { showOriginalBtnContainer.classList.add('d-none'); }
-                if (showOriginalBtn) { showOriginalBtn.onclick = null; }
-                if (showAnnotatedBtnContainer) { showAnnotatedBtnContainer.classList.add('d-none'); }
-                if (showAnnotatedBtn) { showAnnotatedBtn.onclick = null; }
-
-                // Show warning banner when annotations are missing
-                const annotationsBannerError = document.getElementById('pdfAnnotationsMissingBanner');
-                if (annotationsBannerError) {
-                    annotationsBannerError.classList.remove('d-none');
-                }
-
-                // Load original PDF (original tab is already active)
-                setTimeout(() => {
-                    if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                    ensureOriginalPdfLoaded().catch((loadError) => {
-                        console.error('[FRONTEND] Original PDF load error:', loadError);
-                    });
-                }, 200);
+                showGradedPdfLoadError(error);
             }
         };
         modalElement.addEventListener('shown.bs.modal', _pdfLoadHandler);
@@ -10128,6 +10102,13 @@
         return handle;
     }
 
+    /**
+     * Host API: hostApi (alias modeAdapter) may provide fetchAnnotatedPdf(assignmentId,
+     * submissionId, context): Promise<Blob|{notFound: true}|null>. Only HTTP 404 may
+     * resolve {notFound: true} or reject an error with numeric status === 404.
+     * null/undefined and AbortError mean no result/cancellation; other failures reject
+     * and use the existing Preview unavailable state, never the deletion banner.
+     */
     function normalizePackageOptions(options) {
         var normalized = Object.assign({}, options || {});
         var context = normalized.context || {};
