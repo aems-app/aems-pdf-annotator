@@ -379,6 +379,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         var _updatingPriorityId = null;
         var _isDraggingAnnotation = false;
         var _currentAnnotationsPage = 0;
+        var _sidebarEventBindings = [];
 
         function _syncAnnotationsState(patch) {
             if (!_annotationsState || !patch) {
@@ -1777,11 +1778,35 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             return Promise.resolve();
         }
 
+        function _isDestroyedSidebarAction() {
+            if (!_destroyed) return false;
+            console.warn('[PDF Preview] Ignoring sidebar action on a destroyed annotation controller.');
+            return true;
+        }
+
+        function _addSidebarEventListener(element, type, listener, bindingFlag) {
+            var guardedListener = function (event) {
+                if (_isDestroyedSidebarAction()) return;
+                return listener.call(this, event);
+            };
+            element.addEventListener(type, guardedListener);
+            _sidebarEventBindings.push({
+                element: element,
+                type: type,
+                listener: guardedListener,
+                bindingFlag: bindingFlag || 'listenersBound',
+            });
+        }
+
         function _attachSidebarEventHandlers(listEl) {
             if (!listEl || listEl.dataset.annotationControllerBound === 'true') {
                 return;
             }
             listEl.dataset.annotationControllerBound = 'true';
+
+            function addListEventListener(type, listener) {
+                _addSidebarEventListener(listEl, type, listener, 'annotationControllerBound');
+            }
 
             function consumeActionEvent(event) {
                 if (!event) {
@@ -1794,7 +1819,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
             }
 
-            listEl.addEventListener('click', function (event) {
+            addListEventListener('click', function (event) {
                 var editBtn = event.target.closest('.edit-annotation');
                 if (editBtn) {
                     consumeActionEvent(event);
@@ -1854,6 +1879,14 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     return;
                 }
 
+                var cancelBtn = event.target.closest('.cancel-edit-btn');
+                if (cancelBtn) {
+                    var cancelIdentifier = cancelBtn.dataset.annotationIdentifier || cancelBtn.dataset.annotationXref || null;
+                    var cancelPage = _parseDatasetPageIndex(cancelBtn.dataset.annotationPage);
+                    cancelAnnotationEdit(cancelPage, cancelIdentifier);
+                    return;
+                }
+
                 var verdictIcon = event.target.closest('.verdict-indicator');
                 if (verdictIcon) {
                     consumeActionEvent(event);
@@ -1880,7 +1913,28 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
             });
 
-            listEl.addEventListener('mousedown', function (event) {
+            addListEventListener('mousedown', function (event) {
+                // Select before handling priority, as the former row listener did.
+                var clickedElement = event.target;
+                var item = clickedElement.closest('.list-group-item');
+                if (item && !clickedElement.closest('button') &&
+                    clickedElement.tagName !== 'TEXTAREA' &&
+                    !clickedElement.closest('.verdict-indicator')) {
+                    event.preventDefault();
+                    item.focus();
+                    var stableId = _h.normalizeAnnotationIdentifierValue
+                        ? _h.normalizeAnnotationIdentifierValue(
+                            item.dataset.annotationRequestId ||
+                            item.dataset.annotationIdentifier ||
+                            item.dataset.annotationXref
+                        )
+                        : (item.dataset.annotationRequestId || item.dataset.annotationIdentifier || item.dataset.annotationXref);
+                    var pageIdx = parseInt(item.dataset.annotationPage || '-1', 10);
+                    if (stableId !== null && !Number.isNaN(pageIdx)) {
+                        highlightSelection(pageIdx, stableId);
+                    }
+                }
+
                 var dot = event.target.closest('.priority-dot');
                 if (!dot) {
                     return;
@@ -1907,7 +1961,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
             });
 
-            listEl.addEventListener('keydown', function (event) {
+            addListEventListener('keydown', function (event) {
                 var item = event.target.closest('.list-group-item');
                 if (!item) {
                     return;
@@ -1949,7 +2003,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
             });
 
-            listEl.addEventListener('dblclick', function (event) {
+            addListEventListener('dblclick', function (event) {
                 var item = event.target.closest('.list-group-item');
                 if (!item || event.target.closest('button') || event.target.tagName === 'TEXTAREA') {
                     return;
@@ -1964,9 +2018,38 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
                 handle.beginEdit(editPage, editIdentifier, item.dataset.annotationId);
             });
+
+            // Bind only to the persistent list: replaced rows must never be
+            // retained by this controller's listener registry.
+            addListEventListener('input', function (event) {
+                var sidebarTextarea = event.target;
+                if (!sidebarTextarea.matches('.auto-resize-textarea') || !sidebarTextarea.id) {
+                    return;
+                }
+                var inlineLabel = document.querySelector('.annotation-label.label-editing');
+                if (!inlineLabel) {
+                    return;
+                }
+                var inlineTextarea = inlineLabel.querySelector('.inline-annotation-editor');
+                if (inlineTextarea && inlineTextarea !== document.activeElement) {
+                    inlineTextarea.value = sidebarTextarea.value;
+                }
+            });
+
+            addListEventListener('focusin', function (event) {
+                if (event.target.matches('.list-group-item')) {
+                    event.target.classList.add('item-focused', 'active');
+                }
+            });
+            addListEventListener('focusout', function (event) {
+                if (event.target.matches('.list-group-item')) {
+                    event.target.classList.remove('item-focused', 'active');
+                }
+            });
         }
 
         function renderSidebar() {
+            if (_destroyed) return;
             syncVisibleMarkersFromDom();
             if (_getSplitPanelActive() && _h.renderAIAnnotationsList) {
                 _h.renderAIAnnotationsList();
@@ -2046,73 +2129,6 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
             _attachSidebarEventHandlers(listEl);
 
-            listEl.querySelectorAll('.auto-resize-textarea').forEach(function (sidebarTextarea) {
-                if (!sidebarTextarea.id) {
-                    return;
-                }
-                if (sidebarTextarea.dataset.listenersBound) {
-                    return;
-                }
-                sidebarTextarea.dataset.listenersBound = 'true';
-                sidebarTextarea.addEventListener('input', function () {
-                    var inlineLabel = document.querySelector('.annotation-label.label-editing');
-                    if (!inlineLabel) {
-                        return;
-                    }
-                    var inlineTextarea = inlineLabel.querySelector('.inline-annotation-editor');
-                    if (inlineTextarea && inlineTextarea !== document.activeElement) {
-                        inlineTextarea.value = sidebarTextarea.value;
-                    }
-                });
-            });
-
-            listEl.querySelectorAll('.cancel-edit-btn').forEach(function (btn) {
-                if (btn.dataset.listenersBound) {
-                    return;
-                }
-                btn.dataset.listenersBound = 'true';
-                btn.addEventListener('click', async function () {
-                    var identifier = btn.dataset.annotationIdentifier || btn.dataset.annotationXref || null;
-                    var pageIdx = _parseDatasetPageIndex(btn.dataset.annotationPage);
-                    await cancelAnnotationEdit(pageIdx, identifier);
-                });
-            });
-
-            listEl.querySelectorAll('.list-group-item').forEach(function (item) {
-                if (item.dataset.listenersBound) {
-                    return;
-                }
-                item.dataset.listenersBound = 'true';
-                item.addEventListener('mousedown', function (event) {
-                    var clickedElement = event.target;
-                    if (clickedElement.closest('button') ||
-                        clickedElement.tagName === 'TEXTAREA' ||
-                        clickedElement.closest('.verdict-indicator')) {
-                        return;
-                    }
-                    event.preventDefault();
-                    item.focus();
-                    var stableId = _h.normalizeAnnotationIdentifierValue
-                        ? _h.normalizeAnnotationIdentifierValue(
-                            item.dataset.annotationRequestId ||
-                            item.dataset.annotationIdentifier ||
-                            item.dataset.annotationXref
-                        )
-                        : (item.dataset.annotationRequestId || item.dataset.annotationIdentifier || item.dataset.annotationXref);
-                    var pageIdx = parseInt(item.dataset.annotationPage || '-1', 10);
-                    if (stableId !== null && !Number.isNaN(pageIdx)) {
-                        highlightSelection(pageIdx, stableId);
-                    }
-                });
-
-                item.addEventListener('focus', function () {
-                    item.classList.add('item-focused', 'active');
-                });
-                item.addEventListener('blur', function () {
-                    item.classList.remove('item-focused', 'active');
-                });
-            });
-
             var selected = _getSelectedAnnotation();
             if (selected.identifier && selected.pageIdx !== null && _h.escapeCssAttribute) {
                 requestAnimationFrame(function () {
@@ -2182,7 +2198,11 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     }
 
                     initializeAnnotationObserver();
-                    _emit('onRenderOverlaysNeeded', { forceRender: false });
+                    // A reload is authoritative: drags can change existing
+                    // markers in place without updating the render signature,
+                    // and that signature does not include every visual field.
+                    // Rebuild from the loaded data even if the cache matches.
+                    _emit('onRenderOverlaysNeeded', { forceRender: true });
                     if (_h.refreshMarkupFromAnnotations) {
                         _h.refreshMarkupFromAnnotations();
                     }
@@ -3405,7 +3425,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             deleteAnnotation: deleteAnnotation,
             deleteAnnotationSilently: deleteAnnotationSilently,
             revertAnnotationToAi: function (pageIdx, identifier, sourceButton) {
-                if (_destroyed) return Promise.resolve();
+                if (_isDestroyedSidebarAction()) return Promise.resolve();
                 return _revertAnnotationToAi(pageIdx, identifier, sourceButton);
             },
 
@@ -3452,6 +3472,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             destroy: function () {
                 if (_destroyed) return;
                 _destroyed = true;
+
+                _sidebarEventBindings.forEach(function (binding) {
+                    binding.element.removeEventListener(binding.type, binding.listener);
+                    delete binding.element.dataset[binding.bindingFlag];
+                });
+                _sidebarEventBindings = [];
 
                 if (_drawingIdleRetryTimer) {
                     clearTimeout(_drawingIdleRetryTimer);
