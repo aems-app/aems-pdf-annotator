@@ -379,6 +379,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         var _updatingPriorityId = null;
         var _isDraggingAnnotation = false;
         var _currentAnnotationsPage = 0;
+        var _sidebarEventBindings = [];
 
         function _syncAnnotationsState(patch) {
             if (!_annotationsState || !patch) {
@@ -1777,11 +1778,35 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             return Promise.resolve();
         }
 
+        function _isDestroyedSidebarAction() {
+            if (!_destroyed) return false;
+            console.warn('[PDF Preview] Ignoring sidebar action on a destroyed annotation controller.');
+            return true;
+        }
+
+        function _addSidebarEventListener(element, type, listener, bindingFlag) {
+            var guardedListener = function (event) {
+                if (_isDestroyedSidebarAction()) return;
+                return listener.call(this, event);
+            };
+            element.addEventListener(type, guardedListener);
+            _sidebarEventBindings.push({
+                element: element,
+                type: type,
+                listener: guardedListener,
+                bindingFlag: bindingFlag || 'listenersBound',
+            });
+        }
+
         function _attachSidebarEventHandlers(listEl) {
             if (!listEl || listEl.dataset.annotationControllerBound === 'true') {
                 return;
             }
             listEl.dataset.annotationControllerBound = 'true';
+
+            function addListEventListener(type, listener) {
+                _addSidebarEventListener(listEl, type, listener, 'annotationControllerBound');
+            }
 
             function consumeActionEvent(event) {
                 if (!event) {
@@ -1794,7 +1819,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
             }
 
-            listEl.addEventListener('click', function (event) {
+            addListEventListener('click', function (event) {
                 var editBtn = event.target.closest('.edit-annotation');
                 if (editBtn) {
                     consumeActionEvent(event);
@@ -1880,7 +1905,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
             });
 
-            listEl.addEventListener('mousedown', function (event) {
+            addListEventListener('mousedown', function (event) {
                 var dot = event.target.closest('.priority-dot');
                 if (!dot) {
                     return;
@@ -1907,7 +1932,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
             });
 
-            listEl.addEventListener('keydown', function (event) {
+            addListEventListener('keydown', function (event) {
                 var item = event.target.closest('.list-group-item');
                 if (!item) {
                     return;
@@ -1949,7 +1974,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
             });
 
-            listEl.addEventListener('dblclick', function (event) {
+            addListEventListener('dblclick', function (event) {
                 var item = event.target.closest('.list-group-item');
                 if (!item || event.target.closest('button') || event.target.tagName === 'TEXTAREA') {
                     return;
@@ -1967,6 +1992,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         }
 
         function renderSidebar() {
+            if (_destroyed) return;
             syncVisibleMarkersFromDom();
             if (_getSplitPanelActive() && _h.renderAIAnnotationsList) {
                 _h.renderAIAnnotationsList();
@@ -2054,7 +2080,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     return;
                 }
                 sidebarTextarea.dataset.listenersBound = 'true';
-                sidebarTextarea.addEventListener('input', function () {
+                _addSidebarEventListener(sidebarTextarea, 'input', function () {
                     var inlineLabel = document.querySelector('.annotation-label.label-editing');
                     if (!inlineLabel) {
                         return;
@@ -2071,7 +2097,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     return;
                 }
                 btn.dataset.listenersBound = 'true';
-                btn.addEventListener('click', async function () {
+                _addSidebarEventListener(btn, 'click', async function () {
                     var identifier = btn.dataset.annotationIdentifier || btn.dataset.annotationXref || null;
                     var pageIdx = _parseDatasetPageIndex(btn.dataset.annotationPage);
                     await cancelAnnotationEdit(pageIdx, identifier);
@@ -2083,7 +2109,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     return;
                 }
                 item.dataset.listenersBound = 'true';
-                item.addEventListener('mousedown', function (event) {
+                _addSidebarEventListener(item, 'mousedown', function (event) {
                     var clickedElement = event.target;
                     if (clickedElement.closest('button') ||
                         clickedElement.tagName === 'TEXTAREA' ||
@@ -2105,10 +2131,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     }
                 });
 
-                item.addEventListener('focus', function () {
+                _addSidebarEventListener(item, 'focus', function () {
                     item.classList.add('item-focused', 'active');
                 });
-                item.addEventListener('blur', function () {
+                _addSidebarEventListener(item, 'blur', function () {
                     item.classList.remove('item-focused', 'active');
                 });
             });
@@ -3405,7 +3431,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             deleteAnnotation: deleteAnnotation,
             deleteAnnotationSilently: deleteAnnotationSilently,
             revertAnnotationToAi: function (pageIdx, identifier, sourceButton) {
-                if (_destroyed) return Promise.resolve();
+                if (_isDestroyedSidebarAction()) return Promise.resolve();
                 return _revertAnnotationToAi(pageIdx, identifier, sourceButton);
             },
 
@@ -3452,6 +3478,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             destroy: function () {
                 if (_destroyed) return;
                 _destroyed = true;
+
+                _sidebarEventBindings.forEach(function (binding) {
+                    binding.element.removeEventListener(binding.type, binding.listener);
+                    delete binding.element.dataset[binding.bindingFlag];
+                });
+                _sidebarEventBindings = [];
 
                 if (_drawingIdleRetryTimer) {
                     clearTimeout(_drawingIdleRetryTimer);
