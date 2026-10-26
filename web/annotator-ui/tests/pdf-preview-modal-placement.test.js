@@ -2673,6 +2673,53 @@ describe('pdf-preview-modal placement helpers', () => {
       ]);
     });
 
+    it.each(['annotationId', 'identifier', 'requestId', 'requestIdentifier', 'stable_id', 'stableId', 'id', 'xref'])(
+      'comment recreation remaps %s on each operation and nested target across both undo stacks', async (field) => {
+        const controllerUndoStack = [];
+        const oldValue = field === 'xref' ? 41 : 'deleted-comment';
+        const identity = () => ({ [field]: oldValue, content: 'Preserve snapshot text', pageIdx: 0 });
+        const operation = () => ({
+          type: 'priority', ...identity(), oldPriority: 'amber', newPriority: 'red',
+          annotation: identity(), snapshot: identity(), undoTarget: identity(), redoTarget: identity(),
+        });
+        // Distinct objects ensure the controller stack is visited even when it does not share the modal's copy.
+        const local = operation();
+        const controller = operation();
+        const unrelated = { type: 'edit', identifier: 'unrelated-comment', snapshot: { xref: 99 }, pageIdx: 0 };
+        const restored = {
+          stable_id: 'restored-comment', id: 'restored-comment', xref: 42, page_index: 0,
+          type: 'Text', content: 'Deleted text', rect: [10, 20, 30, 40],
+        };
+        const h = await undoHarness({
+          controllerUndoStack,
+          visibilityController: {},
+          createAnnotation: vi.fn().mockResolvedValue({ success: true, annotation: restored }),
+        });
+        h.pushLocalUndo(unrelated);
+        const beforeUnrelated = structuredClone(unrelated);
+        h.pushLocalUndo(local);
+        controllerUndoStack.push(controller);
+        const deletion = {
+          type: 'delete', pageIdx: 0,
+          annotation: { ...restored, id: 'deleted-comment', stable_id: 'deleted-comment', xref: 41 },
+        };
+        h.pushLocalUndo(deletion);
+        h.dispatchUndo();
+        await settle();
+
+        expect(h.getUndoStacks()).toEqual({ local: [unrelated, local], controller: [controller] });
+        for (const op of [local, controller]) {
+          for (const target of [op, op.annotation, op.snapshot, op.undoTarget, op.redoTarget]) {
+            expect(target[field]).toBe(field === 'xref' ? 42 : 'restored-comment');
+            expect(target.content).toBe('Preserve snapshot text');
+          }
+        }
+        expect(unrelated).toEqual(beforeUnrelated);
+        // The deletion has already left undoStack while its POST is in flight.
+        expect(deletion.annotation).toMatchObject({ id: 'restored-comment', stable_id: 'restored-comment', xref: 42 });
+      },
+    );
+
     it('markup recreation preserves numeric stable ID history and its undo target and content', async () => {
       const h = await numericIdentityHarness();
       await h.editB('B first');

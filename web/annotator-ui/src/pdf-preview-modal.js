@@ -3592,6 +3592,7 @@
     }
 
     const HISTORY_IDENTITY_FIELDS = ['annotationId', 'identifier', 'requestId', 'requestIdentifier', 'stable_id', 'stableId', 'id'];
+    const HISTORY_TARGET_FIELDS = ['annotation', 'snapshot', 'undoTarget', 'redoTarget'];
 
     // Bare identifiers (including numeric stable IDs) belong only to the stable namespace.
     // Only an xref field or an explicitly namespaced identifier can contribute an xref.
@@ -3621,9 +3622,12 @@
         return [...identities(left)].some((value) => rightIdentities.has(value));
     }
 
+    function historyOperationTargets(operation) {
+        return [operation, ...HISTORY_TARGET_FIELDS.map((key) => operation?.[key])];
+    }
+
     function historyOperationMatches(left, right) {
-        const targets = (operation) => [operation, operation?.annotation, operation?.snapshot, operation?.undoTarget, operation?.redoTarget];
-        return targets(left).some((target) => targets(right).some((other) => historyIdentityMatches(target, other)));
+        return historyOperationTargets(left).some((target) => historyOperationTargets(right).some((other) => historyIdentityMatches(target, other)));
     }
 
     // Undo functionality
@@ -4458,6 +4462,7 @@
 
             // CRITICAL FIX: Add annotation directly instead of reloading all annotations
             if (data.annotation) {
+                remapAnnotationHistory(data.annotation, operation);
                 const responsePageIdx = data.annotation.page_index;
                 if (!annotationsData[responsePageIdx]) {
                     annotationsData[responsePageIdx] = [];
@@ -4776,7 +4781,7 @@
             }
             if (data.annotation) {
                 const respPg = data.annotation.page_index;
-                remapMarkupHistory(operation.annotationId, data.annotation, operation);
+                remapAnnotationHistory(data.annotation, operation);
                 // upsert (not push) so re-runs of an undo can't double-insert
                 upsertAnnotationEntryLocal(data.annotation, respPg);
                 // Redo deletes the recreated markup by the id its creation path uses.
@@ -4894,7 +4899,7 @@
                 return historyRequestFailure(data || {}, 'Failed to redo creation');
             }
             if (data.annotation) {
-                remapMarkupHistory(operation.annotationId, data.annotation, operation);
+                remapAnnotationHistory(data.annotation, operation);
                 upsertAnnotationEntryLocal(data.annotation, operation.pageIdx);
                 operation.annotationId = data.annotation.stable_id || data.annotation.xref;
             }
@@ -4907,24 +4912,23 @@
     }
 
     // Recreation changes identity for the entire timeline, including entries currently on the redo stack.
-    function remapMarkupHistory(oldId, annotation, inFlight) {
+    function remapAnnotationHistory(annotation, inFlight) {
         const newId = annotation.stable_id || annotation.id || annotation.xref;
-        const identity = { annotationId: oldId, xref: inFlight.snapshot?.xref ?? inFlight.xref };
+        // Capture every old alias before changing shared history objects. Sidebar deletions keep their
+        // identity in annotation, whereas markup deletions use annotationId and snapshot.
+        const identities = historyOperationTargets(inFlight).filter(Boolean).map((target) => ({ ...target }));
         const operations = new Set([
             ...undoStack, ...redoStack.map((entry) => entry.operation),
             ...(_currentAnnotationCtrl?.getUndoStack?.() || []), inFlight,
         ]);
         const remap = (target) => {
-            if (!target || !historyIdentityMatches(target, identity)) return;
+            if (!target || !identities.some((identity) => historyIdentityMatches(target, identity))) return;
             HISTORY_IDENTITY_FIELDS.forEach((key) => {
                 if (target[key] != null) target[key] = newId;
             });
             if (target.xref != null) target.xref = annotation.xref;
         };
-        operations.forEach((operation) => {
-            remap(operation);
-            ['redoTarget', 'undoTarget', 'annotation', 'snapshot'].forEach((key) => remap(operation[key]));
-        });
+        operations.forEach((operation) => historyOperationTargets(operation).forEach(remap));
     }
 
     function undoOperation(operation, step) {
