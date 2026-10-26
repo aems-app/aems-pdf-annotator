@@ -98,18 +98,28 @@ describe('real modal sidebar controller lifecycle', () => {
     return { modal, ...instance };
   }
 
-  async function reopen(cycles = 2) {
+  function replaceSidebar(current, cycles = 50) {
+    for (let i = 0; i < cycles; i++) {
+      const previousRow = list.querySelector('.list-group-item');
+      current.options.setAnnotationsData({ 0: [{ ...annotation, content: `Reload ${i}` }] });
+      current.controller.renderSidebar();
+      expect(previousRow.isConnected, `replacement ${i + 1} must detach the old row`).toBe(false);
+    }
+  }
+
+  async function reopen(cycles = 2, replacements = 0) {
     for (let i = 0; i < cycles; i++) {
       const previous = await createModal();
       previous.modal.destroy();
     }
     const current = await createModal();
+    replaceSidebar(current, replacements);
     expect(document.getElementById('pdfGradedCommentsList')).toBe(list);
     return current;
   }
 
-  it.each([0, 1, 2])('Restore reaches the current controller and host exactly once after %i reopen cycles', async (cycles) => {
-    const current = await reopen(cycles);
+  it.each([[0, 0], [1, 0], [2, 0], [2, 50]])('Restore reaches the current controller and host exactly once after %i reopens and %i replacements', async (cycles, replacements) => {
+    const current = await reopen(cycles, replacements);
     const handler = vi.spyOn(current.controller, 'revertAnnotationToAi');
     const button = list.querySelector('.revert-annotation-to-ai');
     expect(button).not.toBeNull();
@@ -131,10 +141,11 @@ describe('real modal sidebar controller lifecycle', () => {
     ['double-click edit', '.annotation-content', 'dblclick', 'beginEdit'],
   ];
 
-  it.each(actions.flatMap((action) => [0, 2].map((cycles) => [...action, cycles])))('%s dispatches only to the current controller (%s, %s, %s, %i reopens)', async (name, selector, type, method, cycles) => {
-    const current = await reopen(cycles);
+  it.each(actions.flatMap((action) => [[0, 0], [2, 0], [2, 50]].map((scenario) => [...action, ...scenario])))('%s dispatches only to the current controller (%s, %s, %s, %i reopens, %i replacements)', async (name, selector, type, method, cycles, replacements) => {
+    const current = await reopen(cycles, replacements);
     if (name === 'save text') {
       current.controller.beginEdit(0, 'Q1-04', list.querySelector('.list-group-item').dataset.annotationId);
+      replaceSidebar(current, replacements);
     }
     const owner = ['verdict/level', 'priority', 'navigation', 'keyboard delete'].includes(name)
       ? current.helpers : current.controller;
@@ -172,12 +183,13 @@ describe('real modal sidebar controller lifecycle', () => {
     for (const modal of modals.slice(0, -1)) expect(modal._state.annotations.selectedId).toBeNull();
   });
 
-  it.each(['save text', 'delete', 'priority', 'verdict/level'].flatMap((name) => [0, 2].map((cycles) => [name, cycles])))('%s calls the host once after %i reopens', async (name, cycles) => {
-    const current = await reopen(cycles);
+  it.each(['save text', 'delete', 'priority', 'verdict/level'].flatMap((name) => [[0, 0], [2, 0], [2, 50]].map((scenario) => [name, ...scenario])))('%s calls the host once after %i reopens and %i replacements', async (name, cycles, replacements) => {
+    const current = await reopen(cycles, replacements);
     let expectedBody;
     if (name === 'save text') {
       list.querySelector('.edit-annotation').click();
       expect(current.modal._state.annotations.editingId).toBeTruthy();
+      replaceSidebar(current, replacements);
       list.querySelector('textarea').value = 'Updated teacher feedback';
       list.querySelector('.save-annotation-btn').click();
       expectedBody = { content: 'Updated teacher feedback' };
@@ -202,27 +214,103 @@ describe('real modal sidebar controller lifecycle', () => {
     if (expectedBody) expect(hostMethod.mock.calls[0][3]).toEqual(expectedBody);
   });
 
-  it('Cancel and textarea synchronization still work after reopening', async () => {
+  it('Cancel and textarea synchronization still work after reopening and 50 editing replacements', async () => {
     const current = await reopen();
     current.controller.beginEdit(0, 'Q1-04', list.querySelector('.list-group-item').dataset.annotationId);
+    replaceSidebar(current);
     const inlineLabel = document.createElement('div');
     inlineLabel.className = 'annotation-label label-editing';
     inlineLabel.innerHTML = '<textarea class="inline-annotation-editor"></textarea>';
     document.body.appendChild(inlineLabel);
     const textarea = list.querySelector('textarea');
+    const selection = current.modal._state.annotations.selectedId;
+    const row = textarea.closest('.list-group-item');
+    textarea.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(current.modal._state.annotations.selectedId).toBe(selection);
+    textarea.focus();
+    row.classList.remove('item-focused', 'active');
     textarea.value = 'Edited teacher feedback';
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
     expect(inlineLabel.querySelector('textarea').value).toBe('Edited teacher feedback');
+    expect(row.classList.contains('item-focused')).toBe(false);
+    const inlineTextarea = inlineLabel.querySelector('textarea');
+    inlineTextarea.focus();
+    textarea.value = 'Sidebar must not overwrite the focused inline editor';
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(inlineTextarea.value).toBe('Edited teacher feedback');
     list.querySelector('.cancel-edit-btn').click();
     await Promise.resolve();
     expect(current.modal._state.annotations.editingId).toBeNull();
     expect(list.querySelector('.edit-annotation')).not.toBeNull();
   });
 
-  it('destroy removes only its own listeners and clears the persistent binding flag', async () => {
+  it('selection, focus and blur still work after 50 replacements without selecting controls', async () => {
+    const current = await reopen(2, 50);
+    const row = list.querySelector('.list-group-item');
+    for (const selector of ['.edit-annotation i', '.verdict-indicator']) {
+      row.querySelector(selector).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      expect(current.modal._state.annotations.selectedId).toBeNull();
+      expect(document.activeElement).not.toBe(row);
+    }
+    row.querySelector('.annotation-content').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(current.modal._state.annotations.selectedId).toBe('Q1-04');
+    expect(document.activeElement).toBe(row);
+    expect(row.classList.contains('item-focused')).toBe(true);
+    expect(row.classList.contains('active')).toBe(true);
+    row.blur();
+    expect(row.classList.contains('item-focused')).toBe(false);
+    expect(row.classList.contains('active')).toBe(false);
+    row.focus();
+    expect(row.classList.contains('item-focused')).toBe(true);
+    expect(row.classList.contains('active')).toBe(true);
+  });
+
+  it.each(['rows', 'editing', 'empty'])('keeps owned sidebar listeners bounded across 50 replacements (%s)', async (mode) => {
+    const activeBindings = [];
+    const originalAdd = EventTarget.prototype.addEventListener;
+    const originalRemove = EventTarget.prototype.removeEventListener;
+    const capture = (options) => typeof options === 'boolean' ? options : !!options?.capture;
+    vi.spyOn(EventTarget.prototype, 'addEventListener').mockImplementation(function (type, listener, options) {
+      if (this === list || list.contains(this)) {
+        activeBindings.push({ element: this, type, listener, capture: capture(options) });
+      }
+      return originalAdd.call(this, type, listener, options);
+    });
+    vi.spyOn(EventTarget.prototype, 'removeEventListener').mockImplementation(function (type, listener, options) {
+      const index = activeBindings.findIndex((binding) => binding.element === this
+        && binding.type === type && binding.listener === listener && binding.capture === capture(options));
+      if (index !== -1) activeBindings.splice(index, 1);
+      return originalRemove.call(this, type, listener, options);
+    });
+    const current = await createModal();
+    if (mode === 'editing') {
+      // Render editing controls without beginEdit's separate auto-resize/keyboard setup.
+      current.options.setEditingAnnotationId(list.querySelector('.list-group-item').dataset.annotationId);
+      current.controller.renderSidebar();
+      expect(list.querySelector('textarea')).not.toBeNull();
+      expect(list.querySelector('.cancel-edit-btn')).not.toBeNull();
+    }
+    const initialCount = activeBindings.length;
+    expect(initialCount).toBeGreaterThan(0);
+    replaceSidebar(current);
+    if (mode === 'empty') {
+      current.options.setAnnotationsData({});
+      current.controller.renderSidebar();
+      expect(list.querySelector('.list-group-item')).toBeNull();
+    }
+    expect(activeBindings.length, 'listener ownership must stay constant as rows are replaced').toBeLessThanOrEqual(initialCount);
+    expect(activeBindings.filter(({ element }) => !element.isConnected), 'no detached child may retain an owned sidebar listener').toEqual([]);
+    expect(activeBindings.every(({ element }) => element === list), 'owned listeners belong only to the persistent list').toBe(true);
+    expect(new Set(activeBindings.map(({ type }) => type)).size, 'each event type is delegated once').toBe(activeBindings.length);
+    current.modal.destroy();
+    expect(activeBindings, 'destroy must release every owned listener').toEqual([]);
+  });
+
+  it('destroy removes only its own listeners after 50 replacements and clears the persistent binding flag', async () => {
     const addListener = vi.spyOn(EventTarget.prototype, 'addEventListener');
     const removeListener = vi.spyOn(EventTarget.prototype, 'removeEventListener');
     const current = await createModal();
+    replaceSidebar(current);
     const bindings = addListener.mock.calls.flatMap(([type, listener], index) => {
       const element = addListener.mock.contexts[index];
       return element === list || list.contains(element) ? [{ element, type, listener }] : [];
@@ -242,7 +330,7 @@ describe('real modal sidebar controller lifecycle', () => {
     expect(adapter.revertAnnotationToAi).not.toHaveBeenCalled();
   });
 
-  it.each(['click', 'mousedown', 'keydown', 'dblclick'])('an already queued %s listener warns and lets the event propagate after destroy', async (type) => {
+  it.each(['click', 'mousedown', 'keydown', 'dblclick', 'input', 'focusin', 'focusout'])('an already queued %s listener warns and lets the event propagate after destroy', async (type) => {
     const addListener = vi.spyOn(list, 'addEventListener');
     const current = await createModal();
     const listener = addListener.mock.calls.find(([eventType]) => eventType === type)?.[1];
