@@ -1879,6 +1879,14 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     return;
                 }
 
+                var cancelBtn = event.target.closest('.cancel-edit-btn');
+                if (cancelBtn) {
+                    var cancelIdentifier = cancelBtn.dataset.annotationIdentifier || cancelBtn.dataset.annotationXref || null;
+                    var cancelPage = _parseDatasetPageIndex(cancelBtn.dataset.annotationPage);
+                    cancelAnnotationEdit(cancelPage, cancelIdentifier);
+                    return;
+                }
+
                 var verdictIcon = event.target.closest('.verdict-indicator');
                 if (verdictIcon) {
                     consumeActionEvent(event);
@@ -1906,6 +1914,27 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             });
 
             addListEventListener('mousedown', function (event) {
+                // Select before handling priority, as the former row listener did.
+                var clickedElement = event.target;
+                var item = clickedElement.closest('.list-group-item');
+                if (item && !clickedElement.closest('button') &&
+                    clickedElement.tagName !== 'TEXTAREA' &&
+                    !clickedElement.closest('.verdict-indicator')) {
+                    event.preventDefault();
+                    item.focus();
+                    var stableId = _h.normalizeAnnotationIdentifierValue
+                        ? _h.normalizeAnnotationIdentifierValue(
+                            item.dataset.annotationRequestId ||
+                            item.dataset.annotationIdentifier ||
+                            item.dataset.annotationXref
+                        )
+                        : (item.dataset.annotationRequestId || item.dataset.annotationIdentifier || item.dataset.annotationXref);
+                    var pageIdx = parseInt(item.dataset.annotationPage || '-1', 10);
+                    if (stableId !== null && !Number.isNaN(pageIdx)) {
+                        highlightSelection(pageIdx, stableId);
+                    }
+                }
+
                 var dot = event.target.closest('.priority-dot');
                 if (!dot) {
                     return;
@@ -1989,6 +2018,34 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
                 handle.beginEdit(editPage, editIdentifier, item.dataset.annotationId);
             });
+
+            // Bind only to the persistent list: replaced rows must never be
+            // retained by this controller's listener registry.
+            addListEventListener('input', function (event) {
+                var sidebarTextarea = event.target;
+                if (!sidebarTextarea.matches('.auto-resize-textarea') || !sidebarTextarea.id) {
+                    return;
+                }
+                var inlineLabel = document.querySelector('.annotation-label.label-editing');
+                if (!inlineLabel) {
+                    return;
+                }
+                var inlineTextarea = inlineLabel.querySelector('.inline-annotation-editor');
+                if (inlineTextarea && inlineTextarea !== document.activeElement) {
+                    inlineTextarea.value = sidebarTextarea.value;
+                }
+            });
+
+            addListEventListener('focusin', function (event) {
+                if (event.target.matches('.list-group-item')) {
+                    event.target.classList.add('item-focused', 'active');
+                }
+            });
+            addListEventListener('focusout', function (event) {
+                if (event.target.matches('.list-group-item')) {
+                    event.target.classList.remove('item-focused', 'active');
+                }
+            });
         }
 
         function renderSidebar() {
@@ -2071,73 +2128,6 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
 
             _attachSidebarEventHandlers(listEl);
-
-            listEl.querySelectorAll('.auto-resize-textarea').forEach(function (sidebarTextarea) {
-                if (!sidebarTextarea.id) {
-                    return;
-                }
-                if (sidebarTextarea.dataset.listenersBound) {
-                    return;
-                }
-                sidebarTextarea.dataset.listenersBound = 'true';
-                _addSidebarEventListener(sidebarTextarea, 'input', function () {
-                    var inlineLabel = document.querySelector('.annotation-label.label-editing');
-                    if (!inlineLabel) {
-                        return;
-                    }
-                    var inlineTextarea = inlineLabel.querySelector('.inline-annotation-editor');
-                    if (inlineTextarea && inlineTextarea !== document.activeElement) {
-                        inlineTextarea.value = sidebarTextarea.value;
-                    }
-                });
-            });
-
-            listEl.querySelectorAll('.cancel-edit-btn').forEach(function (btn) {
-                if (btn.dataset.listenersBound) {
-                    return;
-                }
-                btn.dataset.listenersBound = 'true';
-                _addSidebarEventListener(btn, 'click', async function () {
-                    var identifier = btn.dataset.annotationIdentifier || btn.dataset.annotationXref || null;
-                    var pageIdx = _parseDatasetPageIndex(btn.dataset.annotationPage);
-                    await cancelAnnotationEdit(pageIdx, identifier);
-                });
-            });
-
-            listEl.querySelectorAll('.list-group-item').forEach(function (item) {
-                if (item.dataset.listenersBound) {
-                    return;
-                }
-                item.dataset.listenersBound = 'true';
-                _addSidebarEventListener(item, 'mousedown', function (event) {
-                    var clickedElement = event.target;
-                    if (clickedElement.closest('button') ||
-                        clickedElement.tagName === 'TEXTAREA' ||
-                        clickedElement.closest('.verdict-indicator')) {
-                        return;
-                    }
-                    event.preventDefault();
-                    item.focus();
-                    var stableId = _h.normalizeAnnotationIdentifierValue
-                        ? _h.normalizeAnnotationIdentifierValue(
-                            item.dataset.annotationRequestId ||
-                            item.dataset.annotationIdentifier ||
-                            item.dataset.annotationXref
-                        )
-                        : (item.dataset.annotationRequestId || item.dataset.annotationIdentifier || item.dataset.annotationXref);
-                    var pageIdx = parseInt(item.dataset.annotationPage || '-1', 10);
-                    if (stableId !== null && !Number.isNaN(pageIdx)) {
-                        highlightSelection(pageIdx, stableId);
-                    }
-                });
-
-                _addSidebarEventListener(item, 'focus', function () {
-                    item.classList.add('item-focused', 'active');
-                });
-                _addSidebarEventListener(item, 'blur', function () {
-                    item.classList.remove('item-focused', 'active');
-                });
-            });
 
             var selected = _getSelectedAnnotation();
             if (selected.identifier && selected.pageIdx !== null && _h.escapeCssAttribute) {
