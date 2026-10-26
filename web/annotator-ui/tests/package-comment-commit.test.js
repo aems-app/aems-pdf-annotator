@@ -72,6 +72,7 @@ async function openPackage() {
   };
   const stored = new Map();
   const writes = [];
+  const missingTargets = [];
   let finishCreate;
   let nextId = 0;
   const hostApi = {
@@ -92,7 +93,10 @@ async function openPackage() {
     updateAnnotation: vi.fn(async (_a, _s, id, body) => {
       writes.push(['PUT', id, body]);
       const current = stored.get(id);
-      if (!current) throw Object.assign(new Error('Annotation not found'), { status: 404 });
+      if (!current) {
+        missingTargets.push(['PUT', id]);
+        throw Object.assign(new Error('Annotation not found'), { status: 404 });
+      }
       const annotation = { ...current, ...body };
       stored.set(id, annotation);
       return { success: true, annotation: { ...annotation } };
@@ -100,7 +104,10 @@ async function openPackage() {
     deleteAnnotation: vi.fn(async (_a, _s, id) => {
       writes.push(['DELETE', id]);
       await settle(20);
-      stored.delete(id);
+      if (!stored.delete(id)) {
+        missingTargets.push(['DELETE', id]);
+        throw Object.assign(new Error('Annotation not found'), { status: 404 });
+      }
       return { success: true };
     }),
   };
@@ -132,8 +139,27 @@ async function openPackage() {
     editor.value = text;
     editor.dispatchEvent(new w.Event('input', { bubbles: true }));
   }
-  return { w, modal, hostApi, stored, writes, editor, originalEditor, key, fill };
+  async function deleteFromSidebar() {
+    // jsdom has no layout; put the real marker inside the visible PDF viewport.
+    w.document.querySelector('.annotation-marker').getBoundingClientRect = () => ({
+      left: 200, top: 200, right: 224, bottom: 224, width: 24, height: 24,
+    });
+    w.document.getElementById('pdfGradedContainer').dispatchEvent(new w.Event('scroll'));
+    await vi.waitFor(() => expect(w.document.querySelector('.delete-annotation')).not.toBeNull());
+    const button = w.document.querySelector('.delete-annotation');
+    expect(button).not.toBeNull();
+    button.click();
+    const confirm = w.document.querySelector('.confirm-delete-yes');
+    expect(confirm).not.toBeNull();
+    confirm.click();
+    await vi.waitFor(() => expect(stored.size).toBe(0));
+    await settle(50);
+  }
+  return { w, modal, hostApi, stored, writes, missingTargets, editor, originalEditor, key, fill, deleteFromSidebar };
 }
+
+// POST has no target id; PUT and DELETE must always address a currently live id.
+const requestSequence = (h) => h.writes.map(([method, id]) => [method, method === 'POST' ? null : id]);
 
 describe('page double-click and first comment commit through the package entry', () => {
   it.each(['Enter', 'Escape'])('keeps the current draft on %s when POST replaced the optimistic editor', async (key) => {
@@ -171,5 +197,75 @@ describe('page double-click and first comment commit through the package entry',
     await h.key('z');
     await h.key('z');
     expect(h.writes.at(-1)).toEqual(['DELETE', 'created-2']);
+  });
+
+  it('remaps the whole comment timeline after delete undo, including creation and pending redos', async () => {
+    const h = await openPackage();
+    h.fill('First committed text');
+    await h.key('Enter', { target: h.editor });
+    await h.deleteFromSidebar();
+
+    await h.key('z'); // Undo delete: created-1 is gone; POST assigns created-2.
+    expect(h.stored.get('created-2')?.content).toBe('First committed text');
+    const stacks = h.w.PdfPreviewModal.__test.getUndoStacks();
+    await h.key('z'); // Undo edit against the recreated comment.
+    expect(h.writes.at(-1)).toEqual(['PUT', 'created-2', { content: 'New comment...' }]);
+    expect(h.stored.get('created-2')?.content).toBe('New comment...');
+    for (const stack of [stacks.local, stacks.controller]) {
+      expect(stack.find((op) => op.type === 'create-comment')).toMatchObject({
+        annotationId: 'created-2', xref: 42,
+      });
+    }
+    await h.key('z'); // Undo the original creation against that same live identity.
+    expect(h.stored.size).toBe(0);
+
+    await h.key('y'); // Redo creation: POST assigns created-3, remapping both pending redos.
+    expect(h.stored.get('created-3')?.content).toBe('New comment...');
+    await h.key('y');
+    expect(h.stored.get('created-3')?.content).toBe('First committed text');
+    await h.key('y');
+    expect(h.stored.size).toBe(0);
+    expect(h.missingTargets).toEqual([]);
+    expect(requestSequence(h)).toEqual([
+      ['POST', null], ['PUT', 'created-1'], ['DELETE', 'created-1'],
+      ['POST', null], ['PUT', 'created-2'], ['DELETE', 'created-2'],
+      ['POST', null], ['PUT', 'created-3'], ['DELETE', 'created-3'],
+    ]);
+    // The in-flight deletion snapshot must also follow each recreation, for another undo.
+    for (const stack of Object.values(h.w.PdfPreviewModal.__test.getUndoStacks())) {
+      expect(stack.find((op) => op.type === 'delete')?.annotation).toMatchObject({
+        id: 'created-3', stable_id: 'created-3', xref: 43,
+      });
+    }
+    await h.key('z');
+    expect(h.stored.get('created-4')?.content).toBe('First committed text');
+    await h.key('z');
+    expect(h.writes.at(-1)).toEqual(['PUT', 'created-4', { content: 'New comment...' }]);
+    expect(h.missingTargets).toEqual([]);
+  });
+
+  it('undoes a comment move against the new identity after edit, move, delete, undo', async () => {
+    const h = await openPackage();
+    h.fill('Moved comment');
+    await h.key('Enter', { target: h.editor });
+    const oldRect = h.stored.get('created-1').rect.slice();
+    const marker = h.w.document.querySelector('.annotation-marker');
+    Object.defineProperties(marker, {
+      offsetLeft: { value: 250 }, offsetTop: { value: 300 },
+      offsetWidth: { value: 24 }, offsetHeight: { value: 24 },
+    });
+    await h.w.PdfPreviewModal.__test.updateAnnotationPosition(0, 0, 'created-1', marker);
+    expect(h.w.PdfPreviewModal.__test.getUndoStacks().local.at(-1).type).toBe('move');
+    await h.deleteFromSidebar();
+    await h.key('z');
+    await h.key('z'); // Undo move: old identity must not be used or silently dropped.
+    expect(h.writes.at(-1)).toEqual(['PUT', 'created-2', {
+      page_index: 0, rect: [oldRect[0], 792 - oldRect[3], oldRect[2], 792 - oldRect[1]],
+    }]);
+    expect(requestSequence(h)).toEqual([
+      ['POST', null], ['PUT', 'created-1'], ['PUT', 'created-1'],
+      ['DELETE', 'created-1'], ['POST', null], ['PUT', 'created-2'],
+    ]);
+    expect(h.missingTargets).toEqual([]);
   });
 });
