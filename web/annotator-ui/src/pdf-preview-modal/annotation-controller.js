@@ -2208,7 +2208,11 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     }
 
                     initializeAnnotationObserver();
-                    _emit('onRenderOverlaysNeeded', { forceRender: false });
+                    // A reload is authoritative: drags can change existing
+                    // markers in place without updating the render signature,
+                    // and that signature does not include every visual field.
+                    // Rebuild from the loaded data even if the cache matches.
+                    _emit('onRenderOverlaysNeeded', { forceRender: true });
                     if (_h.refreshMarkupFromAnnotations) {
                         _h.refreshMarkupFromAnnotations();
                     }
