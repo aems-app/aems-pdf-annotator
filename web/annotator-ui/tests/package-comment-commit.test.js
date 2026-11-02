@@ -14,7 +14,7 @@ const opened = [];
 afterEach(() => opened.splice(0).forEach((dom) => dom.window.close()));
 const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function openPackage({ pendingCreate = false } = {}) {
+async function openPackage({ pendingCreate = false, createFailure = false } = {}) {
   const dom = new JSDOM(`<!doctype html><body>
     <div id="pdfPreviewModal"><div id="pdfPreviewStudent"></div>
     <div id="pdfOriginalPane"></div><div id="pdfGradedPane"></div>
@@ -83,6 +83,7 @@ async function openPackage({ pendingCreate = false } = {}) {
     createAnnotation: vi.fn(async (_a, _s, body) => {
       writes.push(['POST', body]);
       if (nextId === 0) await new Promise((resolve) => { finishCreate = resolve; });
+      if (createFailure) throw new Error('Create refused');
       const id = `created-${++nextId}`;
       const annotation = { ...body, type: 'Text', stable_id: id, id, xref: nextId + 40, source: 'HUMAN' };
       // The server persists PDF coordinates and lists top-left coordinates.
@@ -165,7 +166,7 @@ async function openPackage({ pendingCreate = false } = {}) {
     await vi.waitFor(() => expect(stored.size).toBe(0));
     await settle(50);
   }
-  return { w, modal, hostApi, stored, writes, missingTargets, editor, originalEditor, key, fill, deleteFromSidebar, completeCreate, showSidebar };
+  return { w, modal, hostApi, stored, writes, missingTargets, editor, originalEditor, key, fill, deleteFromSidebar, completeCreate, showSidebar, releaseCreate: finishCreate };
 }
 
 // POST has no target id; PUT and DELETE must always address a currently live id.
@@ -198,8 +199,8 @@ describe('page double-click and first comment commit through the package entry',
     ]);
     expect(h.missingTargets).toEqual([]);
     expect(h.modal.getAnnotations()[0][0].content).toBe(text);
-    expect(h.w.document.querySelector('.inline-annotation-editor')).toBeNull();
-    expect(h.w.document.querySelector('.auto-resize-textarea')).toBeNull();
+    expect(!!h.w.document.querySelector('.inline-annotation-editor')).toBe(false);
+    expect(!!h.w.document.querySelector('.auto-resize-textarea')).toBe(false);
   });
 
   it.each(['inline', 'sidebar'])('saves %s text exactly once after POST resolves', async (path) => {
@@ -218,6 +219,109 @@ describe('page double-click and first comment commit through the package entry',
       ['POST', expect.any(Object)], ['PUT', 'created-1', { content: text }],
     ]);
     expect(h.missingTargets).toEqual([]);
+  });
+
+  it('resolves a captured temporary id after creation and a previous edit replaced the local entry', async () => {
+    const h = await openPackage({ pendingCreate: true });
+    const tempId = h.editor.closest('.annotation-marker').dataset.annotationRequestId;
+    await h.completeCreate();
+    // A handler can retain an old marker identity even after a successful POST.
+    const marker = h.w.document.querySelector('.annotation-marker');
+    marker.dataset.annotationRequestId = tempId;
+    const label = marker.querySelector('.annotation-label');
+    await h.w.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'First edit');
+    expect(h.stored.get('created-1').content).toBe('First edit');
+    // The first PUT replaced the annotation object and removed _tempIdentifier.
+    label.classList.add('label-expanded', 'label-editing');
+    marker.dataset.annotationRequestId = tempId;
+    await h.w.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Second edit');
+    expect(h.writes.filter(([method]) => method === 'PUT')).toEqual([
+      ['PUT', 'created-1', { content: 'First edit' }],
+      ['PUT', 'created-1', { content: 'Second edit' }],
+    ]);
+    expect(h.modal.getAnnotations()[0][0].content).toBe('Second edit');
+    expect(h.missingTargets).toEqual([]);
+  });
+
+  it('waits for creation before a priority write from the optimistic inline editor', async () => {
+    const h = await openPackage({ pendingCreate: true });
+    h.w.document.querySelector('.strip-section.priority-green').dispatchEvent(
+      new h.w.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    await settle(20);
+    expect(h.hostApi.updateAnnotation).not.toHaveBeenCalled();
+    await h.completeCreate();
+    await vi.waitFor(() => expect(h.stored.get('created-1').color).toBe('green'));
+    expect(h.writes.filter(([method]) => method === 'PUT')).toEqual([
+      ['PUT', 'created-1', { color: 'green' }],
+    ]);
+    expect(h.missingTargets).toEqual([]);
+  });
+
+  it('waits for creation before deleting an empty optimistic comment', async () => {
+    const h = await openPackage({ pendingCreate: true });
+    h.editor.dispatchEvent(new h.w.KeyboardEvent('keydown', {
+      key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    await settle(20);
+    expect(h.hostApi.deleteAnnotation).not.toHaveBeenCalled();
+    await h.completeCreate();
+    await vi.waitFor(() => expect(h.stored.size).toBe(0));
+    expect(h.writes.map(([method, id]) => [method, method === 'POST' ? null : id])).toEqual([
+      ['POST', null], ['DELETE', 'created-1'],
+    ]);
+    expect(h.missingTargets).toEqual([]);
+  });
+
+  it('refuses an unresolvable temporary id at the request boundary', async () => {
+    const h = await openPackage();
+    const label = h.editor.closest('.annotation-label');
+    label.closest('.annotation-marker').dataset.annotationRequestId = 'tmp-no-longer-known';
+    await h.w.PdfPreviewModal.__test.saveAndCollapseInlineLabel(label, 'Do not send this');
+    expect(h.hostApi.updateAnnotation).not.toHaveBeenCalled();
+    expect(h.stored.get('created-1').content).toBe('New comment...');
+  });
+
+  it.each(['inline', 'sidebar'])('does not send the queued %s edit when creation fails', async (path) => {
+    const h = await openPackage({ pendingCreate: true, createFailure: true });
+    if (path === 'inline') {
+      h.fill('Draft before failure');
+      h.editor.dispatchEvent(new h.w.KeyboardEvent('keydown', {
+        key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+      }));
+    } else {
+      await h.showSidebar();
+      h.w.document.querySelector('.auto-resize-textarea').value = 'Draft before failure';
+      h.w.document.querySelector('.save-annotation-btn').click();
+    }
+    h.releaseCreate();
+    await settle(150);
+    expect(h.hostApi.updateAnnotation).not.toHaveBeenCalled();
+    expect(h.stored.size).toBe(0);
+    expect(h.missingTargets).toEqual([]);
+  });
+
+  it('retires a queued edit when another submission opens before creation finishes', async () => {
+    const h = await openPackage({ pendingCreate: true });
+    h.fill('Draft for the previous submission');
+    h.editor.dispatchEvent(new h.w.KeyboardEvent('keydown', {
+      key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    const nextHost = {
+      ...h.hostApi,
+      listAnnotations: vi.fn(async () => ({ success: true, annotations: {} })),
+      updateAnnotation: vi.fn(),
+    };
+    const next = h.w.AEMSPdfAnnotator.createAnnotatorModal({
+      context: { assignmentId: 10, submissionId: 2, mode: 'local', annotatedPdfPolicy: 'local_required' },
+      hostApi: nextHost,
+    });
+    await next.open();
+    h.releaseCreate();
+    await settle(150);
+    expect(h.hostApi.updateAnnotation).not.toHaveBeenCalled();
+    expect(nextHost.updateAnnotation).not.toHaveBeenCalled();
+    expect(next.getAnnotations()).toEqual({});
+    expect(h.w.PdfPreviewModal.__test.getUndoStacks()).toEqual({ local: [], controller: [] });
   });
 
   it.each(['Enter', 'Escape'])('keeps the current draft on %s when POST replaced the optimistic editor', async (key) => {

@@ -2620,6 +2620,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     optimisticAnnotation._createdAtSession = true;
                     optimisticAnnotation._isOptimistic = false;
                     optimisticAnnotation._tempXref = tempXref;
+                    // Retain the old value as a lookup alias for handlers that
+                    // were bound before the POST, never as a write identity.
                     optimisticAnnotation._tempIdentifier = previousIdentifier;
                     if (optimisticAnnotation._originalContent === undefined) {
                         optimisticAnnotation._originalContent = optimisticAnnotation.content || '';
@@ -2643,10 +2645,17 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     var newIdentifier = _h.resolveAnnotationIdentifierValue
                         ? _h.resolveAnnotationIdentifierValue(optimisticAnnotation)
                         : previousIdentifier;
+                    if (_h.remapAnnotationIdentity) {
+                        _h.remapAnnotationIdentity(previousIdentifier, optimisticAnnotation);
+                    }
                     if (previousIdentifier && newIdentifier && previousIdentifier !== newIdentifier) {
                         var oldEditingId = 'ann-' + targetPage + '-' + previousIdentifier;
                         if (_getEditingAnnotationId() === oldEditingId) {
                             _setEditingId('ann-' + targetPage + '-' + newIdentifier);
+                        }
+                        var selected = _getSelectedAnnotation();
+                        if (selected.pageIdx === targetPage && selected.identifier === previousIdentifier) {
+                            _setSelectedAnnotation({ pageIdx: targetPage, identifier: newIdentifier });
                         }
                     }
 
@@ -2660,6 +2669,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         xref: optimisticAnnotation.xref,
                     }, { epoch: requestEpoch });
                     var existingLabel = _applyAnnotationIdentityToMarker(existingMarker, targetPage, optimisticAnnotation);
+                    // The save captured its draft before awaiting this POST. Keep
+                    // its editor until it finishes instead of opening a new one.
+                    if (optimisticAnnotation._savingContent) return;
                     var keepInlineEditor = !!(
                         existingLabel &&
                         existingLabel.classList.contains('label-editing') &&
@@ -2818,38 +2830,11 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var originalAnn = _h.findAnnotationEntry
                 ? _h.findAnnotationEntry(pageIdx, requestIdentifier || stableIdentifier)
                 : null;
-            if (originalAnn && originalAnn._createPromise) {
-                try {
-                    await originalAnn._createPromise;
-                    if (!_isCurrentEpoch(requestEpoch)) return;
-                } catch (error) {
-                    if (_ignoreMutationFailure(error, requestEpoch)) return;
-                    console.error('[ANNOTATION-CTRL] Initial create failed before save:', error);
-                    if (_h.showToast) {
-                        _h.showToast('error', 'Please wait for comment creation to finish, then try again.');
-                    }
-                    return Promise.resolve();
-                }
-                originalAnn = _h.findAnnotationEntry
-                    ? _h.findAnnotationEntry(pageIdx, requestIdentifier || stableIdentifier) || originalAnn
-                    : originalAnn;
-            }
-
+            if (originalAnn && originalAnn._savingContent) return;
             var originalContent = ((originalAnn && originalAnn.content) || '').trim();
             var originalSource = _h.resolveAnnotationSource ? _h.resolveAnnotationSource(originalAnn || {}) : 'HUMAN';
             var hasEditedFlags = originalAnn?._hasBeenEdited === true || originalAnn?._priorityChanged === true;
             var existingXref = originalAnn && originalAnn.xref ? String(originalAnn.xref) : null;
-
-            if ((newContent === '' || isPlaceholderContent(newContent)) && !hasEditedFlags) {
-                if (textarea._escapeHandler) {
-                    textarea.removeEventListener('keydown', textarea._escapeHandler, true);
-                }
-                await deleteAnnotationSilently(pageIdx, requestIdentifier || stableIdentifier);
-                if (!_isCurrentEpoch(requestEpoch)) return;
-                _setEditingId(null);
-                _renderAfterMutation();
-                return Promise.resolve();
-            }
 
             saveBtn.disabled = true;
             var spinner = saveBtn.querySelector('.spinner-border');
@@ -2861,8 +2846,30 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 btnText.textContent = 'Saving...';
             }
             _savingAnnotationId = currentEditingId;
+            if (originalAnn && originalAnn._createPromise) originalAnn._savingContent = true;
 
             try {
+                if (originalAnn && originalAnn._createPromise) {
+                    await originalAnn._createPromise;
+                    if (!_isCurrentEpoch(requestEpoch)) return;
+                }
+                // The POST may have replaced every identity used by the editor.
+                if (originalAnn && !originalAnn._isOptimistic) {
+                    stableIdentifier = _h.resolveAnnotationIdentifierValue
+                        ? _h.resolveAnnotationIdentifierValue(originalAnn) : stableIdentifier;
+                    requestIdentifier = originalAnn.requestIdentifier || stableIdentifier;
+                    existingXref = originalAnn.xref ? String(originalAnn.xref) : null;
+                }
+                if ((newContent === '' || isPlaceholderContent(newContent)) && !hasEditedFlags) {
+                    if (textarea._escapeHandler) {
+                        textarea.removeEventListener('keydown', textarea._escapeHandler, true);
+                    }
+                    await deleteAnnotationSilently(pageIdx, requestIdentifier || stableIdentifier);
+                    if (!_isCurrentEpoch(requestEpoch)) return;
+                    _setEditingId(null);
+                    _renderAfterMutation();
+                    return;
+                }
                 if (textarea._escapeHandler) {
                     textarea.removeEventListener('keydown', textarea._escapeHandler, true);
                 }
@@ -2924,6 +2931,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     }
                 }
 
+                var editedMarker = _findMarkerForIdentifiers(pageIdx, [stableIdentifier, requestIdentifier, originalAnn && originalAnn._tempIdentifier]);
+                var editedLabel = editedMarker && editedMarker.querySelector('.annotation-label');
+                if (originalAnn && originalAnn._savingContent && editedLabel && _h.collapseInlineLabel) {
+                    editedLabel.dataset.fullText = newContent;
+                    _h.collapseInlineLabel(editedLabel);
+                }
                 _setEditingId(null);
                 markLocalChange();
                 _renderAfterMutation();
@@ -2945,6 +2958,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     _h.showToast('error', error.message || 'Failed to save annotation. Please try again.');
                 }
             } finally {
+                if (originalAnn && _isCurrentEpoch(requestEpoch)) delete originalAnn._savingContent;
                 if (_savingAnnotationId === currentEditingId) _savingAnnotationId = null;
                 if (_isCurrentEpoch(requestEpoch)) {
                     saveBtn.disabled = false;
@@ -3230,35 +3244,6 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
 
             var annotationEntry = _h.findAnnotationEntry ? _h.findAnnotationEntry(pageIdx, stableIdentifier) : null;
-            if (annotationEntry && annotationEntry._isOptimistic && annotationEntry._createPromise) {
-                try {
-                    if (annotationEntry._abortController) {
-                        annotationEntry._abortController.abort();
-                    }
-                } catch (_abortError) {
-                    debugLog('[ANNOTATION-CTRL] Abort controller error:', _abortError);
-                }
-
-                var optimisticAnnotations = _getAnnotationsData();
-                if (optimisticAnnotations[pageIdx]) {
-                    var localIdx = _h.findAnnotationIndex ? _h.findAnnotationIndex(pageIdx, stableIdentifier) : -1;
-                    if (localIdx >= 0) {
-                        optimisticAnnotations[pageIdx].splice(localIdx, 1);
-                    }
-                }
-
-                [
-                    _buildVisibilityKey(pageIdx, { annotation: annotationEntry }),
-                    _buildVisibilityKey(pageIdx, { xref: annotationEntry.xref }),
-                    _buildVisibilityKey(pageIdx, { xref: annotationEntry._tempXref, identifier: annotationEntry._tempIdentifier }),
-                ].filter(Boolean).forEach(function (markerKey) {
-                    _visibleMarkers.delete(markerKey);
-                });
-
-                _renderAfterMutation();
-                return Promise.resolve();
-            }
-
             if (annotationEntry && annotationEntry._createPromise) {
                 try {
                     await annotationEntry._createPromise;
@@ -3266,7 +3251,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 } catch (error) {
                     if (_ignoreMutationFailure(error, requestEpoch)) return;
                     debugLog('[ANNOTATION-CTRL] Pending create failed before silent delete:', error);
+                    return;
                 }
+                stableIdentifier = _h.resolveAnnotationIdentifierValue
+                    ? _h.resolveAnnotationIdentifierValue(annotationEntry) : stableIdentifier;
             }
 
             var annotationsData = _getAnnotationsData();
