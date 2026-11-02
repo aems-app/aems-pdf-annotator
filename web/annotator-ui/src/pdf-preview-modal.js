@@ -1558,6 +1558,7 @@
      * @returns {Promise<Object>} Parsed JSON response with updated annotation
      */
     function annotationWriteIdentity(annotationId) {
+        annotationId = annotationIdentityAliases.get(String(annotationId)) || annotationId;
         const local = Object.keys(annotationsData)
             .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
         return local ? buildApiAnnotationIdentifier({
@@ -1565,8 +1566,34 @@
         }) : annotationId;
     }
 
+    // Every mutation (including inline edits, priority, delete and revert) crosses
+    // this boundary. A temporary identity is only a local alias, never an API id.
+    function resolveAnnotationWriteIdentity(annotationId, epoch) {
+        if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+        const local = Object.keys(annotationsData)
+            .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
+        if (local?._createPromise) {
+            return local._createPromise.then(() => resolveAnnotationWriteIdentity(annotationId, epoch));
+        }
+        const identity = annotationWriteIdentity(annotationId);
+        if (!identity || /(^|[|:])(tmp-|_tmp_)/.test(String(identity))) {
+            throw new Error('Comment creation has not completed. Please try again.');
+        }
+        return identity;
+    }
+
+    function remapAnnotationIdentity(previousIdentifier, annotation) {
+        const realIdentifier = resolveAnnotationIdentifierValue(annotation);
+        if (!realIdentifier || /(^|[|:])(tmp-|_tmp_)/.test(String(realIdentifier))) return;
+        [previousIdentifier, annotation._tempIdentifier, annotation._tempXref].filter(Boolean).forEach((alias) => {
+            annotationIdentityAliases.set(String(alias), realIdentifier);
+        });
+    }
+
     async function updateAnnotationRequest(annotationId, body) {
         const epoch = currentHistoryEpoch();
+        const resolved = resolveAnnotationWriteIdentity(annotationId, epoch);
+        annotationId = typeof resolved === 'string' ? resolved : await resolved;
         const identity = annotationWriteIdentity(annotationId);
         const key = `${epoch}:${identity}`;
         let writes = annotationWrites.get(key);
@@ -1653,6 +1680,8 @@
      */
     async function deleteAnnotationRequest(annotationId) {
         const epoch = currentHistoryEpoch();
+        const resolved = resolveAnnotationWriteIdentity(annotationId, epoch);
+        annotationId = typeof resolved === 'string' ? resolved : await resolved;
         const key = `${epoch}:${annotationWriteIdentity(annotationId)}`;
         const data = await _requireAnnotationAdapter().deleteAnnotation(currentAssignmentId, currentSubmissionId, annotationId, {
             offline: _isOfflineMode()
@@ -1675,6 +1704,9 @@
      * @returns {Promise<Object>} Parsed JSON with the reverted annotation.
      */
     async function revertAnnotationToAiRequest(annotationId) {
+        const epoch = currentHistoryEpoch();
+        const resolved = resolveAnnotationWriteIdentity(annotationId, epoch);
+        annotationId = typeof resolved === 'string' ? resolved : await resolved;
         var adapter = _requireAnnotationAdapter();
         if (typeof adapter.revertAnnotationToAi !== 'function') {
             throw new Error('Revert-to-AI is not supported by this host.');
@@ -3347,6 +3379,8 @@
 
         // Save to backend
 
+        if (annotation?._savingContent) return;
+        if (annotation?._createPromise) annotation._savingContent = true;
         try {
             const apiIdentifier = buildApiAnnotationIdentifier({
                 identifier: identifier,
@@ -3410,7 +3444,7 @@
                     const newSource = resolveAnnotationSource(data.annotation);
                     pushUndoOperation({
                         type: 'edit',
-                        identifier,
+                        identifier: resolveAnnotationIdentifierValue(data.annotation) || identifier,
                         xref: marker.dataset.annotationXref || null,
                         requestId: marker.dataset.annotationRequestId || null,
                         pageIdx,
@@ -3427,6 +3461,8 @@
         } catch (error) {
             if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
             console.error('Error saving inline annotation:', error);
+        } finally {
+            if (annotation && isCurrentHistoryEpoch(requestEpoch)) delete annotation._savingContent;
         }
 
         collapseInlineLabel(label);
@@ -3446,6 +3482,7 @@
     // its request nor applies its answer (issue #540).
     let historyDocumentEpoch = 0;
     const annotationWrites = new Map();
+    const annotationIdentityAliases = new Map();
     // Numbers every new operation in the order it was recorded. A step that puts an operation back goes below
     // any operation numbered after it, and a step learns from it whether a new operation arrived meanwhile.
     let historySequence = 0;
@@ -3589,6 +3626,7 @@
         clearRedoStack();
         _currentAnnotationCtrl?.clearUndoStack?.();
         annotationWrites.clear();
+        annotationIdentityAliases.clear();
     }
 
     const HISTORY_IDENTITY_FIELDS = ['annotationId', 'identifier', 'requestId', 'requestIdentifier', 'stable_id', 'stableId', 'id'];
@@ -5193,6 +5231,7 @@
     }
 
     function findAnnotationIndex(pageIdx, identifier) {
+        identifier = annotationIdentityAliases.get(String(identifier)) || identifier;
         const normalized = normalizeAnnotationIdentifierValue(identifier);
         if (normalized === null) {
             return -1;
@@ -5573,6 +5612,7 @@
     }
 
     function findAnnotationEntry(pageIdx, identifier) {
+        identifier = annotationIdentityAliases.get(String(identifier)) || identifier;
         const normalized = normalizeAnnotationIdentifierValue(identifier);
         if (normalized === null) {
             return undefined;
@@ -9943,6 +9983,7 @@
                     isAnnotationType: isAnnotationType,
                     createAnnotationRequest: createAnnotationRequest,
                     updateAnnotationRequest: updateAnnotationRequest,
+                    remapAnnotationIdentity: remapAnnotationIdentity,
                     deleteAnnotationRequest: deleteAnnotationRequest,
                     discardTemporaryAnnotationHistory: discardTemporaryAnnotationHistory,
                     revertAnnotationToAiRequest: revertAnnotationToAiRequest,
