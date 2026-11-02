@@ -14,7 +14,7 @@ const opened = [];
 afterEach(() => opened.splice(0).forEach((dom) => dom.window.close()));
 const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function openPackage() {
+async function openPackage({ pendingCreate = false } = {}) {
   const dom = new JSDOM(`<!doctype html><body>
     <div id="pdfPreviewModal"><div id="pdfPreviewStudent"></div>
     <div id="pdfOriginalPane"></div><div id="pdfGradedPane"></div>
@@ -125,11 +125,14 @@ async function openPackage() {
   const originalEditor = w.document.querySelector('.inline-annotation-editor');
   // Ensure the optimistic editor was opened before the POST response, as on a
   // live server. The response replaces its textarea and rebinds its identity.
-  finishCreate();
-  await vi.waitFor(() => expect(w.document.querySelector('.annotation-marker')?.dataset.annotationRequestId).toBe('created-1'));
-  await settle(130);
+  async function completeCreate() {
+    finishCreate();
+    await vi.waitFor(() => expect(w.document.querySelector('.annotation-marker')?.dataset.annotationRequestId).toBe('created-1'));
+    await settle(130);
+  }
+  if (!pendingCreate) await completeCreate();
   const editor = w.document.querySelector('.inline-annotation-editor');
-  expect(editor).not.toBe(originalEditor);
+  if (!pendingCreate) expect(editor).not.toBe(originalEditor);
   async function key(key, { ctrlKey = true, shiftKey = false, target = w.document } = {}) {
     target.dispatchEvent(new w.KeyboardEvent('keydown', { key, ctrlKey, shiftKey, bubbles: true, cancelable: true }));
     await settle(150);
@@ -138,6 +141,13 @@ async function openPackage() {
     editor.focus();
     editor.value = text;
     editor.dispatchEvent(new w.Event('input', { bubbles: true }));
+  }
+  async function showSidebar() {
+    w.document.querySelector('.annotation-marker').getBoundingClientRect = () => ({
+      left: 200, top: 200, right: 224, bottom: 224, width: 24, height: 24,
+    });
+    w.document.getElementById('pdfGradedContainer').dispatchEvent(new w.Event('scroll'));
+    await vi.waitFor(() => expect(w.document.querySelector('.auto-resize-textarea')).not.toBeNull());
   }
   async function deleteFromSidebar() {
     // jsdom has no layout; put the real marker inside the visible PDF viewport.
@@ -155,13 +165,61 @@ async function openPackage() {
     await vi.waitFor(() => expect(stored.size).toBe(0));
     await settle(50);
   }
-  return { w, modal, hostApi, stored, writes, missingTargets, editor, originalEditor, key, fill, deleteFromSidebar };
+  return { w, modal, hostApi, stored, writes, missingTargets, editor, originalEditor, key, fill, deleteFromSidebar, completeCreate, showSidebar };
 }
 
 // POST has no target id; PUT and DELETE must always address a currently live id.
 const requestSequence = (h) => h.writes.map(([method, id]) => [method, method === 'POST' ? null : id]);
 
 describe('page double-click and first comment commit through the package entry', () => {
+  it.each(['inline', 'sidebar'])('saves %s text exactly once when editing starts before POST resolves', async (path) => {
+    const h = await openPackage({ pendingCreate: true });
+    const text = 'Typed while comment creation is pending';
+    h.fill(text);
+    if (path === 'inline') {
+      h.editor.dispatchEvent(new h.w.KeyboardEvent('keydown', {
+        key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+      }));
+    } else {
+      await h.showSidebar();
+      const textarea = h.w.document.querySelector('.auto-resize-textarea');
+      expect(textarea).not.toBeNull();
+      textarea.value = text;
+      const save = h.w.document.querySelector('.save-annotation-btn');
+      save.click();
+      save.click(); // A second click while waiting must not enqueue the same text twice.
+    }
+    await settle(20);
+    expect(h.hostApi.updateAnnotation).not.toHaveBeenCalled();
+    await h.completeCreate();
+    await vi.waitFor(() => expect(h.stored.get('created-1')?.content).toBe(text));
+    expect(h.writes).toEqual([
+      ['POST', expect.any(Object)], ['PUT', 'created-1', { content: text }],
+    ]);
+    expect(h.missingTargets).toEqual([]);
+    expect(h.modal.getAnnotations()[0][0].content).toBe(text);
+    expect(h.w.document.querySelector('.inline-annotation-editor')).toBeNull();
+    expect(h.w.document.querySelector('.auto-resize-textarea')).toBeNull();
+  });
+
+  it.each(['inline', 'sidebar'])('saves %s text exactly once after POST resolves', async (path) => {
+    const h = await openPackage();
+    const text = 'Typed after comment creation completed';
+    if (path === 'inline') {
+      h.fill(text);
+      await h.key('Enter', { target: h.editor });
+    } else {
+      await h.showSidebar();
+      h.w.document.querySelector('.auto-resize-textarea').value = text;
+      h.w.document.querySelector('.save-annotation-btn').click();
+      await vi.waitFor(() => expect(h.stored.get('created-1')?.content).toBe(text));
+    }
+    expect(h.writes).toEqual([
+      ['POST', expect.any(Object)], ['PUT', 'created-1', { content: text }],
+    ]);
+    expect(h.missingTargets).toEqual([]);
+  });
+
   it.each(['Enter', 'Escape'])('keeps the current draft on %s when POST replaced the optimistic editor', async (key) => {
     const h = await openPackage();
     h.fill('Keep this comment');
