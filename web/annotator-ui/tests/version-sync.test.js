@@ -167,4 +167,61 @@ describe('version-sync', () => {
         sync.destroy();
         sync.destroy(); // no error
     });
+
+    // Teacher report 2026-11-03: saving quickly in the review reloaded the whole page of notes
+    // under the cursor. Saves take seconds on a large class, so a poll already in flight when
+    // the teacher saved came back with the teacher's own new version and was taken as external.
+    it('ignores a poll that was in flight while a local save happened', async () => {
+        const mod = await loadModule();
+        let resolveSecond;
+        const adapter = {
+            getAnnotationsVersion: vi.fn()
+                .mockResolvedValueOnce({ success: true, version: 'v1' })
+                .mockReturnValueOnce(new Promise(resolve => { resolveSecond = resolve; }))
+                .mockResolvedValueOnce({ success: true, version: 'v2' }),
+        };
+        const sync = mod.createVersionSync({}, { modeAdapter: adapter, submissionId: 1, assignmentId: 1 });
+        const cb = vi.fn();
+        sync.onExternalChange(cb);
+        await sync._checkVersion();
+        const inFlight = sync._checkVersion();
+        const epoch = sync.markLocalChange();
+        resolveSecond({ success: true, version: 'v2' });
+        await inFlight;
+        sync.markLocalChange('v2', epoch);
+        await sync._checkVersion(); // the skipped cycle
+        await sync._checkVersion();
+        expect(cb).not.toHaveBeenCalled();
+        sync.destroy();
+    });
+
+    it('keeps the newest own version when follow-up version reads return out of order', async () => {
+        const mod = await loadModule();
+        const adapter = { getAnnotationsVersion: vi.fn().mockResolvedValue({ success: true, version: 'v3' }) };
+        const sync = mod.createVersionSync({}, { modeAdapter: adapter, submissionId: 1, assignmentId: 1 });
+        const cb = vi.fn();
+        sync.onExternalChange(cb);
+        const first = sync.markLocalChange();
+        const second = sync.markLocalChange();
+        sync.markLocalChange('v3', second);
+        sync.markLocalChange('v2', first); // stale read of the first save arrives last
+        await sync._checkVersion(); // the skipped cycle
+        await sync._checkVersion();
+        expect(cb).not.toHaveBeenCalled();
+        sync.destroy();
+    });
+
+    it('still reports a change by someone else after the own save settled', async () => {
+        const mod = await loadModule();
+        const adapter = { getAnnotationsVersion: vi.fn().mockResolvedValue({ success: true, version: 'v9' }) };
+        const sync = mod.createVersionSync({}, { modeAdapter: adapter, submissionId: 1, assignmentId: 1 });
+        const cb = vi.fn();
+        sync.onExternalChange(cb);
+        const epoch = sync.markLocalChange();
+        sync.markLocalChange('v2', epoch);
+        await sync._checkVersion(); // the skipped cycle
+        await sync._checkVersion();
+        expect(cb).toHaveBeenCalledWith({ previousVersion: 'v2', newVersion: 'v9' });
+        sync.destroy();
+    });
 });

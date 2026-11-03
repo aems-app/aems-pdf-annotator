@@ -10,6 +10,9 @@ window.PdfPreviewModalVersionSync = window.PdfPreviewModalVersionSync || {};
         var _pollInterval = null;
         var _currentVersion = null;
         var _skipNextCycle = false;
+        // Counts local saves. A version read that started before the latest local save
+        // cannot tell the teacher's own write from someone else's, so it is not trusted.
+        var _localEpoch = 0;
         var _pendingExternalChange = null;
         var _externalChangeRetry = null;
         var POLL_MS = (options && options.pollIntervalMs) || 10000;
@@ -60,10 +63,11 @@ window.PdfPreviewModalVersionSync = window.PdfPreviewModalVersionSync || {};
             if (!adapter || typeof adapter.getAnnotationsVersion !== 'function') {
                 return Promise.resolve();
             }
+            var startedAtEpoch = _localEpoch;
             return adapter.getAnnotationsVersion(
                 options.assignmentId, options.submissionId
             ).then(function (response) {
-                if (_destroyed) return;
+                if (_destroyed || startedAtEpoch !== _localEpoch) return;
                 var version = null;
                 if (typeof response === 'string') {
                     version = response;
@@ -101,14 +105,20 @@ window.PdfPreviewModalVersionSync = window.PdfPreviewModalVersionSync || {};
                 }
                 if (syncState) syncState.polling = false;
             },
-            markLocalChange: function (newVersion) {
-                _skipNextCycle = true;
-                // If the caller knows the new version (e.g. from PUT response mtime),
-                // update _currentVersion so subsequent polls don't treat it as external.
-                if (newVersion) {
-                    _currentVersion = String(newVersion);
-                    if (syncState) syncState.versionToken = _currentVersion;
+            // Without a version: records a local save and returns its epoch. With a version read
+            // after that save: adopts it only when no later local save happened since, so an
+            // out-of-order read cannot restore an older own version.
+            markLocalChange: function (newVersion, atEpoch) {
+                if (!newVersion) {
+                    _localEpoch += 1;
+                    _skipNextCycle = true;
+                    return _localEpoch;
                 }
+                if (atEpoch !== undefined && atEpoch !== _localEpoch) return _localEpoch;
+                _skipNextCycle = true;
+                _currentVersion = String(newVersion);
+                if (syncState) syncState.versionToken = _currentVersion;
+                return _localEpoch;
             },
             destroy: function () {
                 if (_destroyed) return;
