@@ -1775,7 +1775,7 @@
     function markLocalAnnotationChange() {
         // Delegate to version-sync module if available
         if (_currentVersionSync) {
-            _currentVersionSync.markLocalChange();
+            const localEpoch = _currentVersionSync.markLocalChange();
             // Immediately fetch the new version to prevent subsequent poll cycles
             // from treating our own change as external
             if (_annotationAdapter && currentSubmissionId) {
@@ -1783,7 +1783,7 @@
                 getAnnotationsVersionRequest().then(function (data) {
                 if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (data && data.version) {
-                        _currentVersionSync.markLocalChange(data.version);
+                        _currentVersionSync.markLocalChange(data.version, localEpoch);
                     }
                 }).catch(function () { /* ignore */ });
             }
