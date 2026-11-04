@@ -11,6 +11,8 @@ All notable changes to `aems-pdf-annotator` are recorded here. Format follows [K
 
 ### Fixed
 
+- Own text markup stays editable after a second click or an annotation save. Click jitter no longer saves a move, the Text tool opens existing boxes, and comment editors stay above neighbouring markers.
+
 - Edits and other comment writes made while a comment is being created wait for its server ID. Stale temporary IDs resolve to that ID, duplicate Save clicks are ignored, and unresolved temporary IDs are refused before sending a request.
 - Opening an inline comment editor initialises focus and the caret immediately, preserving typing, selection changes, and deliberate focus moves during its first 50 ms. Deferred resizing ignores closed or replaced editors.
 - An undo or redo the server refuses no longer counts as done: nothing changes on the page, and it can be retried. A pen-stroke deletion refused on redo no longer disappears from the page, and a later undo no longer creates a duplicate.

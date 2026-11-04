@@ -285,6 +285,18 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
         }
     }
 
+    // A save refresh can replace a nonediting textbox while selection still
+    // holds its previous entry. Resolve it before editing or reading geometry.
+    function resolveLiveTextboxEntry(entry) {
+        if (entry && entry.element && !entry.element.isConnected && entry.annotationId != null) {
+            var entries = exports.getPageTextboxes(entry.pageIdx);
+            for (var i = 0; i < entries.length; i++) {
+                if (entries[i].annotationId === entry.annotationId) return entries[i];
+            }
+        }
+        return entry;
+    }
+
     /**
      * Toggle editing mode for a textbox entry.
      *
@@ -433,6 +445,7 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
      * @param {Object} entry - The text box entry
      */
     exports.editTextbox = function editTextbox(entry) {
+        entry = resolveLiveTextboxEntry(entry);
         if (!entry || !entry.element) return;
         var contentEl = getTextboxContentElement(entry);
         setTextboxEditing(entry, true);
@@ -500,27 +513,10 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
      * @returns {number[]} [x0, y0, x1, y1] in canvas pixel coordinates
      */
     exports.getTextboxCanvasRect = function getTextboxCanvasRect(entry, pageWrapper) {
+        entry = resolveLiveTextboxEntry(entry);
         if (!entry || !entry.element) return [0, 0, 0, 0];
 
         var el = entry.element;
-        // Defense against stale entries: refreshMarkupFromAnnotations()
-        // recreates textbox entries after every CRUD round-trip. Callers
-        // (MarkupSelection.onMoveCompleted, drag-drop, etc.) may hold the
-        // old entry whose element is detached from the DOM. A detached
-        // element's offset* properties all return 0, producing a degenerate
-        // [0, 0, 0, 0] canvas rect which then propagates to a degenerate
-        // PDF rect that the agent rejects with "rect requires x0 < x1".
-        // Recover by looking up the live entry on the same page by id.
-        if (!el.isConnected && entry.annotationId != null) {
-            var freshEntries = exports.getPageTextboxes(entry.pageIdx) || [];
-            for (var i = 0; i < freshEntries.length; i++) {
-                var candidate = freshEntries[i];
-                if (candidate && candidate.element && candidate.annotationId === entry.annotationId) {
-                    el = candidate.element;
-                    break;
-                }
-            }
-        }
 
         var scale = getCanvasScale(pageWrapper);
         var cssLeft = el.offsetLeft;
@@ -582,20 +578,40 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
 
     /**
      * Load text boxes from saved annotation data.
-     * Clears all existing text boxes first.
+     * Replaces saved text boxes while retaining active editors and their caret.
      *
      * @param {Array<Object>} annotationsData - Array of annotation objects
      * @param {Array<HTMLElement>} pageWrappers - Array of page wrapper elements (indexed by pageIdx)
      */
     exports.loadTextboxesFromAnnotations = function loadTextboxesFromAnnotations(annotationsData, pageWrappers) {
-        // Clear existing textboxes
-        exports.destroy();
+        // A CRUD reply for another annotation may arrive while the teacher is
+        // already typing. Keep that editor in place, including unsaved boxes.
+        var editingEntries = [];
+        pageTextboxes.forEach(function (entries) {
+            entries.forEach(function (entry) {
+                if (entry.element.isConnected && entry.element.classList.contains('editing') &&
+                    pageWrappers && getPageWrapperForEntry(entry) === pageWrappers[entry.pageIdx]) {
+                    editingEntries.push(entry);
+                } else {
+                    safeRemoveElement(entry.element);
+                }
+            });
+        });
+        pageTextboxes.clear();
+        editingEntries.forEach(function (entry) {
+            addEntryToPageMap(entry.pageIdx, entry);
+        });
 
         if (!annotationsData || !pageWrappers) return;
 
         for (var i = 0; i < annotationsData.length; i++) {
             var ann = annotationsData[i];
             if (ann.type !== 'textbox') continue;
+
+            var annotationId = ann.annotationId || ann.stable_id || ann.id || null;
+            if (annotationId && editingEntries.some(function (entry) {
+                return entry.annotationId === annotationId;
+            })) continue;
 
             var pageIdx = ann.pageIdx;
             if (pageIdx < 0 || pageIdx >= pageWrappers.length) continue;
@@ -634,7 +650,7 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
             var entry = {
                 element: textbox,
                 contentElement: contentEl,
-                annotationId: ann.annotationId || ann.stable_id || ann.id || null,
+                annotationId: annotationId,
                 pageIdx: pageIdx,
                 content: ann.content || '',
                 color: resolvedColor.value
