@@ -152,6 +152,25 @@ describe('own markup editing with real pointer and click sequences', () => {
     expect(adapter.updateAnnotation.mock.calls[0][3].rect[0]).toBe(88);
   });
 
+  it('clicking the selected box after a saved drag edits its live replacement', async () => {
+    const entry = boxes.getPageTextboxes(0)[0];
+    selection.select('textbox', entry, 0, wrapper);
+    let overlay = d.querySelector('.markup-selection-overlay');
+    pointer(overlay, 'pointerdown');
+    pointer(overlay, 'pointermove', 110);
+    pointer(overlay, 'pointerup', 110);
+    await settle();
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    const liveEntry = boxes.getPageTextboxes(0)[0];
+    expect(liveEntry.element.isConnected).toBe(true);
+    overlay = d.querySelector('.markup-selection-overlay');
+    click(overlay, 110);
+    await settle();
+    expect(d.activeElement === liveEntry.contentElement, 'click after drag must focus the connected textbox').toBe(true);
+    expect(liveEntry.element.classList.contains('editing')).toBe(true);
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+  });
+
   it('an annotation refresh preserves the edited textbox, focus, draft and caret', () => {
     const entry = boxes.getPageTextboxes(0)[0];
     boxes.editTextbox(entry);
