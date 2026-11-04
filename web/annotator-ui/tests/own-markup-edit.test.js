@@ -112,6 +112,7 @@ describe('own markup editing with real pointer and click sequences', () => {
     const overlay = d.querySelector('.markup-selection-overlay');
     expect(overlay).not.toBeNull();
     click(overlay);
+    entry.contentElement.dispatchEvent(new w.MouseEvent('dblclick', { bubbles: true, detail: 2 }));
     expect.soft(adapter.updateAnnotation).not.toHaveBeenCalled();
     expect.soft(d.activeElement).toBe(entry.contentElement);
     const range = d.createRange();
@@ -180,9 +181,10 @@ describe('own markup editing with real pointer and click sequences', () => {
     expect(adapter.createAnnotation).not.toHaveBeenCalled();
   });
 
-  it('clicking inside a text-tool editor preserves its caret and does not create markup', () => {
-    tool = 'text';
+  it.each(['select', 'text'])('clicking inside a %s-tool editor preserves its caret and does not create markup', (activeTool) => {
+    tool = activeTool;
     const entry = boxes.getPageTextboxes(0)[0];
+    selection.select('textbox', entry, 0, wrapper);
     boxes.editTextbox(entry);
     const range = d.createRange();
     range.setStart(entry.contentElement.firstChild, 2);
@@ -193,6 +195,39 @@ describe('own markup editing with real pointer and click sequences', () => {
     expect(boxes.getPageTextboxes(0).length, 'click inside editor must not create another box').toBe(1);
     expect(d.activeElement).toBe(entry.contentElement);
     expect(w.getSelection().anchorOffset).toBe(2);
+  });
+
+  it('Text tool still creates a focused box when clicking an empty page area', () => {
+    tool = 'text';
+    click(wrapper.querySelector('canvas'), 300, 350);
+    expect(boxes.getPageTextboxes(0).length).toBe(2);
+    const created = boxes.getPageTextboxes(0)[1];
+    expect(d.activeElement).toBe(created.contentElement);
+    expect(created.element.classList.contains('editing')).toBe(true);
+    expect(created.annotationId).toBeNull();
+  });
+
+  it('refresh removes obsolete nonediting boxes while retaining the active editor', () => {
+    boxes.loadTextboxesFromAnnotations([
+      { ...annotation, pageIdx: 0, annotationId: 'own-text', x: 80, y: 100 },
+      { ...annotation, pageIdx: 0, annotationId: 'obsolete', x: 200, y: 200 },
+    ], [wrapper]);
+    const [editing, obsolete] = boxes.getPageTextboxes(0);
+    boxes.editTextbox(editing);
+    helpers.refreshMarkupFromAnnotations();
+    expect(boxes.getPageTextboxes(0).length).toBe(1);
+    expect(boxes.getPageTextboxes(0)[0].element === editing.element, 'refresh preserves active editor while repainting other boxes').toBe(true);
+    expect(obsolete.element.isConnected).toBe(false);
+    expect(d.activeElement).toBe(editing.contentElement);
+  });
+
+  it('destroy still removes editing boxes and their page entries', () => {
+    const entry = boxes.getPageTextboxes(0)[0];
+    boxes.editTextbox(entry);
+    boxes.destroy();
+    expect(boxes.getPageTextboxes(0).length).toBe(0);
+    expect(entry.element.isConnected).toBe(false);
+    expect(d.activeElement === entry.contentElement).toBe(false);
   });
 
   it('a comment editor raises its parent marker above later markers and restores it on collapse', () => {
