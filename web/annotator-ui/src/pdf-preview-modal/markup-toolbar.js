@@ -33,8 +33,9 @@ window.PdfPreviewModalMarkupToolbar = window.PdfPreviewModalMarkupToolbar || {};
     ];
 
     var FALLBACK_COLORS = [
+        { name: 'red', value: '#ee0612' },
+        { name: 'yellow', value: '#fce600' },
         { name: 'orange', value: '#f59e0b' },
-        { name: 'red', value: '#ef4444' },
         { name: 'green', value: '#22c55e' },
         { name: 'black', value: '#1e1e1e' },
         { name: 'white', value: '#ffffff' }
@@ -184,6 +185,8 @@ window.PdfPreviewModalMarkupToolbar = window.PdfPreviewModalMarkupToolbar || {};
         // Outer wrapper
         toolbarEl = document.createElement('div');
         toolbarEl.className = 'markup-toolbar';
+        toolbarEl.dataset.inkColor = 'red';
+        toolbarEl.dataset.highlighterColor = 'yellow';
         toolbarEl.style.display = 'none';
 
         // --- Tools row ---
@@ -332,6 +335,10 @@ window.PdfPreviewModalMarkupToolbar = window.PdfPreviewModalMarkupToolbar || {};
         if (typeof exports.onToolChange === 'function') {
             exports.onToolChange(toolId);
         }
+        // Pen/text share readable ink; switching to the translucent highlighter
+        // restores its independent colour without changing the teacher's ink.
+        exports.setActiveColor(toolId === 'highlighter'
+            ? toolbarEl.dataset.highlighterColor : toolbarEl.dataset.inkColor);
     };
 
     /**
@@ -340,6 +347,9 @@ window.PdfPreviewModalMarkupToolbar = window.PdfPreviewModalMarkupToolbar || {};
      */
     exports.setActiveColor = function setActiveColor(colorName) {
         activeColor = colorName;
+        if (toolbarEl) {
+            toolbarEl.dataset[activeTool === 'highlighter' ? 'highlighterColor' : 'inkColor'] = colorName;
+        }
         if (!toolbarEl) return;
 
         var swatches = toolbarEl.querySelectorAll('.js-markup-color');
