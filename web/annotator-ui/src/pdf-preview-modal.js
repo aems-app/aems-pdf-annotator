@@ -1,14 +1,14 @@
 /**
  * PDF Preview Modal JavaScript
- * 
+ *
  * Extracted from _pdf_preview_modal.html as part of Phase 9 refactoring.
  * This module provides PDF viewing, annotation management, and fullscreen
  * functionality for the Canvas grading wizard.
- * 
+ *
  * Configuration:
  * Before loading this script, define window.PDFPreviewConfig with:
  * - pdfjsWorkerSrc: URL to pdf.worker.min.js
- * 
+ *
  * @module pdf-preview-modal
  */
 // Wrap entire module in IIFE to prevent global scope pollution
@@ -3052,6 +3052,15 @@
             marker?.dataset.annotationIdentifier ||
             marker?.dataset.annotationXref;
 
+        // Each marker creates a stacking context. Raising only its child label
+        // leaves the editor underneath later markers, which intercept typing clicks.
+        if (marker) {
+            if (label._editingMarkerZIndex === undefined) {
+                label._editingMarkerZIndex = marker.style.zIndex;
+            }
+            marker.style.zIndex = '1001';
+        }
+
         if (identifier) {
             textarea.addEventListener('input', () => {
                 // SEC-FIX: Try multiple ID formats to handle escaped/unescaped identifiers
@@ -3269,6 +3278,10 @@
         // Get marker to update its color based on current annotation data
         const marker = label.closest('.annotation-marker');
         if (marker) {
+            if (label._editingMarkerZIndex !== undefined) {
+                marker.style.zIndex = label._editingMarkerZIndex;
+                delete label._editingMarkerZIndex;
+            }
             const pageIdx = parseInt(marker.dataset.annotationPage || '0');
             const identifier = marker.dataset.identifier ||
                 marker.dataset.annotationRequestId ||
@@ -4272,6 +4285,10 @@
             var target = e.target;
             var currentTool = DrawingCanvas.getActiveTool();
 
+            // Native editing clicks must keep their caret and selection. In
+            // particular, the Text tool must not create a box over this editor.
+            if (target.closest('.markup-textbox.editing')) return;
+
             if (currentTool === 'text' && TextboxModule) {
                 var pageWrapper = target.closest('.pdf-page-wrapper');
                 if (!pageWrapper) return;
@@ -4285,6 +4302,12 @@
                     10
                 );
                 var pageIdx = Number.isFinite(rawPageNum) ? Math.max(0, rawPageNum - 1) : 0;
+                var existingTextbox = TextboxModule.hitTestTextbox(pageIdx, e.clientX, e.clientY);
+                if (existingTextbox) {
+                    if (MarkupSelection) MarkupSelection.deselect();
+                    TextboxModule.editTextbox(existingTextbox);
+                    return;
+                }
                 var pdfCanvas = pageWrapper.querySelector('canvas');
                 if (!pdfCanvas) return;
 
@@ -4325,6 +4348,7 @@
                         if (MarkupSelection && prevSel &&
                             (prevSel.entry === hitTextbox ||
                              (prevId && hitId && prevId === hitId))) {
+                            MarkupSelection.deselect();
                             TextboxModule.editTextbox(hitTextbox);
                         } else if (MarkupSelection) {
                             MarkupSelection.select('textbox', hitTextbox, pageIdx2, pageWrapper2);
@@ -5238,7 +5262,7 @@
         }
         const pageEntries = annotationsData[pageIdx] || [];
 
-        // Parse the search identifier to get both xref and UUID  
+        // Parse the search identifier to get both xref and UUID
         const searchParts = parseCompositeIdentifier(normalized);
         const searchXref = searchParts.xref;
         const searchUuid = searchParts.stableId;

@@ -331,7 +331,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         e.preventDefault();
         e.stopPropagation();
 
-        isDragging = true;
+        isDragging = false;
         dragStart = { x: e.clientX, y: e.clientY };
         dragSourcePageIdx = selectedItem ? selectedItem.pageIdx : null;
         dragTargetPageIdx = dragSourcePageIdx;
@@ -359,7 +359,6 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         selectionOverlay.addEventListener('pointermove', onOverlayPointerMove);
         selectionOverlay.addEventListener('pointerup', onOverlayPointerUp);
 
-        selectionOverlay.classList.add('moving');
     }
 
     /**
@@ -368,10 +367,19 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
      * @param {PointerEvent} e
      */
     function onOverlayPointerMove(e) {
-        if (!isDragging || !dragStart || !selectedItem || !selectionOverlay) return;
+        if (!dragStart || !selectedItem || !selectionOverlay) return;
 
         var dx = e.clientX - dragStart.x;
         var dy = e.clientY - dragStart.y;
+
+        // Keep the original down position until movement exceeds click jitter.
+        // Otherwise even a stationary second click saves a move and rebuilds
+        // the textbox just as its editor receives focus.
+        if (!isDragging) {
+            if (Math.hypot(dx, dy) <= 3) return;
+            isDragging = true;
+            selectionOverlay.classList.add('moving');
+        }
 
         // Update drag start for incremental movement
         dragStart.x = e.clientX;
@@ -507,6 +515,8 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
             exports.onMoveCompleted(selectedItem);
         }
 
+        var clickedTextbox = !isDragging && selectedItem && selectedItem.type === 'textbox'
+            ? selectedItem.entry : null;
         isDragging = false;
         dragStart = null;
         cachedPageRects = [];
@@ -517,6 +527,13 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 
         if (selectionOverlay) {
             selectionOverlay.classList.remove('moving');
+        }
+
+        if (clickedTextbox) {
+            // The selection overlay must go away so later clicks can place
+            // the caret inside the contenteditable textbox.
+            exports.deselect();
+            window.PdfPreviewModalTextbox.editTextbox(clickedTextbox);
         }
     }
 
