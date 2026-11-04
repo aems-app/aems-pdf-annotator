@@ -45,8 +45,9 @@ window.PdfPreviewModalDrawingCanvas = window.PdfPreviewModalDrawingCanvas || {};
      * @type {Array<{name: string, rgb: number[]}>}
      */
     var PRESET_COLORS = [
+        { name: 'red',    rgb: [238, 6, 18] },
+        { name: 'yellow', rgb: [252, 230, 0] },
         { name: 'orange', rgb: [245, 158, 11] },
-        { name: 'red',    rgb: [239, 68, 68] },
         { name: 'green',  rgb: [34, 197, 94] },
         { name: 'black',  rgb: [30, 30, 30] },
         { name: 'white',  rgb: [255, 255, 255] }
