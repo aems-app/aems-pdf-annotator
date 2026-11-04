@@ -252,6 +252,38 @@ describe('own markup editing with real pointer and click sequences', () => {
     expect(d.activeElement === entry.contentElement).toBe(false);
   });
 
+  it.each([
+    ['stable ID', { stable_id: 'stable-only' }, 'stable-only'],
+    ['legacy ID', { id: 'legacy-only' }, 'legacy-only'],
+    ['unsaved box', {}, null],
+  ])('loads a %s without duplicating an active editor', (_name, identity, expectedId) => {
+    const editor = boxes.getPageTextboxes(0)[0];
+    boxes.editTextbox(editor);
+    boxes.loadTextboxesFromAnnotations([
+      { type: 'textbox', pageIdx: 0, x: 250, y: 300, content: 'Another note', ...identity },
+      { type: 'textbox', pageIdx: 0, annotationId: 'own-text', x: 80, y: 100 },
+    ], [wrapper]);
+    expect(boxes.getPageTextboxes(0).length).toBe(2);
+    expect(boxes.getPageTextboxes(0)[0].element === editor.element).toBe(true);
+    expect(boxes.getPageTextboxes(0)[1].annotationId).toBe(expectedId);
+    expect(d.activeElement).toBe(editor.contentElement);
+  });
+
+  it('resolves a stale textbox by its ID after unrelated entries on the same page', () => {
+    const stale = boxes.getPageTextboxes(0)[0];
+    boxes.loadTextboxesFromAnnotations([
+      { type: 'textbox', pageIdx: 0, annotationId: 'other', x: 250, y: 300, content: 'Another note' },
+      { type: 'textbox', pageIdx: 0, annotationId: 'own-text', x: 120, y: 140, content: 'Moved note' },
+    ], [wrapper]);
+    const live = boxes.getPageTextboxes(0)[1];
+    expect(stale.element.isConnected).toBe(false);
+    expect(boxes.getTextboxCanvasRect(stale, wrapper)).toEqual([120, 140, 220, 168]);
+    boxes.editTextbox(stale);
+    expect(d.activeElement).toBe(live.contentElement);
+    expect(live.element.classList.contains('editing')).toBe(true);
+    expect(boxes.getPageTextboxes(0)[0].element.classList.contains('editing')).toBe(false);
+  });
+
   it('a comment editor raises its parent marker above later markers and restores it on collapse', () => {
     const overlay = d.querySelector('.pdf-annotation-overlay');
     overlay.innerHTML = '<div class="annotation-marker" style="z-index:10"><div class="annotation-label"></div></div><div class="annotation-marker" style="z-index:10"></div>';
