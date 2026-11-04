@@ -1,10 +1,13 @@
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { JSDOM } from 'jsdom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const source = (name) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../src', name), 'utf8');
+const source = (name) => {
+  const path = join(dirname(fileURLToPath(import.meta.url)), '../src', name);
+  return `${readFileSync(path, 'utf8')}\n//# sourceURL=${pathToFileURL(path).href}`;
+};
 
 describe('own markup editing with real pointer and click sequences', () => {
   let dom;
