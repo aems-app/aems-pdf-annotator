@@ -228,7 +228,7 @@ describe('new comment survives production polling and relayout', () => {
     expect(adapter.listAnnotations).toHaveBeenCalledTimes(reloads);
   });
 
-  it.each(['cancel', 'escape', 'another comment', 'close icon', 'modal hide', 'booklet', 'page'])(
+  it.each(['cancel', 'escape', 'priority then escape', 'another comment', 'close icon', 'modal hide', 'booklet', 'page'])(
     'explicit %s discards an empty new draft exactly once', async (action) => {
       await create();
       // Overlap close gestures with a slow DELETE, as blur/hide can follow Cancel.
@@ -240,7 +240,10 @@ describe('new comment survives production polling and relayout', () => {
       if (action === 'cancel') {
         document.querySelector('.cancel-edit-btn').click();
         document.querySelector('.cancel-edit-btn')?.click();
-      } else if (action === 'escape') {
+      } else if (action === 'escape' || action === 'priority then escape') {
+        if (action === 'priority then escape') {
+          document.querySelector('.inline-priority-strip .priority-red').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        }
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       } else if (action === 'another comment') {
         instances.at(-1).controller.beginEdit(0, 'other');
