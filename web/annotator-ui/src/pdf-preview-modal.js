@@ -150,6 +150,7 @@
         }
 
         if (previousState !== previewFullscreenActive && typeof renderAnnotationsList === 'function') {
+            handleFullscreenResize();
             updateSplitPanelButtonVisibility();
             renderAnnotationsList();
             if (
@@ -1254,6 +1255,7 @@
         // Exit native fullscreen before the modal hides so the user doesn't
         // see a black "press Esc to exit fullscreen" screen.
         pdfPreviewModalEl.addEventListener('hide.bs.modal', () => {
+            closeEmptyNewDrafts();
             if (_currentShell) return; // Shell handles this
             if (previewFullscreenActive) {
                 const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
@@ -1262,6 +1264,10 @@
                 }
                 updatePreviewFullscreenUi(false);
             }
+        });
+
+        pdfPreviewModalEl.addEventListener('click', (event) => {
+            if (event.target.closest('[data-bs-dismiss="modal"]')) closeEmptyNewDrafts();
         });
 
         pdfPreviewModalEl.addEventListener('hidden.bs.modal', () => {
@@ -1431,6 +1437,7 @@
             // Set up callbacks for annotation page synchronization
             window.__pdfGradedViewer.onAnnotationsPageChange((pageIdx) => {
                 if (currentAnnotationsPage !== pageIdx) {
+                    closeEmptyNewDrafts({ pageIdx });
                     currentAnnotationsPage = pageIdx;
                     // Debounce annotation list updates
                     if (typeof renderAnnotationsList === 'function') {
@@ -1701,6 +1708,20 @@
             }
         }
         return data;
+    }
+
+    function captureDraftDeleteRequest() {
+        // Explicit close cleanup belongs to the document being left, including
+        // when its create POST completes after the next booklet has opened.
+        const adapter = _requireAnnotationAdapter();
+        const assignmentId = currentAssignmentId;
+        const submissionId = currentSubmissionId;
+        const offline = _isOfflineMode();
+        return (id) => adapter.deleteAnnotation(assignmentId, submissionId, id, { offline });
+    }
+
+    function closeEmptyNewDrafts(keep) {
+        return _currentAnnotationCtrl?.closeEmptyNewDrafts?.(keep);
     }
 
     /**
@@ -3384,7 +3405,7 @@
             (contentIsEmpty && originalIsPlaceholder);
 
         if (contentIsEmpty || contentUnchanged) {
-            if (isTemporary && !hasEditedFlags) {
+            if (isTemporary && (contentIsEmpty || !hasEditedFlags)) {
                 // Focus can move during browser fullscreen/layout work. Only a
                 // teacher's explicit close/cancel may discard an empty comment.
                 if (options.explicitClose === false) return;
@@ -8963,6 +8984,7 @@
         // Retire history before any readiness return/await. AEMS creates a fresh handle per open, but the
         // legacy path can also reuse a controller; both stacks and pending writes must leave with the document.
         if (submissionId !== currentSubmissionId || resolvedAssignmentId !== currentAssignmentId) {
+            closeEmptyNewDrafts();
             resetDocumentHistory();
         }
         const requestEpoch = currentHistoryEpoch();
@@ -9651,6 +9673,7 @@
         var _destroyed = false;
         // This is the real AEMS document boundary. Do it before tearing down the previous controllers, whose
         // outstanding callbacks must already be stale, and before PDF.js readiness can defer open().
+        closeEmptyNewDrafts();
         resetDocumentHistory();
         _activeModalState = state;
         annotationsData = {};
@@ -9776,6 +9799,7 @@
 
             _currentDocCtrl.onPageChanged(function (pageIdx) {
                 if (currentAnnotationsPage !== pageIdx) {
+                    closeEmptyNewDrafts({ pageIdx });
                     currentAnnotationsPage = pageIdx;
                     if (typeof renderAnnotationsList === 'function') {
                         clearTimeout(window._annotationListUpdateTimer);
@@ -9938,6 +9962,7 @@
                     updateAnnotationRequest: updateAnnotationRequest,
                     remapAnnotationIdentity: remapAnnotationIdentity,
                     deleteAnnotationRequest: deleteAnnotationRequest,
+                    captureDraftDeleteRequest: captureDraftDeleteRequest,
                     discardTemporaryAnnotationHistory: discardTemporaryAnnotationHistory,
                     revertAnnotationToAiRequest: revertAnnotationToAiRequest,
                     hostAdvertisesCapability: _hostAdvertisesCapability,
@@ -10058,6 +10083,7 @@
 
             close() {
                 if (_activeModalState !== state) return;
+                closeEmptyNewDrafts();
                 var modalEl = document.getElementById('pdfPreviewModal');
                 if (modalEl) {
                     var bsModal = bootstrap.Modal.getInstance(modalEl);
@@ -10069,6 +10095,7 @@
                 if (_destroyed) return;
                 _destroyed = true;
                 if (_activeModalState !== state) return;
+                closeEmptyNewDrafts();
                 resetDocumentHistory();
                 handle.close();
                 stopAnnotationsPolling();

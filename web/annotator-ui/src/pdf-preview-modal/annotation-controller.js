@@ -513,6 +513,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             onScheduleUpdate: [],
         };
         var _destroyed = false;
+        var _silentDeletes = new WeakMap();
+        var _draftDeleteRequests = new WeakMap();
 
         function _emit(name, data) {
             var list = _callbacks[name] || [];
@@ -1782,10 +1784,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     if (textarea && textarea._blurHandler) {
                         textarea.removeEventListener('blur', textarea._blurHandler);
                     }
-                    if (_h.deleteAnnotationSilently) {
-                        await _h.deleteAnnotationSilently(pageIdx, (annotation && annotation.requestIdentifier) || identifier);
-                        if (!_isCurrentEpoch(requestEpoch)) return;
-                    }
+                    var deleteDraft = _h.deleteAnnotationSilently || deleteAnnotationSilently;
+                    await deleteDraft(pageIdx, (annotation && annotation.requestIdentifier) || identifier);
+                    if (!_isCurrentEpoch(requestEpoch)) return;
                     _setEditingAnnotationId(null);
                     _syncAnnotationsState({ editingId: null });
                     if (_h.collapseInlineLabel) {
@@ -2271,6 +2272,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         }
 
         function beginEdit(pageIdx, identifier, domId) {
+            closeEmptyNewDrafts({ pageIdx: pageIdx, identifier: identifier });
             var requestEpoch = _currentHistoryEpoch();
             var inlineEditor = null;
             var ann = _h.findAnnotationEntry ? _h.findAnnotationEntry(pageIdx, identifier) : null;
@@ -2535,6 +2537,11 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         rect: apiRect,
                         canvas_user_name: _canvasUserName || null,
                     });
+                    // A real document close can outlive this controller. Keep only
+                    // the server identity needed to delete that explicitly closed draft.
+                    if (data && data.success && data.annotation) {
+                        optimisticAnnotation._closedDraftIdentifier = _h.resolveAnnotationIdentifierValue(data.annotation);
+                    }
                     if (!_isCurrentEpoch(requestEpoch)) return;
 
                     if (abortController.signal.aborted) {
@@ -3198,7 +3205,39 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             return Promise.resolve();
         }
 
-        async function deleteAnnotationSilently(pageIdx, identifier) {
+        function closeEmptyNewDrafts(keep) {
+            var pending = [];
+            Object.entries(_getAnnotationsData()).forEach(function (entry) {
+                var pageIdx = Number(entry[0]);
+                entry[1].forEach(function (annotation) {
+                    if (!annotation._isTemporary) return;
+                    var id = _h.resolveAnnotationIdentifierValue(annotation);
+                    if (keep && keep.pageIdx === pageIdx &&
+                        (!keep.identifier || String(keep.identifier) === String(id))) return;
+                    var marker = _findMarkerForIdentifiers(pageIdx, [id, annotation._tempIdentifier, annotation._tempXref]);
+                    var editor = marker && marker.querySelector('.inline-annotation-editor');
+                    editor = editor || document.getElementById('edit-annotation-text-' + id);
+                    var content = String(editor ? editor.value : annotation.content || '').trim();
+                    if (PLACEHOLDER_STRINGS.indexOf(content) === -1) return;
+                    annotation._discardOnClose = true;
+                    if (!_draftDeleteRequests.has(annotation) && _h.captureDraftDeleteRequest) {
+                        _draftDeleteRequests.set(annotation, _h.captureDraftDeleteRequest());
+                    }
+                    pending.push(deleteAnnotationSilently(pageIdx, id));
+                });
+            });
+            return Promise.all(pending);
+        }
+
+        function deleteAnnotationSilently(pageIdx, identifier) {
+            var entry = _h.findAnnotationEntry ? _h.findAnnotationEntry(pageIdx, identifier) : null;
+            if (entry && _silentDeletes.has(entry)) return _silentDeletes.get(entry);
+            var pending = _deleteAnnotationSilently(pageIdx, identifier);
+            if (entry) _silentDeletes.set(entry, pending);
+            return pending;
+        }
+
+        async function _deleteAnnotationSilently(pageIdx, identifier) {
             var requestEpoch = _currentHistoryEpoch();
             var stableIdentifier = _h.normalizeAnnotationIdentifierValue
                 ? _h.normalizeAnnotationIdentifierValue(identifier)
@@ -3211,7 +3250,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             if (annotationEntry && annotationEntry._createPromise) {
                 try {
                     await annotationEntry._createPromise;
-                    if (!_isCurrentEpoch(requestEpoch)) return;
+                    if (!_isCurrentEpoch(requestEpoch) && !annotationEntry._discardOnClose) return;
                 } catch (error) {
                     if (_ignoreMutationFailure(error, requestEpoch)) return;
                     debugLog('[ANNOTATION-CTRL] Pending create failed before silent delete:', error);
@@ -3219,9 +3258,11 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
                 stableIdentifier = _h.resolveAnnotationIdentifierValue
                     ? _h.resolveAnnotationIdentifierValue(annotationEntry) : stableIdentifier;
+                if (annotationEntry._discardOnClose && !annotationEntry._closedDraftIdentifier) return;
+                stableIdentifier = annotationEntry._closedDraftIdentifier || stableIdentifier;
             }
 
-            var annotationsData = _getAnnotationsData();
+            var annotationsData = _isCurrentEpoch(requestEpoch) ? _getAnnotationsData() : {};
             var annotationXref = null;
             if (annotationsData[pageIdx]) {
                 var ann = annotationsData[pageIdx].find(function (candidate) {
@@ -3248,8 +3289,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     return Promise.resolve();
                 }
 
-                if (!_isCurrentEpoch(requestEpoch)) return;
-                var data = await _h.deleteAnnotationRequest(apiIdentifier);
+                if (!_isCurrentEpoch(requestEpoch) && !annotationEntry?._discardOnClose) return;
+                var deleteRequest = annotationEntry && _draftDeleteRequests.get(annotationEntry) || _h.deleteAnnotationRequest;
+                var data = await deleteRequest(apiIdentifier);
                 if (!_isCurrentEpoch(requestEpoch)) return;
                 if (data.success) {
                     if (_h.discardTemporaryAnnotationHistory) {
@@ -3347,6 +3389,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             highlightSelection: highlightSelection,
             selectAnnotation: function (id, pageIdx, options) {
                 if (_destroyed) return;
+                closeEmptyNewDrafts({ pageIdx: pageIdx, identifier: id });
                 highlightSelection(pageIdx, id, options);
             },
 
@@ -3376,6 +3419,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             saveAnnotationEdit: saveAnnotationEdit,
             deleteAnnotation: deleteAnnotation,
             deleteAnnotationSilently: deleteAnnotationSilently,
+            closeEmptyNewDrafts: closeEmptyNewDrafts,
             revertAnnotationToAi: function (pageIdx, identifier, sourceButton) {
                 if (_isDestroyedSidebarAction()) return Promise.resolve();
                 return _revertAnnotationToAi(pageIdx, identifier, sourceButton);
