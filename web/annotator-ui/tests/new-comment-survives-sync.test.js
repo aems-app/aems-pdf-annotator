@@ -508,8 +508,9 @@ describe('new comment survives production polling and relayout', () => {
     let nextId = 0;
     adapter.createAnnotation.mockImplementation(async (_a, _s, body) => {
       const id = 'created-' + ++nextId;
+      const xref = 2000 + nextId;
       await new Promise(resolve => setTimeout(resolve, 300));
-      const annotation = { ...ai, ...body, id, stable_id: id, xref: 2000 + nextId };
+      const annotation = { ...ai, ...body, id, stable_id: id, xref };
       stored.set(id, annotation);
       return { success: true, annotation };
     });
