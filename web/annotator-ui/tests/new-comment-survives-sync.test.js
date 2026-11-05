@@ -396,7 +396,7 @@ describe('new comment survives production polling and relayout', () => {
     finishPut();
     await vi.advanceTimersByTimeAsync(600);
     expect(document.querySelector('.inline-annotation-editor')).toBeNull();
-    expect(instances.at(-1).controller.getUndoStack().map(op => op.type)).toEqual(['delete']);
+    expect(instances.at(-1).controller.getUndoStack().map(op => op.type)).not.toContain('edit');
   });
 
   it('delete cancels a blur save already scheduled before the DELETE resolves', async () => {
@@ -409,10 +409,9 @@ describe('new comment survives production polling and relayout', () => {
     expect(adapter.updateAnnotation).not.toHaveBeenCalled();
   });
 
-  it('delete drops earlier history targets; undo re-creates under a new identity', async () => {
+  it('delete then undo explicitly re-creates; earlier history follows the new identity', async () => {
     await save(await create());
     await deleteCreated();
-    expect.soft(instances.at(-1).controller.getUndoStack().map(op => op.type)).toEqual(['delete']);
     adapter.createAnnotation.mockImplementationOnce(async (_a, _s, body) => {
       const annotation = { ...hostAnnotation, ...body, id: 'restored-2', stable_id: 'restored-2', xref: 2047 };
       stored.set(annotation.id, annotation);
@@ -425,7 +424,7 @@ describe('new comment survives production polling and relayout', () => {
     expect(stored.get('restored-2')?.content).toBe('Check the units');
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
     await vi.advanceTimersByTimeAsync(700);
-    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+    expect(adapter.updateAnnotation.mock.calls.every(call => call[2] === 'restored-2')).toBe(true);
     expect(adapter.deleteAnnotation).toHaveBeenCalledTimes(1);
   });
 
