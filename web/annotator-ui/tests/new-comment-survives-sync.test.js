@@ -115,6 +115,7 @@ describe('new comment survives production polling and relayout', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    delete window.i18n;
   });
 
   function releasePages() {
@@ -235,6 +236,68 @@ describe('new comment survives production polling and relayout', () => {
     expect.soft(instances.at(-1).options.getAnnotationsData()[0]?.[0]?.content).toBe('kommentar');
     expect(document.querySelector('.alert-danger')?.textContent).toContain('Create refused');
     expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
+  });
+
+  it.each(['inline', 'sidebar'])('300 ms rejected POST preserves all characters typed in %s', async location => {
+    adapter.createAnnotation.mockImplementationOnce(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      throw new TypeError('Failed to fetch');
+    });
+    const editor = await startTypingDraft(30, location);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(editor.value).toBe('kommentar');
+    expect(document.activeElement).toBe(editor);
+    expect([editor.selectionStart, editor.selectionEnd]).toEqual([9, 9]);
+  });
+
+  function commitDraft(path, editor) {
+    if (path === 'keyboard') editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }));
+    else {
+      instances.at(-1).controller.renderList(); // jsdom has no visibility observer callback
+      const button = document.querySelector('.save-annotation-btn');
+      if (button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))) button.focus();
+      button.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      button.click();
+    }
+  }
+
+  it.each(['button', 'keyboard', 'double click', 'sidebar'])('%s retries failed creation once, saves through the content lane and closes', async path => {
+    adapter.createAnnotation.mockImplementationOnce(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      throw new TypeError('Failed to fetch');
+    });
+    const editor = await startTypingDraft(30, path === 'sidebar' ? 'sidebar' : 'inline');
+    await vi.advanceTimersByTimeAsync(400);
+    commitDraft(path, editor);
+    if (path === 'double click') commitDraft(path, editor);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(2);
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    expect(adapter.updateAnnotation.mock.calls[0][2]).toBe('created-1');
+    expect(stored.get('created-1')?.content).toBe('kommentar');
+    expect(document.querySelector('.inline-annotation-editor')).toBeNull();
+    expect(document.querySelector('.auto-resize-textarea')).toBeNull();
+  });
+
+  it.each(['sv', 'en'])('a second failure retains the draft and uses the %s host translation', async language => {
+    const message = language === 'sv' ? 'Kunde inte skapa kommentaren.' : 'Failed to create annotation.';
+    window.i18n = { t: vi.fn(key => key === 'Failed to create annotation.' ? message : key) };
+    adapter.createAnnotation.mockImplementation(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      throw new TypeError('Failed to fetch');
+    });
+    const editor = await startTypingDraft();
+    await vi.advanceTimersByTimeAsync(400);
+    document.querySelectorAll('.alert-danger').forEach(el => el.remove());
+    commitDraft('button', editor);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(2);
+    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+    expect(document.querySelector('.inline-annotation-editor')).toBe(editor);
+    expect(editor.value).toBe('kommentar');
+    expect(document.querySelector('.auto-resize-textarea')?.value).toBe('kommentar');
+    expect(document.querySelector('.alert-danger')?.textContent).toContain(message);
+    expect(window.i18n.t).toHaveBeenCalledWith('Failed to create annotation.', {});
   });
 
   it('own POST followed by the 10 s version poll never reloads/deletes the new comment', async () => {
