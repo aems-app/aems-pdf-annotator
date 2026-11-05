@@ -1611,34 +1611,71 @@
         const key = `${epoch}:${identity}`;
         let writes = annotationWrites.get(key);
         if (!writes) {
-            writes = { pending: 0, version: 0, conflicted: false };
+            writes = { pending: 0, version: 0, conflicted: false, requests: new Map() };
             annotationWrites.set(key, writes);
         }
+        const signature = Object.keys(body).length === 1 && typeof body.content === 'string' ? body.content : null;
+        if (signature !== null && writes.requests.has(signature)) return writes.requests.get(signature);
         writes.conflicted ||= writes.pending > 0;
         writes.pending += 1;
         writes.version += 1;
-        try {
-            let data;
-            let failure;
+        const request = performAnnotationUpdate();
+        if (signature !== null) writes.requests.set(signature, request);
+        return request;
+
+        async function performAnnotationUpdate() {
             try {
-                data = await _requireAnnotationAdapter().updateAnnotation(currentAssignmentId, currentSubmissionId, annotationId, body, {
-                    offline: _isOfflineMode()
-                });
-            } catch (error) {
-                failure = error;
+                let data;
+                let failure;
+                try {
+                    data = await _requireAnnotationAdapter().updateAnnotation(currentAssignmentId, currentSubmissionId, annotationId, body, {
+                        offline: _isOfflineMode()
+                    });
+                } catch (error) {
+                    failure = error;
+                }
+                if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+                writes.version += 1;
+                if (writes.conflicted) {
+                    await refreshConflictingAnnotation(identity, epoch, writes);
+                    throw CONCURRENT_ANNOTATION_WRITE;
+                }
+                if (failure) throw failure;
+                return data;
+            } finally {
+                writes.pending -= 1;
+                writes.requests.delete(signature);
+                if (!writes.pending) annotationWrites.delete(key);
             }
-            if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
-            writes.version += 1;
-            if (writes.conflicted) {
-                await refreshConflictingAnnotation(identity, epoch, writes);
-                throw CONCURRENT_ANNOTATION_WRITE;
-            }
-            if (failure) throw failure;
-            return data;
-        } finally {
-            writes.pending -= 1;
-            if (!writes.pending) annotationWrites.delete(key);
         }
+    }
+
+    // Editor saves share one lane per persisted identity. Repeated Save/blur
+    // actions join the same content; a later edit waits for the previous PUT.
+    async function saveAnnotationContentRequest(annotationId, body) {
+        const epoch = currentHistoryEpoch();
+        const resolved = resolveAnnotationWriteIdentity(annotationId, epoch);
+        annotationId = typeof resolved === 'string' ? resolved : await resolved;
+        const key = `${epoch}:${annotationWriteIdentity(annotationId)}`;
+        const previous = annotationContentSaves.get(key);
+        if (previous?.content === body.content) return previous.promise;
+        const promise = previous
+            ? previous.promise.catch(() => {}).then(() => {
+                if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+                return updateAnnotationRequest(annotationId, body);
+            })
+            : updateAnnotationRequest(annotationId, body);
+        const save = { content: body.content, promise };
+        annotationContentSaves.set(key, save);
+        try {
+            return await promise;
+        } finally {
+            if (annotationContentSaves.get(key) === save) annotationContentSaves.delete(key);
+        }
+    }
+
+    function isAnnotationContentSaveInFlight(identifier) {
+        return annotationContentSaves.has(`${currentHistoryEpoch()}:${annotationWriteIdentity(identifier)}`);
     }
 
     // Without server revisions or before-images, overlapping writes cannot supply trustworthy undo snapshots.
@@ -3109,11 +3146,20 @@
         }
 
         // Handle save on blur
-        textarea.addEventListener('blur', async () => {
+        const isOwnControl = (element) => {
+            const control = element?.closest?.('.save-annotation-btn, .cancel-edit-btn');
+            const item = control?.closest('.list-group-item');
+            return !!item?.querySelector(`#${CSS.escape('edit-annotation-text-' + identifier)}`);
+        };
+        textarea.addEventListener('blur', (event) => {
+            if (isOwnControl(event.relatedTarget) || label._savePromise || isAnnotationContentSaveInFlight(identifier)) return;
             // Small delay to check if clicking on another element within the label
             setTimeout(async () => {
                 if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                if (shouldIgnoreDetachedInlineBlur(textarea, label)) {
+                if (shouldIgnoreDetachedInlineBlur(textarea, label) ||
+                    label.querySelector('.inline-annotation-editor') !== textarea ||
+                    isOwnControl(document.activeElement) || label._savePromise ||
+                    isAnnotationContentSaveInFlight(identifier)) {
                     return;
                 }
                 if (document.activeElement !== textarea && label.classList.contains('label-editing')) {
@@ -3153,25 +3199,12 @@
                 e.stopPropagation();
                 e.stopImmediatePropagation();
 
-                // Remove this handler
-                document.removeEventListener('keydown', escapeHandler, true);
-
                 // Save unless content is empty (match panel behavior)
                 await saveAndCollapseInlineLabel(label, textarea.value);
-                if (!isCurrentHistoryEpoch(requestEpoch)) return;
-
-                // Also clear panel editing mode
-                editingAnnotationId = null;
-                inlineEditingLabel = null;
-                renderAnnotationsList();
             } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && label.classList.contains('label-editing')) {
                 e.preventDefault();
-                document.removeEventListener('keydown', escapeHandler, true);
+                e.stopPropagation();
                 await saveAndCollapseInlineLabel(label, textarea.value);
-                if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                editingAnnotationId = null;
-                inlineEditingLabel = null;
-                renderAnnotationsList();
             }
         };
 
@@ -3289,7 +3322,11 @@
     function collapseInlineLabel(label) {
         if (!label || !label.classList.contains('label-expanded')) return;
 
-        if (label.classList.contains('label-editing')) editingAnnotationId = null;
+        const editingMarker = label.closest('.annotation-marker');
+        const editingIdentifier = editingMarker?.dataset.identifier || editingMarker?.dataset.annotationRequestId;
+        const editingPage = editingMarker?.dataset.annotationPage || editingMarker?.dataset.pageIdx || '0';
+        if (label.classList.contains('label-editing') &&
+            editingAnnotationId === `ann-${editingPage}-${editingIdentifier}`) editingAnnotationId = null;
         clearPendingInlineLabelReposition(label);
 
         // Remove escape handler if exists
@@ -3362,6 +3399,18 @@
 
     // Save edits and collapse label
     async function saveAndCollapseInlineLabel(label, newContent, options = {}) {
+        if (!label) return false;
+        if (label._savePromise) return label._savePromise;
+        const promise = persistInlineLabel(label, newContent, options);
+        label._savePromise = promise;
+        try {
+            return await promise;
+        } finally {
+            if (label._savePromise === promise) delete label._savePromise;
+        }
+    }
+
+    async function persistInlineLabel(label, newContent, options) {
         const requestEpoch = currentHistoryEpoch();
         if (!label || !label.classList.contains('label-expanded')) {
             return;
@@ -3418,6 +3467,7 @@
             }
             // Not temporary or has edits - just collapse without saving
             collapseInlineLabel(label);
+            renderAnnotationsList();
             return;
         }
 
@@ -3432,8 +3482,9 @@
                 requestId: marker.dataset.annotationRequestId,
             });
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
-            const data = await updateAnnotationRequest(apiIdentifier, { content: trimmedContent });
+            const data = await saveAnnotationContentRequest(apiIdentifier, { content: trimmedContent });
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
+            if (!data?.success || !data.annotation) throw new Error(data?.error || t('Update failed'));
 
             if (data.success && data.annotation) {
                 // The undo entry's old text is read now, against the entry as it stands when the response arrives
@@ -3505,12 +3556,15 @@
         } catch (error) {
             if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
             console.error('Error saving inline annotation:', error);
+            showToast('error', error.message || t('Failed to save annotation. Please try again.'));
+            return false;
         } finally {
             if (annotation && isCurrentHistoryEpoch(requestEpoch)) delete annotation._savingContent;
         }
 
         collapseInlineLabel(label);
         renderAnnotationsList(); // Update the right panel too
+        return true;
     }
 
     // Undo stack for annotation operations
@@ -3526,6 +3580,7 @@
     // its request nor applies its answer (issue #540).
     let historyDocumentEpoch = 0;
     const annotationWrites = new Map();
+    const annotationContentSaves = new Map();
     const annotationIdentityAliases = new Map();
     // Numbers every new operation in the order it was recorded. A step that puts an operation back goes below
     // any operation numbered after it, and a step learns from it whether a new operation arrived meanwhile.
@@ -3670,6 +3725,7 @@
         clearRedoStack();
         _currentAnnotationCtrl?.clearUndoStack?.();
         annotationWrites.clear();
+        annotationContentSaves.clear();
         annotationIdentityAliases.clear();
     }
 
@@ -9960,6 +10016,8 @@
                     isAnnotationType: isAnnotationType,
                     createAnnotationRequest: createAnnotationRequest,
                     updateAnnotationRequest: updateAnnotationRequest,
+                    saveAnnotationContentRequest: saveAnnotationContentRequest,
+                    isAnnotationContentSaveInFlight: isAnnotationContentSaveInFlight,
                     remapAnnotationIdentity: remapAnnotationIdentity,
                     deleteAnnotationRequest: deleteAnnotationRequest,
                     captureDraftDeleteRequest: captureDraftDeleteRequest,
