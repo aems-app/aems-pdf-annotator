@@ -33,6 +33,22 @@ window.PdfPreviewModalUtils = window.PdfPreviewModalUtils || {};
         return fallback;
     }
 
+    // AEMS supplies window.i18n.t. Resolve it at render time so the bundle also
+    // works standalone, or when the host loads its translations after this file.
+    exports.translateText = function translateText(key, params) {
+        var translator = window.i18n && typeof window.i18n.t === 'function' ? window.i18n.t : null;
+        var translated = translator ? translator.call(window.i18n, key, params || {}) : key;
+        var text = typeof translated === 'string' && translated.length ? translated : key;
+        return text.replace(/%\((\w+)\)s/g, function (match, name) {
+            return Object.prototype.hasOwnProperty.call(params || {}, name) ? String(params[name]) : match;
+        });
+    };
+
+    // Safe in both element text and double-quoted attribute contexts.
+    exports.translateHtml = function translateHtml(key, params) {
+        return exports.escapeHtmlAttribute(exports.translateText(key, params));
+    };
+
     // =========================================================================
     // Debug Logging
     // =========================================================================

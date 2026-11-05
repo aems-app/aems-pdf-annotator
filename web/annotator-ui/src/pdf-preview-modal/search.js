@@ -15,6 +15,10 @@ window.PdfPreviewModalSearch = window.PdfPreviewModalSearch || {};
 (function (exports) {
     'use strict';
 
+    var t = (window.PdfPreviewModalUtils || {}).translateText || function (key, params) {
+        return key.replace(/%\((\w+)\)s/g, function (match, name) { return params && name in params ? String(params[name]) : match; });
+    };
+
     // =========================================================================
     // Constants
     // =========================================================================
@@ -183,7 +187,7 @@ window.PdfPreviewModalSearch = window.PdfPreviewModalSearch || {};
         if (totalMatches <= 0 || currentIndex < 0) {
             return '';
         }
-        return 'Match ' + (currentIndex + 1) + '/' + totalMatches + ' on page ' + page;
+        return t('Match %(index)s/%(total)s on page %(page)s', { index: currentIndex + 1, total: totalMatches, page: page });
     };
 
     /**
@@ -199,7 +203,7 @@ window.PdfPreviewModalSearch = window.PdfPreviewModalSearch || {};
             'searching': 'Searching…',
             'load_pdf': 'Load graded PDF first'
         };
-        return messages[type] || '';
+        return messages[type] ? t(messages[type]) : '';
     };
 
     // =========================================================================

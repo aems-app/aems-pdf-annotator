@@ -14,6 +14,8 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 (function (exports) {
     'use strict';
 
+    var t = (window.PdfPreviewModalUtils || {}).translateText || function (key) { return key; };
+
     // =========================================================================
     // State
     // =========================================================================
@@ -205,7 +207,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         var deleteBtn = document.createElement('button');
         deleteBtn.className = 'markup-selection-delete';
         deleteBtn.type = 'button';
-        deleteBtn.title = 'Delete';
+        deleteBtn.title = t('Delete');
         deleteBtn.textContent = '\u00d7';
 
         deleteBtn.addEventListener('click', function (e) {

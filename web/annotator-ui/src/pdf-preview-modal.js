@@ -15,6 +15,11 @@
 (function () {
     'use strict';
 
+    var t = (window.PdfPreviewModalUtils || {}).translateText || translatePdfPreviewText;
+    var th = (window.PdfPreviewModalUtils || {}).translateHtml || function (key, params) {
+        return escapeHtmlAttribute(t(key, params));
+    };
+
     // Configuration - passed from template (used by pdf-viewer.js module)
     const _PDFPreviewConfig = window.PDFPreviewConfig || {
         pdfjsWorkerSrc: '/static/js/pdf.worker.min.js'
@@ -29,6 +34,7 @@
     const PLACEHOLDER_STRINGS = UtilsModule.PLACEHOLDER_STRINGS || ['', 'New comment...', 'New comment'];
 
     function translatePdfPreviewText(key, params) {
+        if (UtilsModule.translateText) return UtilsModule.translateText(key, params);
         var translator = window.i18n && typeof window.i18n.t === 'function'
             ? window.i18n.t.bind(window.i18n)
             : null;
@@ -368,7 +374,7 @@
                 if (editBtn) {
                     consumeActionEvent(e);
                     const id = editBtn.dataset.annotationRequestId || editBtn.dataset.annotationIdentifier || editBtn.dataset.annotationXref;
-                    if (!id) { showToast('error', 'Unable to locate annotation.'); return; }
+                    if (!id) { showToast('error', t('Unable to locate annotation.')); return; }
                     editAnnotation(parseInt(editBtn.dataset.annotationPage), id, editBtn.dataset.annotationId);
                     return;
                 }
@@ -378,7 +384,7 @@
                 if (deleteBtn) {
                     consumeActionEvent(e);
                     const id = deleteBtn.dataset.annotationRequestId || deleteBtn.dataset.annotationIdentifier || deleteBtn.dataset.annotationXref;
-                    if (!id) { showToast('error', 'Unable to delete annotation.'); return; }
+                    if (!id) { showToast('error', t('Unable to delete annotation.')); return; }
                     deleteAnnotation(parseInt(deleteBtn.dataset.annotationPage), id, deleteBtn);
                     return;
                 }
@@ -391,7 +397,7 @@
                         || revertBtn.dataset.annotationRequestId
                         || revertBtn.dataset.annotationIdentifier
                         || revertBtn.dataset.annotationXref;
-                    if (!id) { showToast('error', 'Unable to revert annotation.'); return; }
+                    if (!id) { showToast('error', t('Unable to revert annotation.')); return; }
                     revertAnnotationToAi(
                         parseInt(revertBtn.dataset.annotationPage),
                         id,
@@ -405,7 +411,7 @@
                 if (saveBtn) {
                     consumeActionEvent(e);
                     const id = saveBtn.dataset.annotationIdentifier || saveBtn.dataset.annotationXref;
-                    if (!id) { showToast('error', 'Annotation missing.'); return; }
+                    if (!id) { showToast('error', t('Annotation missing.')); return; }
                     saveAnnotationEdit(id, saveBtn);
                     return;
                 }
@@ -417,7 +423,7 @@
                     const id = cancelBtn.dataset.annotationIdentifier || cancelBtn.dataset.annotationXref;
                     const page = parseInt(cancelBtn.dataset.annotationPage, 10);
                     if (!id || Number.isNaN(page)) {
-                        showToast('error', 'Unable to cancel edit.');
+                        showToast('error', t('Unable to cancel edit.'));
                         return;
                     }
                     if (_currentAnnotationCtrl && _currentAnnotationCtrl.cancelAnnotationEdit) {
@@ -602,7 +608,7 @@
             return;
         }
         const maxChars = 18;
-        const rawText = String(fullText || 'Click to edit');
+        const rawText = String(fullText || t('Click to edit'));
         const compactText = rawText.length > maxChars
             ? rawText.substring(0, maxChars) + '...'
             : rawText;
@@ -695,7 +701,7 @@
         });
 
         if (aiAnnotations.length === 0) {
-            const message = hasAnyAiAnnotations ? 'No AI feedback visible' : 'No AI annotations';
+            const message = hasAnyAiAnnotations ? th('No AI feedback visible') : th('No AI annotations');
             listEl.innerHTML = `<div class="text-muted small text-center p-3">${message}</div>`;
             return;
         }
@@ -740,7 +746,7 @@
 
             // For editing mode, show empty string for placeholders; for display mode show actual content
             const editContent = contentIsPlaceholder ? '' : escapeHtml(content);
-            const displayContent = escapeHtml(content) || 'No comment text';
+            const displayContent = escapeHtml(content) || th('No comment text');
 
             // Get grader name from annotation and format according to current display mode
             const rawGraderName = ann.grader_name || ann.author_name || '';
@@ -749,20 +755,20 @@
             const commentId = `${pageIdx + 1}.${displayIndexOnPage}`;
 
             // Source badge HTML - Icon only
-            const sourceBadgeHtml = `<span class="source-badge source-ai" title="AI-generated"><i class="bi bi-robot"></i></span>`;
+            const sourceBadgeHtml = `<span class="source-badge source-ai" title="${th('AI-generated')}"><i class="bi bi-robot"></i></span>`;
 
             // Verdict indicator
             const isVerdict = !!ann.is_verdict;
             const verdictHtml = isVerdict
-                ? `<i class="bi bi-patch-check-fill verdict-indicator" title="Verdict comment" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${pageIdx}"></i>`
-                : `<i class="bi bi-patch-check verdict-indicator verdict-inactive" title="Mark as verdict" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${pageIdx}"></i>`;
+                ? `<i class="bi bi-patch-check-fill verdict-indicator" title="${th('Verdict comment')}" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${pageIdx}"></i>`
+                : `<i class="bi bi-patch-check verdict-indicator verdict-inactive" title="${th('Mark as verdict')}" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${pageIdx}"></i>`;
             const verdictClass = isVerdict ? ' is-verdict' : '';
 
             // Add page separator if this is a new page
             let separator = '';
             if (lastPageIdx !== null && pageIdx !== lastPageIdx) {
                 separator = `<div class="page-separator">
-                    <small class="text-muted d-block text-center page-separator-label">${translatePdfPreviewText('Page %(page)s', { page: pageIdx + 1 })}</small>
+                    <small class="text-muted d-block text-center page-separator-label">${th('Page %(page)s', { page: pageIdx + 1 })}</small>
                 </div>`;
             }
             lastPageIdx = pageIdx;
@@ -777,20 +783,20 @@
                                 ${verdictHtml}
                                 ${graderName ? `<small class="text-muted grader-name-badge" title="${escapeHtmlAttribute(rawGraderName)}">${escapeHtml(graderName)}</small>` : ''}
                                 <div class="priority-dots d-flex gap-1" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${pageIdx}">
-                                    <span class="priority-dot priority-red ${priority === 'red' ? 'active' : ''}" data-priority="red" title="High priority"></span>
-                                    <span class="priority-dot priority-amber ${priority === 'amber' ? 'active' : ''}" data-priority="amber" title="Medium priority"></span>
-                                    <span class="priority-dot priority-green ${priority === 'green' ? 'active' : ''}" data-priority="green" title="Low priority"></span>
+                                    <span class="priority-dot priority-red ${priority === 'red' ? 'active' : ''}" data-priority="red" title="${th('High priority')}"></span>
+                                    <span class="priority-dot priority-amber ${priority === 'amber' ? 'active' : ''}" data-priority="amber" title="${th('Medium priority')}"></span>
+                                    <span class="priority-dot priority-green ${priority === 'green' ? 'active' : ''}" data-priority="green" title="${th('Low priority')}"></span>
                                 </div>
                         </div>
                         <div class="annotation-content ${isEditing ? 'editing' : ''}" data-annotation-id="${domId}" data-annotation-identifier="${displayIdentifier}">
                             ${isEditing ? `
-                                <textarea class="form-control form-control-sm mb-2 auto-resize-textarea" id="edit-annotation-text-${displayIdentifier}" rows="2" placeholder="Type your comment...">${editContent}</textarea>
+                                <textarea class="form-control form-control-sm mb-2 auto-resize-textarea" id="edit-annotation-text-${displayIdentifier}" rows="2" placeholder="${th('Type your comment...')}">${editContent}</textarea>
                                 <div class="annotation-edit-actions d-flex flex-wrap gap-2">
                                     <button class="btn btn-primary btn-sm save-annotation-btn" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}">
                                         <span class="spinner-border spinner-border-sm d-none" role="status"></span>
-                                        <span class="btn-text">Save</span>
+                                        <span class="btn-text">${th('Save')}</span>
                                     </button>
-                                    <button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${pageIdx}">Cancel</button>
+                                    <button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="${displayIdentifier}" data-annotation-request-id="${requestId}" data-annotation-xref="${xrefValue}" data-annotation-page="${pageIdx}">${th('Cancel')}</button>
                                 </div>
                             ` : displayContent}
                         </div>
@@ -801,7 +807,7 @@
                                      data-annotation-request-id="${requestId}"
                                      data-annotation-page="${pageIdx}"
                                      data-annotation-id="${domId}"
-                                     title="Edit comment">
+                                     title="${th('Edit comment')}">
                                 <i class="bi bi-pencil"></i>
                             </button>
                             ${ann.can_revert_to_ai && _hostAdvertisesCapability('revertToAi') ? `
@@ -812,7 +818,7 @@
                                     data-annotation-page="${pageIdx}"
                                     data-annotation-id="${domId}"
                                     data-annotation-stable-id="${stableId || ''}"
-                                    title="Revert to AI">
+                                    title="${th('Revert to AI')}">
                                 <span class="spinner-border spinner-border-sm d-none" role="status"></span>
                                 <i class="bi bi-arrow-counterclockwise"></i>
                             </button>
@@ -823,7 +829,7 @@
                                     data-annotation-xref="${escapeHtmlAttribute(ann.xref || '')}"
                                     data-annotation-page="${pageIdx}"
                                     data-annotation-id="${domId}"
-                                    title="Delete comment">
+                                    title="${th('Delete comment')}">
                                 <span class="spinner-border spinner-border-sm d-none" role="status"></span>
                                 <i class="bi bi-trash"></i>
                             </button>
@@ -859,7 +865,7 @@
                     || null;
 
                 if (!identifierValue) {
-                    showToast('error', 'Unable to locate this annotation for editing.');
+                    showToast('error', t('Unable to locate this annotation for editing.'));
                     return;
                 }
 
@@ -1508,7 +1514,7 @@
                 return hostApi;
             }
         }
-        _annotationAdapterError = 'Annotation routing is unavailable because no host API was provided.';
+        _annotationAdapterError = t('Annotation routing is unavailable because no host API was provided.');
         return null;
     }
 
@@ -1516,7 +1522,7 @@
         if (_annotationAdapter) {
             return _annotationAdapter;
         }
-        throw new Error(_annotationAdapterError || 'Annotation routing is unavailable. Reload the page and try again.');
+        throw new Error(_annotationAdapterError || t('Annotation routing is unavailable. Reload the page and try again.'));
     }
 
     /**
@@ -1709,7 +1715,7 @@
         annotationId = typeof resolved === 'string' ? resolved : await resolved;
         var adapter = _requireAnnotationAdapter();
         if (typeof adapter.revertAnnotationToAi !== 'function') {
-            throw new Error('Revert-to-AI is not supported by this host.');
+            throw new Error(t('Revert-to-AI is not supported by this host.'));
         }
         return adapter.revertAnnotationToAi(currentAssignmentId, currentSubmissionId, annotationId);
     }
@@ -2925,7 +2931,7 @@
         if (!label) return;
 
         // Get latest fullText from dataset (may have been updated after save)
-        const fullText = label.dataset.fullText || 'No content';
+        const fullText = label.dataset.fullText || t('No content');
 
         // Store original state
         label.dataset.originalText = label.dataset.originalText || '';
@@ -3020,7 +3026,7 @@
         const textarea = document.createElement('textarea');
         textarea.className = 'inline-annotation-editor';
         textarea.value = fullText;
-        textarea.placeholder = 'Type your comment...';
+        textarea.placeholder = t('Type your comment...');
         textarea.style.cssText = `
             width: 100%;
             min-height: 60px;
@@ -3170,7 +3176,7 @@
                 section.classList.add('active');
             }
             section.dataset.priority = priority;
-            section.title = priority.charAt(0).toUpperCase() + priority.slice(1);
+            section.title = t({ red: 'High priority', amber: 'Medium priority', green: 'Low priority' }[priority]);
 
             // CRITICAL: Use mousedown with preventDefault to avoid blur on textarea
             section.addEventListener('mousedown', (e) => {
@@ -3327,7 +3333,7 @@
         // Restore compact label with number ribbon + text.
         const markerNumber = marker?.dataset?.annotationNumber || '';
         const annotationNumber = label.dataset.annotationNumber || markerNumber;
-        const compactTextSource = label.dataset.fullText || label.dataset.originalText || 'Click to edit';
+        const compactTextSource = label.dataset.fullText || label.dataset.originalText || t('Click to edit');
         renderCompactInlineLabelContent(label, annotationNumber, compactTextSource);
         repositionInlineLabel(label);
     }
@@ -6377,8 +6383,12 @@
         const canvasHeight = canvasRect.height || canvas.clientHeight;
         if (!canvasWidth || !canvasHeight) return;
 
-        const scaleX = canvasWidth / viewport.width;
-        const scaleY = canvasHeight / viewport.height;
+        const markerOverlay = marker.closest('.pdf-annotation-overlay');
+        const geometry = window.PdfPreviewModalOverlayRenderer?.getPageGeometry && markerOverlay
+            ? window.PdfPreviewModalOverlayRenderer.getPageGeometry(canvas, markerOverlay, viewport)
+            : { x: 0, y: 0, scaleX: canvasWidth / viewport.width, scaleY: canvasHeight / viewport.height };
+        const scaleX = geometry.scaleX;
+        const scaleY = geometry.scaleY;
 
         const rect = ann.rect;
         if (!Array.isArray(rect) || rect.length !== 4) return;
@@ -6401,8 +6411,8 @@
         const minY = Math.min(viewportRect[1], viewportRect[3]);
         const maxY = Math.max(viewportRect[1], viewportRect[3]);
 
-        marker.style.left = (minX * scaleX) + 'px';
-        marker.style.top = (minY * scaleY) + 'px';
+        marker.style.left = (geometry.x + minX * scaleX) + 'px';
+        marker.style.top = (geometry.y + minY * scaleY) + 'px';
         marker.style.width = Math.max((maxX - minX) * scaleX, MIN_SIZE) + 'px';
         marker.style.height = Math.max((maxY - minY) * scaleY, MIN_SIZE) + 'px';
 
@@ -7289,7 +7299,7 @@
         iconEl.classList.toggle('bi-patch-check-fill', !!isVerdict);
         iconEl.classList.toggle('bi-patch-check', !isVerdict);
         iconEl.classList.toggle('verdict-inactive', !isVerdict);
-        iconEl.title = isVerdict ? 'Verdict comment' : 'Mark as verdict';
+        iconEl.title = isVerdict ? t('Verdict comment') : t('Mark as verdict');
     }
 
     function getPriorityRgb(priority) {
@@ -7443,7 +7453,7 @@
         const requestEpoch = currentHistoryEpoch();
         const stableIdentifier = normalizeAnnotationIdentifierValue(identifier);
         if (!stableIdentifier) {
-            showToast('error', 'Unable to determine which annotation to update.');
+            showToast('error', t('Unable to determine which annotation to update.'));
             return;
         }
 
@@ -7493,7 +7503,7 @@
             const data = await updateAnnotationRequest(requestId, { is_verdict: newVerdict, source: currentSource });
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (!data.success) {
-                throw new Error(data.error || 'Failed to toggle verdict');
+                throw new Error(data.error || t('Failed to toggle verdict'));
             }
 
             if (data.annotation) {
@@ -7547,7 +7557,7 @@
                 !newVerdict
             );
             console.error('Error toggling verdict:', error);
-            showToast('error', 'Failed to toggle verdict status.');
+            showToast('error', t('Failed to toggle verdict status.'));
         }
     }
 
@@ -7558,12 +7568,12 @@
         const lookupIdentifier = compositeParts.stableId || compositeParts.xref || stableIdentifier;
 
         if (!lookupIdentifier) {
-            showToast('error', 'Unable to determine which annotation to update.');
+            showToast('error', t('Unable to determine which annotation to update.'));
             return;
         }
 
         if (!['red', 'amber', 'green'].includes((priority || '').toLowerCase())) {
-            showToast('error', 'Invalid priority. Must be red, amber, or green.');
+            showToast('error', t('Invalid priority. Must be red, amber, or green.'));
             return;
         }
 
@@ -7671,7 +7681,7 @@
                 requestId: originalAnn?.requestIdentifier || originalAnn?.identifier,
             });
             if (!apiIdentifier) {
-                showToast('error', 'Unable to resolve annotation identifier.');
+                showToast('error', t('Unable to resolve annotation identifier.'));
                 return;
             }
 
@@ -7682,7 +7692,7 @@
 
             // Check for explicit error in response
             if (!data.success) {
-                throw new Error(data.error || 'Update failed');
+                throw new Error(data.error || t('Update failed'));
             }
 
             // Handle successful update - annotation may be null if retrieval failed after update
@@ -7853,7 +7863,7 @@
                 ],
                 originalColor
             );
-            showToast('error', error.message || 'Failed to update priority. Please try again.');
+            showToast('error', error.message || t('Failed to update priority. Please try again.'));
         } finally {
             // Keep the flag through the pending blur check, including conflict recovery exits.
             if (isCurrentHistoryEpoch(requestEpoch)) {
@@ -7957,11 +7967,11 @@
     async function revertAnnotationToAi(pageIdx, identifier, sourceButton = null) {
         const requestEpoch = currentHistoryEpoch();
         if (!identifier) {
-            showToast('error', 'Unable to revert annotation: missing identifier.');
+            showToast('error', t('Unable to revert annotation: missing identifier.'));
             return;
         }
         if (!_hostAdvertisesCapability('revertToAi')) {
-            showToast('error', 'Revert to AI is not supported on this surface.');
+            showToast('error', t('Revert to AI is not supported on this surface.'));
             return;
         }
 
@@ -7985,9 +7995,9 @@
             var data = await revertAnnotationToAiRequest(stable || identifier);
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (!data || data.success !== true) {
-                throw new Error((data && (data.error || data.detail)) || 'Revert failed');
+                throw new Error((data && (data.error || data.detail)) || t('Revert failed'));
             }
-            showToast('success', 'Annotation reverted to AI.');
+            showToast('success', t('Annotation reverted to AI.'));
 
             // Refresh annotation data from server so the marker layer + AI
             // sidebar list update in the same open modal (no reopen).
@@ -8001,7 +8011,7 @@
         } catch (err) {
             if (!isCurrentHistoryEpoch(requestEpoch) || err === CONCURRENT_ANNOTATION_WRITE) return;
             console.error('Revert to AI failed:', err);
-            showToast('error', err && err.message ? err.message : 'Revert failed.');
+            showToast('error', err && err.message ? err.message : t('Revert failed.'));
         } finally {
             if (isCurrentHistoryEpoch(requestEpoch)) {
                 if (sourceButton) sourceButton.disabled = false;
@@ -8027,7 +8037,7 @@
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
             console.error('Annotation position update failed:', error);
             if (error.message.includes('timeout')) {
-                showToast('error', 'Annotation update timed out. Please try again.');
+                showToast('error', t('Annotation update timed out. Please try again.'));
             }
             // Re-throw to let existing error handling take over
             throw error;
@@ -8053,7 +8063,7 @@
 
         if (!targetIdentifier) {
             console.error('[FRONTEND] No identifier found for annotation');
-            showToast('error', 'Unable to determine annotation identifier. Refresh the annotations and try again.');
+            showToast('error', t('Unable to determine annotation identifier. Refresh the annotations and try again.'));
             // CRITICAL FIX: Only re-render if sourcePageIdx is valid
             if (typeof sourcePageIdx !== 'undefined' && !isNaN(sourcePageIdx)) {
                 renderAnnotationsForPage(sourcePageIdx + 1);
@@ -8107,7 +8117,7 @@
         } catch (error) {
             if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
             console.error('[FRONTEND] Error getting page', pageNum, error);
-            showToast('error', 'Failed to load page for annotation update.');
+            showToast('error', t('Failed to load page for annotation update.'));
             return;
         }
 
@@ -8184,16 +8194,26 @@
 
         // Convert container (pixel) coordinates to viewport (PDF.js) coordinates
         // Use canvas dimensions to calculate scale
-        const scaleX = viewport.width / canvasRect.width;
-        const scaleY = viewport.height / canvasRect.height;
-        const viewportX0 = containerX0 * scaleX;
-        const viewportY0 = containerY0 * scaleY;
-        const viewportX1 = containerX1 * scaleX;
-        const viewportY1 = containerY1 * scaleY;
+        const pageGeometry = window.PdfPreviewModalOverlayRenderer?.getPageGeometry
+            ? window.PdfPreviewModalOverlayRenderer.getPageGeometry(canvas, overlay, viewport)
+            : { x: 0, y: 0, scaleX: canvasRect.width / viewport.width, scaleY: canvasRect.height / viewport.height };
+        if (isCrossPageMove) {
+            const layerRect = overlay.getBoundingClientRect();
+            const unitX = layerRect.width && overlay.clientWidth ? layerRect.width / overlay.clientWidth : 1;
+            const unitY = layerRect.height && overlay.clientHeight ? layerRect.height / overlay.clientHeight : 1;
+            containerX0 /= unitX;
+            containerY0 /= unitY;
+            containerX1 = containerX0 + marker.offsetWidth;
+            containerY1 = containerY0 + marker.offsetHeight;
+        }
+        const viewportX0 = (containerX0 - pageGeometry.x) / pageGeometry.scaleX;
+        const viewportY0 = (containerY0 - pageGeometry.y) / pageGeometry.scaleY;
+        const viewportX1 = (containerX1 - pageGeometry.x) / pageGeometry.scaleX;
+        const viewportY1 = (containerY1 - pageGeometry.y) / pageGeometry.scaleY;
 
         debugLog('[DEBUG] Viewport coordinates:', {
-            scaleX,
-            scaleY,
+            scaleX: 1 / pageGeometry.scaleX,
+            scaleY: 1 / pageGeometry.scaleY,
             viewportX0,
             viewportY0,
             viewportX1,
@@ -8241,7 +8261,7 @@
                 requestId: marker?.dataset?.annotationRequestId || marker?.dataset?.annotationIdentifier,
             });
             if (!apiIdentifier) {
-                throw new Error('Unable to resolve annotation identifier for update.');
+                throw new Error(t('Unable to resolve annotation identifier for update.'));
             }
 
             debugLog('[FRONTEND] Sending PUT request:', {
@@ -8482,7 +8502,7 @@
                         renderAnnotationsList();
                     }
                 } else {
-                    throw new Error(data.error || 'Position update failed');
+                    throw new Error(data.error || t('Position update failed'));
                 }
         } catch (error) {
             if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
@@ -8529,7 +8549,7 @@
                 }
                 currentAnnotationsPage = originalPage;
                 renderAnnotationsList();
-                showToast('error', 'Failed to move annotation. Please try again.');
+                showToast('error', t('Failed to move annotation. Please try again.'));
             } else {
                 // For same-page moves: restore original rect
                 if (originalAnn && originalRect && annotationsData[sourcePageIdx]) {
@@ -8540,7 +8560,7 @@
                 }
                 // Re-render overlay with original position (force to update)
                 renderAnnotationsForPage(sourcePageIdx + 1, true);
-                showToast('error', 'Failed to update annotation position. Please try again.');
+                showToast('error', t('Failed to update annotation position. Please try again.'));
             }
         } finally {
             // FIX Issue #32: Clear drag flag AFTER async operation completes
@@ -8631,7 +8651,7 @@
         } else {
             searchWrapper.classList.add('d-none');
             searchWrapper.classList.remove('d-flex');
-            showToast('info', 'PDF has no searchable text (scanned image). Search is not available.');
+            showToast('info', t('PDF has no searchable text (scanned image). Search is not available.'));
         }
     }
 
@@ -8649,7 +8669,7 @@
             return;
         }
         const match = pdfSearchState.matches[pdfSearchState.currentIndex];
-        statusEl.textContent = `Match ${pdfSearchState.currentIndex + 1}/${pdfSearchState.matches.length} on page ${match.page}`;
+        statusEl.textContent = t('Match %(index)s/%(total)s on page %(page)s', { index: pdfSearchState.currentIndex + 1, total: pdfSearchState.matches.length, page: match.page });
     }
 
     async function goToSearchMatch(matchIndex) {
@@ -8657,7 +8677,7 @@
         // which is delegated through handleSearchNavigation.
         const match = pdfSearchState.matches[matchIndex];
         if (!match) {
-            updateSearchStatus('No matches');
+            updateSearchStatus(t('No matches'));
             return;
         }
         // For continuous scroll, scroll to the page wrapper
@@ -8679,20 +8699,20 @@
         // which is delegated.
         const pdf = window.__pdfGradedViewer?.pdf;
         if (!pdf) {
-            updateSearchStatus('Load graded PDF first');
+            updateSearchStatus(t('Load graded PDF first'));
             return;
         }
         const normalizedTerm = term.trim().toLowerCase();
         if (!normalizedTerm) {
             pdfSearchState.matches = [];
             pdfSearchState.currentIndex = -1;
-            updateSearchStatus('Enter a search term');
+            updateSearchStatus(t('Enter a search term'));
             return;
         }
         pdfSearchState.term = normalizedTerm;
         pdfSearchState.matches = [];
         pdfSearchState.currentIndex = -1;
-        updateSearchStatus('Searching…');
+        updateSearchStatus(t('Searching…'));
 
         for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
             const text = await getPdfPageText(pageNum);
@@ -8711,7 +8731,7 @@
         }
 
         if (!pdfSearchState.matches.length) {
-            updateSearchStatus('No matches');
+            updateSearchStatus(t('No matches'));
             return;
         }
 
@@ -8854,7 +8874,7 @@
         if (!term) {
             pdfSearchState.matches = [];
             pdfSearchState.currentIndex = -1;
-            updateSearchStatus('Enter a search term');
+            updateSearchStatus(t('Enter a search term'));
             return;
         }
 
@@ -8865,7 +8885,7 @@
         }
 
         if (!pdfSearchState.matches.length) {
-            updateSearchStatus('No matches');
+            updateSearchStatus(t('No matches'));
             return;
         }
 
@@ -8891,7 +8911,7 @@
         const requestEpoch = currentHistoryEpoch();
         const { comment, priority = 'amber', kind = 'text', is_verdict = false } = options;
         if (!currentSubmissionId) {
-            showToast('error', 'Select a submission first.');
+            showToast('error', t('Select a submission first.'));
             return false;
         }
         if (!comment || !comment.trim()) {
@@ -8900,7 +8920,7 @@
         }
         const viewer = window.__pdfGradedViewer;
         if (!viewer || !viewer.pdf) {
-            showToast('error', 'Load the graded PDF before adding comments.');
+            showToast('error', t('Load the graded PDF before adding comments.'));
             return false;
         }
         const pageIdx = (viewer.currentPage || 1) - 1;
@@ -8915,7 +8935,7 @@
             });
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (!data.success || !data.annotation) {
-                throw new Error(data.error || 'Failed to add annotation');
+                throw new Error(data.error || t('Failed to add annotation'));
             }
             const targetPage = data.annotation.page_index ?? pageIdx;
             currentAnnotationsPage = targetPage;
@@ -8930,7 +8950,7 @@
         } catch (error) {
             if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
             console.error('Error creating annotation:', error);
-            showToast('error', error.message || 'Failed to create annotation.');
+            showToast('error', error.message || t('Failed to create annotation.'));
             return false;
         }
     }
@@ -9374,7 +9394,7 @@
         }, { once: true });
 
         // Update title
-        document.getElementById('pdfPreviewStudent').textContent = studentName || `Submission ${submissionId}`;
+        document.getElementById('pdfPreviewStudent').textContent = studentName || t('Submission %(id)s', { id: submissionId });
 
         const originalTabContainer = document.getElementById('pdfOriginalTabContainer');
         const showOriginalBtn = document.getElementById('pdfShowOriginalBtn');

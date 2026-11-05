@@ -22,6 +22,25 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
     var MIN_MARKER_SIZE = RenderingModule.MIN_MARKER_SIZE || 16;
     var convertTopLeftRectToViewport = RenderingModule.convertTopLeftRectToViewport || function (rect) { return rect; };
 
+    // Like drawing-canvas's pointer mapping, always measure the live PDF page.
+    // DOMRects are screen pixels; absolute marker styles are overlay-local pixels.
+    // The two origins (and units under a transformed ancestor) need not coincide.
+    function getPageGeometry(canvas, overlay, viewport) {
+        var page = canvas.getBoundingClientRect();
+        var layer = overlay.getBoundingClientRect();
+        var unitX = layer.width && overlay.clientWidth ? layer.width / overlay.clientWidth : 1;
+        var unitY = layer.height && overlay.clientHeight ? layer.height / overlay.clientHeight : 1;
+        return {
+            x: ((Number(page.left) || 0) - (Number(layer.left) || 0)) / unitX,
+            y: ((Number(page.top) || 0) - (Number(layer.top) || 0)) / unitY,
+            width: (page.width || canvas.clientWidth) / unitX,
+            height: (page.height || canvas.clientHeight) / unitY,
+            scaleX: (page.width || canvas.clientWidth) / unitX / viewport.width,
+            scaleY: (page.height || canvas.clientHeight) / unitY / viewport.height,
+        };
+    }
+    exports.getPageGeometry = getPageGeometry;
+
     /**
      * Create an overlay renderer.
      *
@@ -133,13 +152,15 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             var pageAnnotations = annotationsData[pageIdx] || [];
             var displayOrderByPagePosition = buildDisplayOrderByPagePosition(pageAnnotations);
 
-            var canvasRect = canvas.getBoundingClientRect();
-            var canvasWidth = canvas.clientWidth || canvasRect.width;
-            var canvasHeight = canvas.clientHeight || canvasRect.height;
+            var geometry = getPageGeometry(canvas, overlay, viewport);
+            var canvasWidth = geometry.width;
+            var canvasHeight = geometry.height;
             // JSON.stringify (not delimiter joins): content/comment may contain
             // '|' themselves, which made distinct annotation sets collide into
             // the same signature and skip a needed re-render.
             var renderSignature = JSON.stringify([
+                geometry.x,
+                geometry.y,
                 canvasWidth,
                 canvasHeight,
                 viewport.width,
@@ -234,8 +255,8 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                 var maxY = Math.max(viewportRect[1], viewportRect[3]);
 
                 // Page-relative coordinates
-                var containerX0 = minX * scaleX;
-                var containerY0 = minY * scaleY;
+                var containerX0 = geometry.x + minX * scaleX;
+                var containerY0 = geometry.y + minY * scaleY;
                 var markerWidth = Math.max((maxX - minX) * scaleX, scaledMinMarkerSize);
                 var markerHeight = Math.max((maxY - minY) * scaleY, scaledMinMarkerSize);
 
@@ -361,8 +382,8 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                         var line = document.createElement('div');
                         line.className = 'annotation-highlight-quad';
                         line.style.position = 'absolute';
-                        line.style.left = (qMinX - containerX0) + 'px';
-                        line.style.top = (qMinY - containerY0) + 'px';
+                        line.style.left = (geometry.x + qMinX - containerX0) + 'px';
+                        line.style.top = (geometry.y + qMinY - containerY0) + 'px';
                         line.style.width = Math.max(1, qMaxX - qMinX) + 'px';
                         line.style.height = Math.max(1, qMaxY - qMinY) + 'px';
                         line.style.backgroundColor = 'rgba(' + r + ', ' + g + ', ' + b + ', 0.30)';
@@ -441,7 +462,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                     label.style.background = label.dataset.labelBg || labelBg;
                 });
 
-                var commentText = ann.content || 'Click to edit';
+                var commentText = ann.content || (UtilsModule.translateText ? UtilsModule.translateText('Click to edit') : 'Click to edit');
                 renderCompactInlineLabelContent(label, annotationNumber, commentText);
 
                 // Store data attributes on marker for tooltip access
@@ -493,7 +514,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             });
 
             // Add double-click handler for creating new annotations on empty space
-            _setupOverlayDoubleClickHandler(overlay, viewport, scaleX, scaleY, pageIdx);
+            _setupOverlayDoubleClickHandler(overlay, canvas, viewport, scaleX, scaleY, pageIdx);
             overlay.dataset.annotationRenderSignature = renderSignature;
 
             // Ensure drawing canvas overlay exists for markup tools
@@ -530,7 +551,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
         // Overlay double-click handler (creates annotations on empty space)
         // -----------------------------------------------------------------
 
-        function _setupOverlayDoubleClickHandler(overlay, viewport, scaleX, scaleY, pageIdx) {
+        function _setupOverlayDoubleClickHandler(overlay, canvas, viewport, scaleX, scaleY, pageIdx) {
             // Gate behind annotationCrud capability
             if (_capabilities.annotationCrud === false) return;
 
@@ -546,14 +567,10 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                     return;
                 }
 
-                // Get click position relative to overlay
-                var overlayRect = overlay.getBoundingClientRect();
-                var clickX = e.clientX - overlayRect.left;
-                var clickY = e.clientY - overlayRect.top;
-
-                // Convert to viewport coordinates
-                var viewportX = clickX / scaleX;
-                var viewportY = clickY / scaleY;
+                // Use the same live page frame as teacher pen pointer events.
+                var pageRectNow = canvas.getBoundingClientRect();
+                var viewportX = (e.clientX - pageRectNow.left) * viewport.width / (pageRectNow.width || canvas.clientWidth);
+                var viewportY = (e.clientY - pageRectNow.top) * viewport.height / (pageRectNow.height || canvas.clientHeight);
 
                 var pdfViewer = window.__pdfGradedViewer;
                 if (!pdfViewer || !pdfViewer.pdf) {

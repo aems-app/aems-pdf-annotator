@@ -20,6 +20,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 (function (exports, crudExports) {
     'use strict';
 
+    var t = (window.PdfPreviewModalUtils || {}).translateText || function (key) { return key; };
+    var th = (window.PdfPreviewModalUtils || {}).translateHtml || t;
+
     // =========================================================================
     // Module Imports
     // =========================================================================
@@ -169,7 +172,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         } else {
             if (spinner) spinner.classList.add('d-none');
             if (icon) icon.style.display = '';
-            if (btnText) btnText.textContent = btnText.dataset.originalText || 'Save';
+            if (btnText) btnText.textContent = btnText.dataset.originalText || t('Save');
         }
     }
 
@@ -194,7 +197,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         return {
             success: false,
             annotation: null,
-            error: (responseData && responseData.error) || 'Unknown error'
+            error: (responseData && responseData.error) || t('Unknown error')
         };
     }
 
@@ -772,7 +775,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         function _dropMissingHighlightUndo() {
             var message = _h.translatePdfPreviewText
                 ? _h.translatePdfPreviewText('Annotation no longer exists')
-                : 'Annotation no longer exists';
+                : t('Annotation no longer exists');
             if (_h.showToast) {
                 _h.showToast('error', message);
             }
@@ -875,7 +878,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var requestEpoch = _currentHistoryEpoch();
             payload = payload || {};
             if (!_h.buildApiAnnotationIdentifier || !_h.updateAnnotationRequest) {
-                throw new Error('Annotation update helpers are unavailable.');
+                throw new Error(t('Annotation update helpers are unavailable.'));
             }
 
             var pageIdx = Number(payload.pageIdx);
@@ -899,7 +902,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 requestId: requestRequestId,
             });
             if (!apiIdentifier) {
-                return { success: false, error: 'Unable to resolve annotation identifier.' };
+                return { success: false, error: t('Unable to resolve annotation identifier.') };
             }
 
             // Snapshot before awaiting persistence. Highlight replacement can
@@ -1036,7 +1039,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 throw new Error('Invalid highlight extend ' + direction + ' operation.');
             }
             if (!_h.buildApiAnnotationIdentifier || !_h.updateAnnotationRequest) {
-                throw new Error('Annotation update helpers are unavailable.');
+                throw new Error(t('Annotation update helpers are unavailable.'));
             }
 
             // A highlight PUT deletes and recreates the PDF annotation. Resolve
@@ -1087,7 +1090,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             if (!isRedo && operation.isOwnershipTransfer && _h.showToast) {
                 var message = _h.translatePdfPreviewText
                     ? _h.translatePdfPreviewText('Ownership reverted to AI')
-                    : 'Ownership reverted to AI';
+                    : t('Ownership reverted to AI');
                 _h.showToast('success', message);
             }
             return data;
@@ -1574,8 +1577,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
         function _renderEmptySidebar(listEl) {
             var emptyMessage = _getSplitPanelActive()
-                ? (_h.translatePdfPreviewText ? _h.translatePdfPreviewText('No human annotations visible') : 'No human annotations visible')
-                : (SidebarPanelModule.EMPTY_STATE_MESSAGE || 'No comments visible in viewport');
+                ? th('No human annotations visible')
+                : th('No comments visible in viewport');
             var emptyHtml = '<div class="text-muted small text-center p-3">' + emptyMessage + '</div>';
             if (listEl.innerHTML !== emptyHtml) {
                 listEl.innerHTML = emptyHtml;
@@ -1593,7 +1596,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
                     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
             };
-            var translate = _h.translatePdfPreviewText || function (value) { return value; };
+            var translate = _h.translatePdfPreviewText || t;
             var formatGraderDisplayName = _h.formatGraderDisplayName || function (value) { return value || ''; };
 
             return allAnnotations.map(function (ann) {
@@ -1641,7 +1644,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     content === 'New comment...' ||
                     content === 'New comment';
                 var editContent = contentIsPlaceholder ? '' : escapeHtml(content);
-                var displayContent = escapeHtml(content) || 'No comment text';
+                var displayContent = escapeHtml(content) || th('No comment text');
                 var rawGraderName = ann.grader_name || ann.author_name || '';
                 var graderName = formatGraderDisplayName(rawGraderName);
                 var source = _h.resolveAnnotationSource ? _h.resolveAnnotationSource(ann) : 'HUMAN';
@@ -1650,17 +1653,17 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 var displayIndexOnPage = Number(ann.displayIndexOnPage || 1);
                 var commentId = (pageIdx + 1) + '.' + displayIndexOnPage;
                 var sourceBadgeHtml = isAI
-                    ? '<span class="source-badge source-ai" title="AI-generated"><i class="bi bi-robot"></i></span>'
-                    : '<span class="source-badge source-human" title="Human"><i class="bi bi-person-fill"></i></span>';
+                    ? '<span class="source-badge source-ai" title="' + th('AI-generated') + '"><i class="bi bi-robot"></i></span>'
+                    : '<span class="source-badge source-human" title="' + th('Human') + '"><i class="bi bi-person-fill"></i></span>';
                 var isVerdict = !!ann.is_verdict;
                 var verdictHtml = isVerdict
-                    ? '<i class="bi bi-patch-check-fill verdict-indicator" title="Verdict comment" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + pageIdx + '"></i>'
-                    : '<i class="bi bi-patch-check verdict-indicator verdict-inactive" title="Mark as verdict" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + pageIdx + '"></i>';
+                    ? '<i class="bi bi-patch-check-fill verdict-indicator" title="' + th('Verdict comment') + '" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + pageIdx + '"></i>'
+                    : '<i class="bi bi-patch-check verdict-indicator verdict-inactive" title="' + th('Mark as verdict') + '" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + pageIdx + '"></i>';
                 var verdictClass = isVerdict ? ' is-verdict' : '';
                 var separator = '';
                 if (lastPageIdx !== null && pageIdx !== lastPageIdx) {
                     separator = '<div class="page-separator"><small class="text-muted d-block text-center page-separator-label">' +
-                        translate('Page %(page)s', { page: pageIdx + 1 }) +
+                        escapeHtml(translate('Page %(page)s', { page: pageIdx + 1 })) +
                         '</small></div>';
                 }
                 lastPageIdx = pageIdx;
@@ -1675,39 +1678,39 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                                 verdictHtml +
                                 (graderName ? '<small class="text-muted grader-name-badge" title="' + escapeHtmlAttribute(rawGraderName) + '">' + escapeHtml(graderName) + '</small>' : '') +
                                 '<div class="priority-dots d-flex gap-1" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + pageIdx + '">' +
-                                    '<span class="priority-dot priority-red ' + (priority === 'red' ? 'active' : '') + '" data-priority="red" title="High priority"></span>' +
-                                    '<span class="priority-dot priority-amber ' + (priority === 'amber' ? 'active' : '') + '" data-priority="amber" title="Medium priority"></span>' +
-                                    '<span class="priority-dot priority-green ' + (priority === 'green' ? 'active' : '') + '" data-priority="green" title="Low priority"></span>' +
+                                    '<span class="priority-dot priority-red ' + (priority === 'red' ? 'active' : '') + '" data-priority="red" title="' + th('High priority') + '"></span>' +
+                                    '<span class="priority-dot priority-amber ' + (priority === 'amber' ? 'active' : '') + '" data-priority="amber" title="' + th('Medium priority') + '"></span>' +
+                                    '<span class="priority-dot priority-green ' + (priority === 'green' ? 'active' : '') + '" data-priority="green" title="' + th('Low priority') + '"></span>' +
                                 '</div>' +
                             '</div>' +
                             '<div class="annotation-content ' + (isEditing ? 'editing' : '') + '" data-annotation-id="' + domId + '" data-annotation-identifier="' + displayIdentifier + '">' +
                                 (isEditing
-                                    ? '<textarea class="form-control form-control-sm mb-2 auto-resize-textarea" id="edit-annotation-text-' + displayIdentifier + '" rows="2" placeholder="Type your comment...">' + editContent + '</textarea>' +
+                                    ? '<textarea class="form-control form-control-sm mb-2 auto-resize-textarea" id="edit-annotation-text-' + displayIdentifier + '" rows="2" placeholder="' + th('Type your comment...') + '">' + editContent + '</textarea>' +
                                         '<div class="annotation-edit-actions d-flex flex-wrap gap-2">' +
                                             '<button class="btn btn-primary btn-sm save-annotation-btn" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '">' +
                                                 '<span class="spinner-border spinner-border-sm d-none" role="status"></span>' +
-                                                '<span class="btn-text">Save</span>' +
+                                                '<span class="btn-text">' + th('Save') + '</span>' +
                                             '</button>' +
-                                            '<button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + pageIdx + '">Cancel</button>' +
+                                            '<button class="btn btn-secondary btn-sm cancel-edit-btn" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + xrefValue + '" data-annotation-page="' + pageIdx + '">' + th('Cancel') + '</button>' +
                                         '</div>'
                                     : displayContent) +
                             '</div>' +
                             (!isEditing
                                 ? '<div class="annotation-action-row d-flex flex-wrap gap-2 justify-content-end">' +
-                                    '<button class="btn btn-outline-primary btn-sm edit-annotation" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-page="' + pageIdx + '" data-annotation-id="' + domId + '" title="Edit comment">' +
+                                    '<button class="btn btn-outline-primary btn-sm edit-annotation" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-page="' + pageIdx + '" data-annotation-id="' + domId + '" title="' + th('Edit comment') + '">' +
                                         '<i class="bi bi-pencil"></i>' +
                                     '</button>' +
                                     (
                                         ann.can_revert_to_ai
                                         && _h.hostAdvertisesCapability
                                         && _h.hostAdvertisesCapability('revertToAi')
-                                            ? '<button class="btn btn-outline-warning btn-sm revert-annotation-to-ai" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + escapeHtmlAttribute(ann.xref || '') + '" data-annotation-page="' + pageIdx + '" data-annotation-id="' + domId + '" data-annotation-stable-id="' + (stableId || '') + '" title="Revert to AI">' +
+                                            ? '<button class="btn btn-outline-warning btn-sm revert-annotation-to-ai" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + escapeHtmlAttribute(ann.xref || '') + '" data-annotation-page="' + pageIdx + '" data-annotation-id="' + domId + '" data-annotation-stable-id="' + (stableId || '') + '" title="' + th('Revert to AI') + '">' +
                                                 '<span class="spinner-border spinner-border-sm d-none" role="status"></span>' +
                                                 '<i class="bi bi-arrow-counterclockwise"></i>' +
                                             '</button>'
                                             : ''
                                     ) +
-                                    '<button class="btn btn-outline-danger btn-sm delete-annotation" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + escapeHtmlAttribute(ann.xref || '') + '" data-annotation-page="' + pageIdx + '" data-annotation-id="' + domId + '" title="Delete comment">' +
+                                    '<button class="btn btn-outline-danger btn-sm delete-annotation" data-annotation-identifier="' + displayIdentifier + '" data-annotation-request-id="' + requestId + '" data-annotation-xref="' + escapeHtmlAttribute(ann.xref || '') + '" data-annotation-page="' + pageIdx + '" data-annotation-id="' + domId + '" title="' + th('Delete comment') + '">' +
                                         '<span class="spinner-border spinner-border-sm d-none" role="status"></span>' +
                                         '<i class="bi bi-trash"></i>' +
                                     '</button>' +
@@ -1723,7 +1726,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             if (identifier) {
                 if (pageIdx === null || Number.isNaN(pageIdx)) {
                     if (_h.showToast) {
-                        _h.showToast('error', 'Unable to cancel edit: missing page context.');
+                        _h.showToast('error', t('Unable to cancel edit: missing page context.'));
                     }
                     return Promise.resolve();
                 }
@@ -1826,7 +1829,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     var editIdentifier = editBtn.dataset.annotationRequestId || editBtn.dataset.annotationIdentifier || editBtn.dataset.annotationXref;
                     if (!editIdentifier) {
                         if (_h.showToast) {
-                            _h.showToast('error', 'Unable to locate this annotation for editing.');
+                            _h.showToast('error', t('Unable to locate this annotation for editing.'));
                         }
                         return;
                     }
@@ -1840,7 +1843,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     var deleteIdentifier = deleteBtn.dataset.annotationRequestId || deleteBtn.dataset.annotationIdentifier || deleteBtn.dataset.annotationXref;
                     if (!deleteIdentifier) {
                         if (_h.showToast) {
-                            _h.showToast('error', 'Unable to determine which annotation to delete.');
+                            _h.showToast('error', t('Unable to determine which annotation to delete.'));
                         }
                         return;
                     }
@@ -1857,7 +1860,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         || revertBtn.dataset.annotationXref;
                     if (!revertIdentifier) {
                         if (_h.showToast) {
-                            _h.showToast('error', 'Unable to determine which annotation to revert.');
+                            _h.showToast('error', t('Unable to determine which annotation to revert.'));
                         }
                         return;
                     }
@@ -1871,7 +1874,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     var saveIdentifier = saveBtn.dataset.annotationIdentifier || saveBtn.dataset.annotationXref;
                     if (!saveIdentifier) {
                         if (_h.showToast) {
-                            _h.showToast('error', 'Annotation missing.');
+                            _h.showToast('error', t('Annotation missing.'));
                         }
                         return;
                     }
@@ -1951,7 +1954,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 var priorityPage = parseInt(dotsContainer.dataset.annotationPage || '-1', 10);
                 if (!priorityIdentifier || Number.isNaN(priorityPage)) {
                     if (_h.showToast) {
-                        _h.showToast('error', 'Unable to locate this annotation. Refresh the comments list and try again.');
+                        _h.showToast('error', t('Unable to locate this annotation. Refresh the comments list and try again.'));
                     }
                     return;
                 }
@@ -2012,7 +2015,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 var editPage = parseInt(item.dataset.annotationPage || '-1', 10);
                 if (!editIdentifier) {
                     if (_h.showToast) {
-                        _h.showToast('error', 'Unable to locate this annotation for editing.');
+                        _h.showToast('error', t('Unable to locate this annotation for editing.'));
                     }
                     return;
                 }
@@ -2165,7 +2168,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var asgn = assignmentId || _getCurrentAssignmentId();
             var listEl = _getCommentsListElement();
             var escapeHtml = _h.escapeHtml || function (value) { return String(value || ''); };
-            var translate = _h.translatePdfPreviewText || function (value) { return value; };
+            var translate = _h.translatePdfPreviewText || t;
 
             if (listEl) {
                 listEl.innerHTML = '<div class="text-center p-3"><div class="spinner-border spinner-border-sm" role="status"></div> <span class="ms-2">' +
@@ -2215,14 +2218,14 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
 
                 if (listEl) {
-                    listEl.innerHTML = '<div class="text-muted small text-center p-3">No annotations found</div>';
+                    listEl.innerHTML = '<div class="text-muted small text-center p-3">' + th('No annotations found') + '</div>';
                 }
                 return data;
             } catch (error) {
                 if (!_isCurrentEpoch(requestEpoch)) return;
                 console.error('Error loading annotations:', error);
                 if (listEl) {
-                    listEl.innerHTML = '<div class="text-danger small text-center p-3">Error loading annotations</div>';
+                    listEl.innerHTML = '<div class="text-danger small text-center p-3">' + th('Error loading annotations') + '</div>';
                 }
                 throw error;
             }
@@ -2290,7 +2293,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var requestEpoch = _currentHistoryEpoch();
             if (!_getCurrentSubmissionId()) {
                 if (_h.showToast) {
-                    _h.showToast('error', 'Select a submission first.');
+                    _h.showToast('error', t('Select a submission first.'));
                 }
                 return Promise.resolve();
             }
@@ -2298,7 +2301,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var viewer = window.__pdfGradedViewer;
             if (!viewer || !viewer.pdf) {
                 if (_h.showToast) {
-                    _h.showToast('error', 'Load the graded PDF before adding comments.');
+                    _h.showToast('error', t('Load the graded PDF before adding comments.'));
                 }
                 return Promise.resolve();
             }
@@ -2563,7 +2566,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             optimisticAnnotation._createPromise = (async function () {
                 try {
                     if (!_h.createAnnotationRequest) {
-                        throw new Error('Annotation create request helper is unavailable.');
+                        throw new Error(t('Annotation create request helper is unavailable.'));
                     }
 
                     if (!_isCurrentEpoch(requestEpoch)) return;
@@ -2581,7 +2584,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         return;
                     }
                     if (!data.success || !data.annotation || !data.annotation.xref) {
-                        throw new Error((data && data.error) || 'Failed to add annotation');
+                        throw new Error((data && data.error) || t('Failed to add annotation'));
                     }
 
                     var localPageAnns = _getAnnotationsData()[targetPage] || [];
@@ -2760,7 +2763,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     }
                     _renderAfterMutation();
                     if (_h.showToast) {
-                        _h.showToast('error', error.message || 'Failed to create annotation.');
+                        _h.showToast('error', error.message || t('Failed to create annotation.'));
                     }
                 } finally {
                     if (_isCurrentEpoch(requestEpoch)) {
@@ -2780,7 +2783,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 : identifier;
             if (!stableIdentifier) {
                 if (_h.showToast) {
-                    _h.showToast('error', 'Unable to determine which annotation to update. Refresh the comments and try again.');
+                    _h.showToast('error', t('Unable to determine which annotation to update. Refresh the comments and try again.'));
                 }
                 return Promise.resolve();
             }
@@ -2823,7 +2826,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var pageIdx = _parseDatasetPageIndex(listItem && listItem.dataset.annotationPage);
             if (pageIdx === null) {
                 if (_h.showToast) {
-                    _h.showToast('error', 'Unable to save annotation: missing page context.');
+                    _h.showToast('error', t('Unable to save annotation: missing page context.'));
                 }
                 return Promise.resolve();
             }
@@ -2843,7 +2846,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 spinner.classList.remove('d-none');
             }
             if (btnText) {
-                btnText.textContent = 'Saving...';
+                btnText.textContent = t('Saving...');
             }
             _savingAnnotationId = currentEditingId;
             if (originalAnn && originalAnn._createPromise) originalAnn._savingContent = true;
@@ -2874,7 +2877,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     textarea.removeEventListener('keydown', textarea._escapeHandler, true);
                 }
                 if (!_h.buildApiAnnotationIdentifier || !_h.updateAnnotationRequest) {
-                    throw new Error('Annotation update helpers are unavailable.');
+                    throw new Error(t('Annotation update helpers are unavailable.'));
                 }
 
                 var apiIdentifier = _h.buildApiAnnotationIdentifier({
@@ -2886,7 +2889,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 var data = await _h.updateAnnotationRequest(apiIdentifier, { content: newContent });
                 if (!_isCurrentEpoch(requestEpoch)) return;
                 if (!data.success || !data.annotation) {
-                    throw new Error((data && data.error) || 'Update failed');
+                    throw new Error((data && data.error) || t('Update failed'));
                 }
 
                 // The undo entry's old text is the last PERSISTED one (_originalContent; content can hold a draft),
@@ -2941,7 +2944,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 markLocalChange();
                 _renderAfterMutation();
                 if (originalSource === 'AI' && data.annotation && data.annotation.source === 'HUMAN' && _h.showToast) {
-                    _h.showToast('info', (_h.translatePdfPreviewText ? _h.translatePdfPreviewText('Annotation ownership transferred to you') : 'Annotation ownership transferred to you'));
+                    _h.showToast('info', (_h.translatePdfPreviewText ? _h.translatePdfPreviewText('Annotation ownership transferred to you') : t('Annotation ownership transferred to you')));
                 }
             } catch (error) {
                 if (_ignoreMutationFailure(error, requestEpoch)) return;
@@ -2955,7 +2958,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
                 renderSidebar();
                 if (_h.showToast) {
-                    _h.showToast('error', error.message || 'Failed to save annotation. Please try again.');
+                    _h.showToast('error', error.message || t('Failed to save annotation. Please try again.'));
                 }
             } finally {
                 if (originalAnn && _isCurrentEpoch(requestEpoch)) delete originalAnn._savingContent;
@@ -2966,7 +2969,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         spinner.classList.add('d-none');
                     }
                     if (btnText) {
-                        btnText.textContent = 'Save';
+                        btnText.textContent = t('Save');
                     }
                 }
             }
@@ -2980,15 +2983,15 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             // Posts to the revert-to-ai endpoint, reloads annotations so
             // marker layer + sidebar lists update in place (no modal reopen).
             if (!identifier) {
-                if (_h.showToast) _h.showToast('error', 'Unable to revert annotation: missing identifier.');
+                if (_h.showToast) _h.showToast('error', t('Unable to revert annotation: missing identifier.'));
                 return;
             }
             if (!_h.hostAdvertisesCapability || !_h.hostAdvertisesCapability('revertToAi')) {
-                if (_h.showToast) _h.showToast('error', 'Revert to AI is not supported on this surface.');
+                if (_h.showToast) _h.showToast('error', t('Revert to AI is not supported on this surface.'));
                 return;
             }
             if (typeof _h.revertAnnotationToAiRequest !== 'function') {
-                if (_h.showToast) _h.showToast('error', 'Revert to AI request helper is unavailable.');
+                if (_h.showToast) _h.showToast('error', t('Revert to AI request helper is unavailable.'));
                 return;
             }
             var spinner = sourceButton ? sourceButton.querySelector('.spinner-border') : null;
@@ -3016,16 +3019,16 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 var data = await _h.revertAnnotationToAiRequest(stable || identifier);
                 if (!_isCurrentEpoch(requestEpoch)) return;
                 if (!data || data.success !== true) {
-                    throw new Error((data && (data.error || data.detail)) || 'Revert failed');
+                    throw new Error((data && (data.error || data.detail)) || t('Revert failed'));
                 }
-                if (_h.showToast) _h.showToast('success', 'Annotation reverted to AI.');
+                if (_h.showToast) _h.showToast('success', t('Annotation reverted to AI.'));
                 if (typeof _h.loadAnnotations === 'function') {
                     try { await _h.loadAnnotations(); } catch (e) {
                         if (_ignoreMutationFailure(e, requestEpoch)) return; /* non-fatal */ }
                 }
             } catch (err) {
                 if (_ignoreMutationFailure(err, requestEpoch)) return;
-                if (_h.showToast) _h.showToast('error', err && err.message ? err.message : 'Revert failed.');
+                if (_h.showToast) _h.showToast('error', err && err.message ? err.message : t('Revert failed.'));
             } finally {
                 if (_isCurrentEpoch(requestEpoch)) {
                     if (sourceButton) sourceButton.disabled = false;
@@ -3081,8 +3084,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 if (actionRow) {
                     var originalHtml = actionRow.innerHTML;
                     actionRow.innerHTML = '' +
-                        '<button class="btn btn-danger btn-sm confirm-delete-yes text-xs-dynamic">Delete?</button>' +
-                        '<button class="btn btn-outline-secondary btn-sm confirm-delete-cancel text-xs-dynamic">Cancel</button>';
+                        '<button class="btn btn-danger btn-sm confirm-delete-yes text-xs-dynamic">' + th('Delete?') + '</button>' +
+                        '<button class="btn btn-outline-secondary btn-sm confirm-delete-cancel text-xs-dynamic">' + th('Cancel') + '</button>';
                     var yesBtn = actionRow.querySelector('.confirm-delete-yes');
                     var cancelBtn = actionRow.querySelector('.confirm-delete-cancel');
 
@@ -3101,7 +3104,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
             if (!stableIdentifier) {
                 if (_h.showToast) {
-                    _h.showToast('error', 'Unable to determine which annotation to delete. Refresh the comments and try again.');
+                    _h.showToast('error', t('Unable to determine which annotation to delete. Refresh the comments and try again.'));
                 }
                 return Promise.resolve();
             }
@@ -3132,7 +3135,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var originalAnn = _h.findAnnotationEntry ? _h.findAnnotationEntry(pageIdx, requestIdentifier || stableIdentifier) : null;
             if (!originalAnn) {
                 if (_h.showToast) {
-                    _h.showToast('error', 'Annotation not found');
+                    _h.showToast('error', t('Annotation not found'));
                 }
                 return Promise.resolve();
             }
@@ -3152,7 +3155,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
             try {
                 if (!_h.buildApiAnnotationIdentifier || !_h.deleteAnnotationRequest) {
-                    throw new Error('Annotation delete helpers are unavailable.');
+                    throw new Error(t('Annotation delete helpers are unavailable.'));
                 }
                 var apiIdentifier = _h.buildApiAnnotationIdentifier({
                     identifier: stableIdentifier,
@@ -3163,7 +3166,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 var data = await _h.deleteAnnotationRequest(apiIdentifier);
                 if (!_isCurrentEpoch(requestEpoch)) return;
                 if (!data.success) {
-                    throw new Error((data && data.error) || 'Delete failed');
+                    throw new Error((data && data.error) || t('Delete failed'));
                 }
 
                 pushUndoOperation({
@@ -3213,7 +3216,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
                 _renderAfterMutation();
                 if (_h.showToast) {
-                    _h.showToast('error', error.message || 'Failed to delete annotation. Please try again.');
+                    _h.showToast('error', error.message || t('Failed to delete annotation. Please try again.'));
                 }
             } finally {
                 if (_isCurrentEpoch(requestEpoch)) {
@@ -3273,7 +3276,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
             try {
                 if (!_h.buildApiAnnotationIdentifier || !_h.deleteAnnotationRequest) {
-                    throw new Error('Annotation delete helpers are unavailable.');
+                    throw new Error(t('Annotation delete helpers are unavailable.'));
                 }
                 var apiIdentifier = _h.buildApiAnnotationIdentifier({
                     identifier: stableIdentifier,

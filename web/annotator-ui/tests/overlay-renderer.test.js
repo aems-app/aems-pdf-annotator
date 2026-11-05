@@ -58,6 +58,71 @@ describe('overlay-renderer', () => {
     vi.restoreAllMocks();
   });
 
+  it('keeps AI icons and highlight quads on the PDF page through fullscreen and resize', async () => {
+    await import('../src/pdf-preview-modal/rendering.js');
+    const mod = await loadOverlayRendererModule();
+    const canvas = document.querySelector('.pdf-page-canvas');
+    const overlay = document.querySelector('.pdf-annotation-overlay');
+    const modal = document.createElement('div');
+    modal.id = 'pdfPreviewModal';
+    modal.className = 'show';
+    const container = document.getElementById('pdfGradedContainer');
+    container.before(modal);
+    modal.append(container);
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1366 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 });
+    const renderer = mod.createOverlayRenderer({
+      getAnnotationsData: () => ({ 0: [
+        { xref: 1, type: 'Text', rect: [40, 200, 60, 220], source: 'AI' },
+        { xref: 2, type: 'Highlight', rect: [80, 200, 180, 220], quads: [[80, 200, 180, 220]], source: 'AI' },
+      ] }),
+    });
+    // A 1366x768 modal changes its page origin independently of the overlay
+    // when header/toolbar layout changes. Include a transformed ancestor too:
+    // DOMRects are screen px; marker styles must remain overlay-local px.
+    const layouts = [
+      { top: 160, left: 50, gap: 0, factor: 1 },
+      { top: 60, left: 20, gap: 30, factor: 1 },
+      { top: 80, left: 35, gap: 30, factor: 0.8 },
+      { top: 160, left: 50, gap: 0, factor: 1 },
+    ];
+    // Exercise the shell/document resize lifecycle used by the modal, rather
+    // than manually forcing a marker repaint after each layout change.
+    await import('../src/pdf-preview-modal/modal-shell.js');
+    await import('../src/pdf-preview-modal/document-controller.js');
+    window.__pdfGradedViewer.relayoutPagesForContainer = vi.fn().mockResolvedValue();
+    const shell = window.PdfPreviewModalShell.createModalShell({}, {});
+    const doc = window.PdfPreviewModalDocumentController.createDocumentController({}, {});
+    doc.onResizeComplete(() => renderer.renderPage(1));
+    shell.onFullscreenChanged(() => doc.handleResize());
+    shell.onResizeNeeded(() => doc.handleResize());
+    Object.defineProperty(overlay, 'clientWidth', { configurable: true, value: 600 });
+    Object.defineProperty(overlay, 'clientHeight', { configurable: true, value: 800 });
+    for (const [index, { top, left, gap, factor }] of layouts.entries()) {
+      canvas.getBoundingClientRect = () => ({ left, top, width: 600 * factor, height: 800 * factor });
+      overlay.getBoundingClientRect = () => ({ left, top: top - gap, width: 600 * factor, height: 800 * factor });
+      // Deliberately do not force: origin changes must invalidate the cache.
+      if (index === 0) renderer.renderPage(1);
+      else if (index === 2) window.dispatchEvent(new Event('resize'));
+      else shell.setFullscreen(index === 1);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(modal.classList.contains('preview-fullscreen')).toBe(index === 1 || index === 2);
+      const markers = [...overlay.querySelectorAll('.annotation-marker')];
+      expect(markers).toHaveLength(2);
+      for (const marker of markers) {
+        const renderedPageY = (parseFloat(marker.style.top) * factor - gap) / factor;
+        expect(renderedPageY, 'AI marker must use the live page origin, like teacher pointer coordinates').toBeCloseTo(200);
+      }
+      const quad = overlay.querySelector('.annotation-highlight-quad');
+      const quadPageY = ((parseFloat(quad.parentElement.style.top) + parseFloat(quad.style.top)) * factor - gap) / factor;
+      expect(quadPageY).toBeCloseTo(200);
+    }
+    expect(window.__pdfGradedViewer.relayoutPagesForContainer).toHaveBeenCalledTimes(3);
+    shell.destroy();
+    doc.destroy();
+    renderer.destroy();
+  });
+
   it('renders non-markup annotations and emits marker clicks', async () => {
     const mod = await loadOverlayRendererModule();
     const annotationsData = {
