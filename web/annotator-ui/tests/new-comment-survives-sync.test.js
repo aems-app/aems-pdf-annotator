@@ -328,6 +328,20 @@ describe('new comment survives production polling and relayout', () => {
     expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
   });
 
+  it('closing during a failed create never sends DELETE for a client-only identity', async () => {
+    await open(0);
+    adapter.createAnnotation.mockImplementation(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      return { success: false, error: 'Create failed' };
+    });
+    document.querySelector('.pdf-annotation-overlay').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 200, clientY: 200 }));
+    await vi.advanceTimersByTimeAsync(100);
+    releasePages();
+    modals.at(-1).destroy();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
+  });
+
   it('defers a reload response already in flight when an existing comment is opened', async () => {
     const editor = await create();
     await save(editor);
