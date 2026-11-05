@@ -171,12 +171,15 @@ describe('new comment survives production polling and relayout', () => {
     expect(stored.get('created-1')?.content).toBe('Check the units');
   }
 
-  async function startTypingDraft(interval = 20) {
+  async function startTypingDraft(interval = 20, location = 'inline') {
     await open(0);
     document.querySelector('.pdf-annotation-overlay').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 200, clientY: 200 }));
     await vi.advanceTimersByTimeAsync(60);
-    const editor = document.querySelector('.inline-annotation-editor');
+    // jsdom's observer is a layout stub; run the real sidebar visibility pass.
+    if (location === 'sidebar') instances.at(-1).controller.renderList();
+    const editor = document.querySelector(location === 'sidebar' ? '.auto-resize-textarea' : '.inline-annotation-editor');
     expect(editor).not.toBeNull();
+    if (location === 'sidebar') editor.focus();
     for (const character of 'kommentar') {
       const active = document.activeElement;
       expect(active).toBeInstanceOf(HTMLTextAreaElement);
@@ -189,10 +192,12 @@ describe('new comment survives production polling and relayout', () => {
     return editor;
   }
 
-  it.each([20, 30])('keeps each typed character, focus and caret through POST identity remapping (%i ms keys)', async interval => {
-    const editor = await startTypingDraft(interval);
+  it.each([
+    ['inline', 20], ['inline', 30], ['sidebar', 20], ['sidebar', 30],
+  ])('keeps each typed character, focus and caret through POST identity remapping (%s, %i ms keys)', async (location, interval) => {
+    const editor = await startTypingDraft(interval, location);
     await vi.advanceTimersByTimeAsync(400);
-    const live = document.querySelector('.inline-annotation-editor');
+    const live = document.querySelector(location === 'sidebar' ? '.auto-resize-textarea' : '.inline-annotation-editor');
     expect.soft(live).toBe(editor);
     expect.soft(live?.value).toBe('kommentar');
     expect.soft(document.activeElement).toBe(editor);
@@ -203,6 +208,15 @@ describe('new comment survives production polling and relayout', () => {
     expect(stored.get('created-1')?.content).toBe('kommentar');
     expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
     expect(adapter.updateAnnotation.mock.calls[0][2]).toBe('created-1');
+  });
+
+  it('preserves a backward selection moved before the POST resolves', async () => {
+    const editor = await startTypingDraft();
+    editor.setSelectionRange(2, 7, 'backward');
+    await vi.advanceTimersByTimeAsync(400);
+    expect(document.querySelector('.inline-annotation-editor')).toBe(editor);
+    expect(document.activeElement).toBe(editor);
+    expect([editor.selectionStart, editor.selectionEnd, editor.selectionDirection]).toEqual([2, 7, 'backward']);
   });
 
   it.each(['throw', 'unsuccessful'])('a %s POST failure keeps the typed draft focused with an error', async failure => {

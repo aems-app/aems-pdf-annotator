@@ -1545,7 +1545,7 @@ describe('annotation-controller state ownership', () => {
     }
   });
 
-  it('keeps a new annotation editor alive when a detached pre-save textarea blurs after rerender', async () => {
+  it('keeps the same new annotation editor alive through identity remapping and blur', async () => {
     vi.useFakeTimers();
     try {
       document.body.innerHTML = `
@@ -1644,8 +1644,8 @@ describe('annotation-controller state ownership', () => {
       await createPromise;
       await vi.runAllTimersAsync();
 
-      expect(optimisticTextarea.isConnected).toBe(false);
-      expect(document.getElementById('edit-annotation-text-145218ef-3812-4912-b76c-24ec1bfbd255')).not.toBeNull();
+      expect(optimisticTextarea.isConnected).toBe(true);
+      expect(document.getElementById('edit-annotation-text-145218ef-3812-4912-b76c-24ec1bfbd255')).toBe(optimisticTextarea);
 
       optimisticTextarea.dispatchEvent(new window.FocusEvent('blur', { relatedTarget: null }));
       await vi.advanceTimersByTimeAsync(150);

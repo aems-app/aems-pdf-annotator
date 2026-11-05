@@ -104,12 +104,17 @@ describe('one save with a 300 ms PUT', () => {
     expect(label(ids[0]).querySelector('textarea')).toBeNull();
     expect(sidebar(ids[0])).toBeNull();
   });
-  it('Save then immediately open another comment preserves its draft', async () => {
-    edit(); click(button(ids[0])); edit(ids[2], 'Second draft'); await vi.advanceTimersByTimeAsync(800);
+  it.each(['inline', 'sidebar'])('Save then immediately open another comment preserves its %s draft and refreshes saved views', async location => {
+    edit(); click(button(ids[0])); const inline = edit(ids[2], 'Second draft');
+    const active = location === 'sidebar' ? sidebar(ids[2]) : inline;
+    active.focus(); active.setSelectionRange(2, 5, 'backward');
+    await vi.advanceTimersByTimeAsync(800);
     expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1); expect(stored.get(ids[0]).content).toBe('Saved feedback');
     expect(label(ids[0]).querySelector('textarea')).toBeNull();
     expect(label(ids[2]).querySelector('textarea')?.value).toBe('Second draft');
     expect(sidebar(ids[2])?.value).toBe('Second draft'); expect(toasts).not.toHaveBeenCalled();
+    expect.soft(document.activeElement).toBe(active);
+    expect.soft([active.selectionStart, active.selectionEnd, active.selectionDirection]).toEqual([2, 5, 'backward']);
     expect.soft(options.getAnnotationsData()[0].find(a => a.id === ids[0]).content).toBe('Saved feedback');
     expect.soft(label(ids[0]).textContent).toContain('Saved feedback');
     expect.soft(document.querySelector(`.list-group-item[data-annotation-identifier="${ids[0]}"]`)?.textContent).toContain('Saved feedback');

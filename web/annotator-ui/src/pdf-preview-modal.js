@@ -3030,8 +3030,10 @@
         const requestEpoch = currentHistoryEpoch();
         if (!label) return;
 
-        // A create response can replace the optimistic textarea on this same label.
-        // Retire its document listener before binding one that reads the new editor.
+        // Re-entering an already live editor must preserve typing and selection.
+        if (label.classList.contains('label-editing') && label.querySelector('.inline-annotation-editor')) return;
+
+        // Retire the previous editor's document listener before binding another.
         if (label._escapeHandler) {
             document.removeEventListener('keydown', label._escapeHandler, true);
             label._escapeHandler = null;
@@ -3115,6 +3117,7 @@
             marker?.dataset.annotationRequestId ||
             marker?.dataset.annotationIdentifier ||
             marker?.dataset.annotationXref;
+        const currentIdentifier = () => marker?.dataset.identifier || marker?.dataset.annotationRequestId || identifier;
 
         // Each marker creates a stacking context. Raising only its child label
         // leaves the editor underneath later markers, which intercept typing clicks.
@@ -3127,6 +3130,7 @@
 
         if (identifier) {
             textarea.addEventListener('input', () => {
+                const identifier = currentIdentifier();
                 // SEC-FIX: Try multiple ID formats to handle escaped/unescaped identifiers
                 let sidebarTextarea = document.getElementById(`edit-annotation-text-${identifier}`);
 
@@ -3149,23 +3153,24 @@
         const isOwnControl = (element) => {
             const control = element?.closest?.('.save-annotation-btn, .cancel-edit-btn');
             const item = control?.closest('.list-group-item');
-            return !!item?.querySelector(`#${CSS.escape('edit-annotation-text-' + identifier)}`);
+            return !!item?.querySelector(`#${CSS.escape('edit-annotation-text-' + currentIdentifier())}`);
         };
         textarea.addEventListener('blur', (event) => {
-            if (isOwnControl(event.relatedTarget) || label._savePromise || isAnnotationContentSaveInFlight(identifier)) return;
+            if (isOwnControl(event.relatedTarget) || label._savePromise || isAnnotationContentSaveInFlight(currentIdentifier())) return;
             // Small delay to check if clicking on another element within the label
             setTimeout(async () => {
                 if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 if (shouldIgnoreDetachedInlineBlur(textarea, label) ||
                     label.querySelector('.inline-annotation-editor') !== textarea ||
                     isOwnControl(document.activeElement) || label._savePromise ||
-                    isAnnotationContentSaveInFlight(identifier)) {
+                    isAnnotationContentSaveInFlight(currentIdentifier())) {
                     return;
                 }
                 if (document.activeElement !== textarea && label.classList.contains('label-editing')) {
                     // CRITICAL FIX: Check if focus moved to the sidebar textarea for same annotation
                     // If so, DON'T collapse - keep BOTH editors open for bidirectional editing
                     if (identifier) {
+                        const identifier = currentIdentifier();
                         // SEC-FIX: Use same robust matching as input handler
                         let sidebarTextarea = document.getElementById(`edit-annotation-text-${identifier}`);
                         if (!sidebarTextarea) {
@@ -3320,7 +3325,12 @@
 
     // Collapse label back to compact view
     function collapseInlineLabel(label) {
-        if (!label || !label.classList.contains('label-expanded')) return;
+        if (!label) return;
+        if (!label.classList.contains('label-expanded')) {
+            // Another editor may already have collapsed this label during a PUT.
+            renderCompactInlineLabelContent(label, label.dataset.annotationNumber || label.closest('.annotation-marker')?.dataset.annotationNumber || '', label.dataset.fullText || '');
+            return;
+        }
 
         const editingMarker = label.closest('.annotation-marker');
         const editingIdentifier = editingMarker?.dataset.identifier || editingMarker?.dataset.annotationRequestId;

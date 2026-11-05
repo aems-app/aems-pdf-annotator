@@ -125,7 +125,7 @@ async function openPackage({ pendingCreate = false, createFailure = false } = {}
   await vi.waitFor(() => expect(w.document.querySelector('.inline-annotation-editor')).not.toBeNull());
   const originalEditor = w.document.querySelector('.inline-annotation-editor');
   // Ensure the optimistic editor was opened before the POST response, as on a
-  // live server. The response replaces its textarea and rebinds its identity.
+  // live server. The response remaps its identity without replacing the textarea.
   async function completeCreate() {
     finishCreate();
     await vi.waitFor(() => expect(w.document.querySelector('.annotation-marker')?.dataset.annotationRequestId).toBe('created-1'));
@@ -133,7 +133,7 @@ async function openPackage({ pendingCreate = false, createFailure = false } = {}
   }
   if (!pendingCreate) await completeCreate();
   const editor = w.document.querySelector('.inline-annotation-editor');
-  if (!pendingCreate) expect(editor).not.toBe(originalEditor);
+  if (!pendingCreate) expect(editor).toBe(originalEditor);
   async function key(key, { ctrlKey = true, shiftKey = false, target = w.document } = {}) {
     target.dispatchEvent(new w.KeyboardEvent('keydown', { key, ctrlKey, shiftKey, bubbles: true, cancelable: true }));
     await settle(150);
