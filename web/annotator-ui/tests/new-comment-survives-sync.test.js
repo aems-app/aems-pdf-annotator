@@ -300,6 +300,44 @@ describe('new comment survives production polling and relayout', () => {
     expect(window.i18n.t).toHaveBeenCalledWith('Failed to create annotation.', {});
   });
 
+  it('Ctrl+Enter during the original POST waits for its server identity', async () => {
+    const editor = await startTypingDraft();
+    commitDraft('keyboard', editor);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(1);
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    expect(stored.get('created-1')?.content).toBe('kommentar');
+    expect(document.querySelector('.inline-annotation-editor')).toBeNull();
+  });
+
+  it.each(['throw', 'unsuccessful'])('overlapping retries share one POST and a %s refusal can be retried again', async failure => {
+    adapter.createAnnotation.mockImplementationOnce(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      throw new TypeError('Failed to fetch');
+    });
+    await startTypingDraft();
+    await vi.advanceTimersByTimeAsync(400);
+    adapter.createAnnotation.mockImplementationOnce(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      if (failure === 'throw') throw new TypeError('Failed to fetch');
+      return { success: false, error: 'Create refused' };
+    });
+    const draft = instances.at(-1).options.getAnnotationsData()[0][0];
+    const first = draft._retryCreate();
+    const second = draft._retryCreate();
+    expect(first).toBe(second);
+    const rejected = expect(first).rejects.toThrow('Failed to create annotation.');
+    await vi.advanceTimersByTimeAsync(400);
+    await rejected;
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(2);
+    commitDraft('keyboard', document.querySelector('.inline-annotation-editor'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(3);
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    expect(stored.get('created-1')?.content).toBe('kommentar');
+    expect(document.querySelector('.inline-annotation-editor')).toBeNull();
+  });
+
   it('own POST followed by the 10 s version poll never reloads/deletes the new comment', async () => {
     const editor = await create();
     const reloads = adapter.listAnnotations.mock.calls.length;
