@@ -1673,27 +1673,31 @@
         const key = `${epoch}:${annotationWriteIdentity(annotationId)}`;
         const previous = annotationContentSaves.get(key);
         if (previous?.content === body.content) return previous.promise;
-        const promise = previous
+        const request = previous
             ? previous.promise.catch(() => {}).then(() => {
                 if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
                 return updateAnnotationRequest(annotationId, body);
             })
             : updateAnnotationRequest(annotationId, body);
+        // Store the handled outcome so joined inline/sidebar callers cannot
+        // surface the same raw 404 a second time.
+        const promise = (async () => {
+            try {
+                const data = await request;
+                if (isMissingAnnotationFailure(data)) throw data;
+                return data;
+            } catch (error) {
+                if (isMissingAnnotationFailure(error)) {
+                    retainMissingAnnotationDraft(annotationId, body.content, epoch);
+                    throw CANCELED_ANNOTATION_WRITE;
+                }
+                throw error;
+            }
+        })();
         const save = { content: body.content, promise };
         annotationContentSaves.set(key, save);
         try {
-            const data = await promise;
-            if (isMissingAnnotationFailure(data)) {
-                retainMissingAnnotationDraft(annotationId, body.content, epoch);
-                throw CANCELED_ANNOTATION_WRITE;
-            }
-            return data;
-        } catch (error) {
-            if (isMissingAnnotationFailure(error)) {
-                retainMissingAnnotationDraft(annotationId, body.content, epoch);
-                throw CANCELED_ANNOTATION_WRITE;
-            }
-            throw error;
+            return await promise;
         } finally {
             if (annotationContentSaves.get(key) === save) annotationContentSaves.delete(key);
         }
