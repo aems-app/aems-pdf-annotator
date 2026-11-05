@@ -445,6 +445,65 @@ describe('new comment survives production polling and relayout', () => {
     expect(adapter.updateAnnotation).not.toHaveBeenCalled();
   });
 
+  const missingMessage = 'This comment was deleted. Your text is kept. You can re-create it as a new comment.';
+  const recoveryTranslations = {
+    [missingMessage]: 'Kommentaren har tagits bort. Din text finns kvar. Du kan återskapa den som en ny kommentar.',
+    'Re-create comment': 'Återskapa kommentar',
+  };
+
+  it.each([
+    ['inline', 'en', 'throw'], ['inline', 'sv', 'throw'],
+    ['sidebar', 'en', 'throw'], ['sidebar', 'sv', 'throw'],
+    ['inline', 'en', 'response'], ['inline', 'sv', 'response'],
+    ['sidebar', 'en', 'response'], ['sidebar', 'sv', 'response'],
+  ])('a missing %s save (%s, %s) keeps text, notifies once and explicitly re-creates', async (location, language, failure) => {
+    window.i18n = { t: vi.fn(key => language === 'sv' ? recoveryTranslations[key] || key : key) };
+    const inline = await create();
+    instances.at(-1).controller.renderList();
+    const editor = location === 'inline' ? inline : document.querySelector('.auto-resize-textarea');
+    editor.focus();
+    editor.value = 'Keep <my> feedback';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    stored.delete('created-1'); // Server-side disappearance, not a local DELETE.
+    adapter.updateAnnotation.mockImplementationOnce(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      if (failure === 'throw') throw Object.assign(new Error('Annotation not found'), { status: 404 });
+      return { success: false, status: 404, error: 'Annotation not found' };
+    });
+    commitDraft(location === 'inline' ? 'keyboard' : 'button', editor);
+    await vi.advanceTimersByTimeAsync(700);
+    expect.soft(editor.isConnected).toBe(true);
+    expect.soft(editor.value).toBe('Keep <my> feedback');
+    const message = language === 'sv' ? recoveryTranslations[missingMessage] : missingMessage;
+    expect.soft(document.querySelector('.alert-danger')?.textContent).toContain(message);
+    for (let i = 0; i < 3; i++) {
+      editor.value = 'Keep <my> updated feedback';
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      commitDraft(location === 'inline' ? 'keyboard' : 'button', editor);
+      editor.blur();
+      await vi.advanceTimersByTimeAsync(700);
+    }
+    expect.soft(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    expect.soft(document.querySelectorAll('.alert-danger')).toHaveLength(1);
+    const recovery = document.querySelector('.recreate-annotation-btn');
+    expect(recovery?.textContent).toBe(language === 'sv' ? recoveryTranslations['Re-create comment'] : 'Re-create comment');
+    adapter.createAnnotation.mockImplementationOnce(async (_a, _s, body) => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const annotation = { ...hostAnnotation, ...body, id: 'recreated-2', stable_id: 'recreated-2', xref: 2047 };
+      stored.set(annotation.id, annotation);
+      return { success: true, annotation };
+    });
+    recovery.click();
+    recovery.click();
+    await vi.advanceTimersByTimeAsync(900);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(2);
+    expect(stored.get('recreated-2')?.content).toBe('Keep <my> updated feedback');
+    expect(stored.has('created-1')).toBe(false);
+    expect(instances.at(-1).options.getAnnotationsData()[0].map(a => a.id)).toEqual(['recreated-2']);
+    expect(document.querySelector('.recreate-annotation-btn')).toBeNull();
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+  });
+
   it('own POST followed by the 10 s version poll never reloads/deletes the new comment', async () => {
     const editor = await create();
     const reloads = adapter.listAnnotations.mock.calls.length;
