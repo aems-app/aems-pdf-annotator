@@ -282,6 +282,49 @@ describe('new comment survives production polling and relayout', () => {
     expect(top()).toBe(initial);
   });
 
+  it('a direct booklet switch deletes a still-creating empty draft in the original document', async () => {
+    await open(0);
+    document.querySelector('.pdf-annotation-overlay').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 200, clientY: 200 }));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(document.querySelector('.inline-annotation-editor')).not.toBeNull();
+    releasePages();
+    modals.at(-1).destroy();
+    modals.push(window.PdfPreviewModal.createPdfPreviewModal({
+      assignmentId: 'assignment-2', submissionId: 'submission-2', modeAdapter: adapter,
+    }));
+    await vi.advanceTimersByTimeAsync(900);
+    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false });
+    expect(stored.has('created-1')).toBe(false);
+  });
+
+  it('clicking another marker discards only the empty new draft', async () => {
+    stored.set(ai.id, { ...ai });
+    await create();
+    document.querySelector(markerSelector).click();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false });
+    expect(stored.get(ai.id).content).toBe(ai.content);
+  });
+
+  it('Cancel keeps an existing saved comment', async () => {
+    await save(await create());
+    instances.at(-1).controller.beginEdit(0, 'created-1');
+    await vi.advanceTimersByTimeAsync(200);
+    document.querySelector('.cancel-edit-btn').click();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
+    expect(stored.get('created-1').content).toBe('Check the units');
+  });
+
+  it('navigation retains a new draft with meaningful text', async () => {
+    const editor = await create();
+    editor.value = 'Draft feedback';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    pageChanged(1);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
+  });
+
   it('defers a reload response already in flight when an existing comment is opened', async () => {
     const editor = await create();
     await save(editor);
