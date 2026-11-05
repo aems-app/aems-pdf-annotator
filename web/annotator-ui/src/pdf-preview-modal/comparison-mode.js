@@ -15,6 +15,9 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
 (function (exports) {
     'use strict';
 
+    var t = (window.PdfPreviewModalUtils || {}).translateText || function (key) { return key; };
+    var th = (window.PdfPreviewModalUtils || {}).translateHtml || t;
+
     // =========================================================================
     // Utility References (use AEMS.utils if available)
     // =========================================================================
@@ -180,8 +183,8 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
         // Parse and store comparison data with validation
         exports.comparisonData = {
             comparisonId: data.comparison_id || null,
-            modelAName: data.model_a || 'Model A',
-            modelBName: data.model_b || 'Model B',
+            modelAName: data.model_a || t('Model A'),
+            modelBName: data.model_b || t('Model B'),
             annotationsA: (data.result_a && Array.isArray(data.result_a.feedback_items))
                 ? data.result_a.feedback_items
                 : [],
@@ -226,7 +229,7 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
         // Update modal title
         const studentSpan = document.getElementById('pdfPreviewStudent');
         if (studentSpan) {
-            studentSpan.textContent = 'A/B Model Comparison';
+            studentSpan.textContent = t('A/B Model Comparison');
         }
 
         // Wire up event listeners
@@ -268,9 +271,9 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
 
         const hideComparisonModelDetails = Boolean(window.__WIZARD_MODEL_CONFIG && window.__WIZARD_MODEL_CONFIG.hideLlmDetails);
 
-        if (panelA) panelA.innerHTML = `<div class="text-muted small text-center p-3">${hideComparisonModelDetails ? 'Review A feedback' : 'Model A feedback'}</div>`;
+        if (panelA) panelA.innerHTML = `<div class="text-muted small text-center p-3">${hideComparisonModelDetails ? th('Review A feedback') : th('Model A feedback')}</div>`;
 
-        if (panelB) panelB.innerHTML = `<div class="text-muted small text-center p-3">${hideComparisonModelDetails ? 'Review B feedback' : 'Model B feedback'}</div>`;
+        if (panelB) panelB.innerHTML = `<div class="text-muted small text-center p-3">${hideComparisonModelDetails ? th('Review B feedback') : th('Model B feedback')}</div>`;
 
         // Clear comparison markers from PDF overlays
         document.querySelectorAll('.annotation-marker.source-model-a, .annotation-marker.source-model-b, .annotation-marker.source-overlap')
@@ -291,10 +294,10 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
 
         const elements = hideComparisonModelDetails
             ? {
-                'modelALabel': 'Review A',
-                'modelBLabel': 'Review B',
-                'toggleModelALabel': 'Review A',
-                'toggleModelBLabel': 'Review B'
+                'modelALabel': t('Review A'),
+                'modelBLabel': t('Review B'),
+                'toggleModelALabel': t('Review A'),
+                'toggleModelBLabel': t('Review B')
             }
             : {
                 'modelALabel': exports.comparisonData.modelAName,
@@ -319,7 +322,7 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
         const rate = exports.comparisonData.agreementRate;
         const percent = Math.round(rate * 100);
 
-        badge.textContent = `${percent}% agreement`;
+        badge.textContent = t('%(percent)s% agreement', { percent: percent });
         badge.classList.remove('high-agreement', 'medium-agreement', 'low-agreement');
 
         if (percent >= 70) {
@@ -727,7 +730,7 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
      */
     function renderComparisonFeedbackList(annotations, model) {
         if (!annotations || annotations.length === 0) {
-            return '<div class="text-muted small text-center p-3">No feedback items</div>';
+            return '<div class="text-muted small text-center p-3">' + th('No feedback items') + '</div>';
         }
 
         const sourceClass = `source-model-${model.toLowerCase()}`;
@@ -755,9 +758,9 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
                             <p class="mb-1 small">${escapeHtml(comment)}</p>
                             ${quote ? `<small class="text-muted fst-italic">"${escapeHtml(quote.substring(0, 100))}${quote.length > 100 ? '...' : ''}"</small>` : ''}
                         </div>
-                        <small class="text-muted ms-2">p.${page}</small>
+                        <small class="text-muted ms-2">${th('p.%(page)s', { page: page })}</small>
                     </div>
-                    ${isOverlap ? '<span class="badge badge-overlap text-white mt-1">Overlap</span>' : ''}
+                    ${isOverlap ? '<span class="badge badge-overlap text-white mt-1">' + th('Overlap') + '</span>' : ''}
                 </div>
             `;
         }).join('');

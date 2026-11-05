@@ -16,6 +16,8 @@ window.PdfPreviewModalInlineEditor = window.PdfPreviewModalInlineEditor || {};
 (function (exports) {
     'use strict';
 
+    var t = (window.PdfPreviewModalUtils || {}).translateText || function (key) { return key; };
+
     // =========================================================================
     // Constants
     // =========================================================================
@@ -202,14 +204,14 @@ window.PdfPreviewModalInlineEditor = window.PdfPreviewModalInlineEditor || {};
     exports.getOriginalState = function getOriginalState(label) {
         if (!label) {
             return {
-                text: 'Click to edit',
+                text: t('Click to edit'),
                 maxWidth: '180px',
                 whiteSpace: 'nowrap',
                 overflow: 'visible'
             };
         }
         return {
-            text: label.dataset.originalText || 'Click to edit',
+            text: label.dataset.originalText || t('Click to edit'),
             maxWidth: label.dataset.originalMaxWidth || '180px',
             whiteSpace: label.dataset.originalWhitespace || 'nowrap',
             overflow: label.dataset.originalOverflow || 'visible'

@@ -16,7 +16,10 @@ window.PdfPreviewModalSidebarPanel = window.PdfPreviewModalSidebarPanel || {};
 (function (exports) {
     'use strict';
 
+    var UtilsModule = window.PdfPreviewModalUtils || {};
+
     function translateSidebarText(key, params) {
+        if (UtilsModule.translateText) return UtilsModule.translateText(key, params);
         var translator = window.i18n && typeof window.i18n.t === 'function'
             ? window.i18n.t.bind(window.i18n)
             : null;

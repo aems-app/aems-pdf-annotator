@@ -16,6 +16,8 @@ window.PdfPreviewModalRendering = window.PdfPreviewModalRendering || {};
 (function (exports) {
     'use strict';
 
+    var t = (window.PdfPreviewModalUtils || {}).translateText || function (key) { return key; };
+
     // =========================================================================
     // Constants
     // =========================================================================
@@ -374,7 +376,7 @@ window.PdfPreviewModalRendering = window.PdfPreviewModalRendering || {};
      */
     exports.truncateLabelText = function truncateLabelText(text, maxChars) {
         if (maxChars === undefined) maxChars = exports.MAX_LABEL_CHARS;
-        var content = text || 'Click to edit';
+        var content = text || t('Click to edit');
         if (content.length <= maxChars) return content;
         return content.substring(0, maxChars) + '…';
     };

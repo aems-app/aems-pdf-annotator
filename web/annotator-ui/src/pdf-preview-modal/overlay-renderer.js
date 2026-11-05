@@ -462,7 +462,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                     label.style.background = label.dataset.labelBg || labelBg;
                 });
 
-                var commentText = ann.content || 'Click to edit';
+                var commentText = ann.content || (UtilsModule.translateText ? UtilsModule.translateText('Click to edit') : 'Click to edit');
                 renderCompactInlineLabelContent(label, annotationNumber, commentText);
 
                 // Store data attributes on marker for tooltip access

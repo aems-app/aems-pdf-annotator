@@ -18,6 +18,9 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
 (function (exports) {
     'use strict';
 
+    var t = (window.PdfPreviewModalUtils || {}).translateText || function (key) { return key; };
+    var th = (window.PdfPreviewModalUtils || {}).translateHtml || t;
+
     // =========================================================================
     // Dependencies
     // =========================================================================
@@ -519,14 +522,14 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
 
             const msg = document.createElement('div');
             msg.className = 'alert alert-danger';
-            const reason = (error && error.message) ? String(error.message) : 'Unknown error';
-            let guidance = 'Unable to display this PDF.';
+            const reason = (error && error.message) ? String(error.message) : t('Unknown error');
+            let guidance = t('Unable to display this PDF.');
             if (/unexpected server response \(404\)/i.test(reason) || /404/.test(reason)) {
-                guidance = 'The PDF is missing from the current download. Re-run Step 2 to download the submissions again.';
+                guidance = t('The PDF is missing from the current download. Re-run Step 2 to download the submissions again.');
             } else if (/refused to connect/i.test(reason) || /failed to fetch/i.test(reason)) {
-                guidance = 'The local grading service could not read the file. Ensure the web app is still running and the download folder has not been moved or deleted.';
+                guidance = t('The local grading service could not read the file. Ensure the web app is still running and the download folder has not been moved or deleted.');
             }
-            msg.innerHTML = `<strong>Preview unavailable.</strong> ${escapeHtml(guidance)}<br><small>${escapeHtml(reason)}</small>`;
+            msg.innerHTML = `<strong>${th('Preview unavailable.')}</strong> ${escapeHtml(guidance)}<br><small>${escapeHtml(reason)}</small>`;
             this.container.innerHTML = '';
             this.container.appendChild(msg);
         }

@@ -18,6 +18,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
     var _debugLog = UtilsModule.debugLog || function () {};
 
     function translateText(key, params) {
+        if (UtilsModule.translateText) return UtilsModule.translateText(key, params);
         var translator = window.i18n && typeof window.i18n.t === 'function'
             ? window.i18n.t.bind(window.i18n)
             : null;
@@ -698,7 +699,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
                 return;
             }
             var match = _searchState.matches[_searchState.currentIndex];
-            statusEl.textContent = 'Match ' + (_searchState.currentIndex + 1) + '/' + _searchState.matches.length + ' on page ' + match.page;
+            statusEl.textContent = translateText('Match %(index)s/%(total)s on page %(page)s', { index: _searchState.currentIndex + 1, total: _searchState.matches.length, page: match.page });
         }
 
         // -----------------------------------------------------------------
@@ -708,7 +709,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
         function goToSearchMatch(matchIndex) {
             var match = _searchState.matches[matchIndex];
             if (!match) {
-                updateSearchStatus('No matches');
+                updateSearchStatus(translateText('No matches'));
                 return Promise.resolve();
             }
             var wrapper = (document.getElementById('pdfGradedContainer') || document).querySelector('.pdf-page-wrapper[data-page-num="' + match.page + '"]');
@@ -732,27 +733,27 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
         function buildPdfSearchMatches(term) {
             var pdf = window.__pdfGradedViewer && window.__pdfGradedViewer.pdf;
             if (!pdf) {
-                updateSearchStatus('Load graded PDF first');
+                updateSearchStatus(translateText('Load graded PDF first'));
                 return Promise.resolve();
             }
             var normalizedTerm = term.trim().toLowerCase();
             if (!normalizedTerm) {
                 _searchState.matches = [];
                 _searchState.currentIndex = -1;
-                updateSearchStatus('Enter a search term');
+                updateSearchStatus(translateText('Enter a search term'));
                 return Promise.resolve();
             }
             _searchState.term = normalizedTerm;
             _searchState.matches = [];
             _searchState.currentIndex = -1;
-            updateSearchStatus('Searching\u2026');
+            updateSearchStatus(translateText('Searching\u2026'));
 
             var totalPages = pdf.numPages;
 
             function processPage(pageNum) {
                 if (pageNum > totalPages) {
                     if (!_searchState.matches.length) {
-                        updateSearchStatus('No matches');
+                        updateSearchStatus(translateText('No matches'));
                         return Promise.resolve();
                     }
                     return goToSearchMatch(0);
@@ -919,7 +920,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
             if (!term) {
                 _searchState.matches = [];
                 _searchState.currentIndex = -1;
-                updateSearchStatus('Enter a search term');
+                updateSearchStatus(translateText('Enter a search term'));
                 return Promise.resolve();
             }
 
@@ -929,7 +930,7 @@ window.PdfPreviewModalDocumentController = window.PdfPreviewModalDocumentControl
             }
 
             if (!_searchState.matches.length) {
-                updateSearchStatus('No matches');
+                updateSearchStatus(translateText('No matches'));
                 return Promise.resolve();
             }
 

@@ -12,6 +12,8 @@ window.PdfPreviewModalMarkupToolbar = window.PdfPreviewModalMarkupToolbar || {};
 (function (exports) {
     'use strict';
 
+    var t = (window.PdfPreviewModalUtils || {}).translateText || function (key) { return key; };
+
     // =========================================================================
     // Constants
     // =========================================================================
@@ -198,7 +200,7 @@ window.PdfPreviewModalMarkupToolbar = window.PdfPreviewModalMarkupToolbar || {};
             btn.type = 'button';
             btn.className = 'markup-toolbar-btn js-markup-tool';
             btn.setAttribute('data-tool', tool.id);
-            btn.setAttribute('title', tool.label + ' (' + tool.shortcut + ')');
+            btn.setAttribute('title', t(tool.label) + ' (' + tool.shortcut + ')');
             if (tool.iconHtml) {
                 btn.innerHTML = tool.iconHtml;
             } else {
@@ -224,7 +226,7 @@ window.PdfPreviewModalMarkupToolbar = window.PdfPreviewModalMarkupToolbar || {};
             swatch.className = 'markup-toolbar-color js-markup-color';
             swatch.setAttribute('data-color-name', color.name);
             swatch.style.backgroundColor = getColorCssValue(color);
-            swatch.setAttribute('title', color.name);
+            swatch.setAttribute('title', t(color.name));
             colorsRow.appendChild(swatch);
         });
 
