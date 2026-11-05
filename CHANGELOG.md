@@ -11,6 +11,8 @@ All notable changes to `aems-pdf-annotator` are recorded here. Format follows [K
 
 ### Fixed
 
+- New comment drafts survive annotation version polling and layout updates. Own comment mutations update the active version tracker, external reloads wait until editing finishes, and loading annotations or losing focus no longer deletes empty comments. Sidebar rendering preserves the active textarea, draft, focus, and caret.
+
 - Own text markup stays editable after a second click or an annotation save. Click jitter no longer saves a move, the Text tool opens existing boxes, and comment editors stay above neighbouring markers.
 
 - Edits and other comment writes made while a comment is being created wait for its server ID. Stale temporary IDs resolve to that ID, duplicate Save clicks are ignored, and unresolved temporary IDs are refused before sending a request.

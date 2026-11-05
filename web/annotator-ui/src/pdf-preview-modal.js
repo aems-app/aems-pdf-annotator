@@ -3115,7 +3115,7 @@
                             return;
                         }
                     }
-                    await saveAndCollapseInlineLabel(label, textarea.value);
+                    await saveAndCollapseInlineLabel(label, textarea.value, { explicitClose: false });
                     if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 }
             }, 100);
@@ -3268,6 +3268,7 @@
     function collapseInlineLabel(label) {
         if (!label || !label.classList.contains('label-expanded')) return;
 
+        if (label.classList.contains('label-editing')) editingAnnotationId = null;
         clearPendingInlineLabelReposition(label);
 
         // Remove escape handler if exists
@@ -3339,7 +3340,7 @@
     }
 
     // Save edits and collapse label
-    async function saveAndCollapseInlineLabel(label, newContent) {
+    async function saveAndCollapseInlineLabel(label, newContent, options = {}) {
         const requestEpoch = currentHistoryEpoch();
         if (!label || !label.classList.contains('label-expanded')) {
             return;
@@ -3384,6 +3385,9 @@
 
         if (contentIsEmpty || contentUnchanged) {
             if (isTemporary && !hasEditedFlags) {
+                // Focus can move during browser fullscreen/layout work. Only a
+                // teacher's explicit close/cancel may discard an empty comment.
+                if (options.explicitClose === false) return;
                 // Delete the temporary annotation
                 await deleteAnnotationSilently(pageIdx, identifier);
                 if (!isCurrentHistoryEpoch(requestEpoch)) return;
@@ -6448,101 +6452,6 @@
             throw new Error('Annotation controller must be initialized before creating annotations.');
         }
         return _currentAnnotationCtrl.createTemporaryAnnotation(rect, pageIdx, options);
-    }
-
-    /**
-     * Cleanup function that deletes all placeholder annotations from the database.
-     * Called on page load to remove stuck "New comment..." annotations that were
-     * created but never edited (when Escape/blur deletion failed).
-     */
-    async function cleanupPlaceholderAnnotations() {
-        const requestEpoch = currentHistoryEpoch();
-        const logCleanup = (...args) => {
-            if (PDF_DEBUG) debugLog(...args);
-        };
-        logCleanup('[CLEANUP] Starting cleanup of placeholder annotations...');
-
-        const placeholdersToDelete = [];
-
-        // Find all placeholder annotations
-        for (let pageIdx in annotationsData) {
-            const pageAnns = annotationsData[pageIdx] || [];
-            pageAnns.forEach((ann) => {
-                const isPlaceholder = isPlaceholderAnnotation(ann);
-                const hasEdits = ann._hasBeenEdited === true || ann._priorityChanged === true;
-
-                if (isPlaceholder && !hasEdits) {
-                    const identifier = resolveAnnotationIdentifierValue(ann);
-                    placeholdersToDelete.push({
-                        pageIdx: parseInt(pageIdx),
-                        identifier: identifier,
-                        xref: ann.xref,
-                        content: ann.content
-                    });
-                }
-            });
-        }
-
-        if (placeholdersToDelete.length === 0) {
-            logCleanup('[CLEANUP] ✓ No placeholder annotations found');
-            return;
-        }
-
-        logCleanup(`[CLEANUP] Found ${placeholdersToDelete.length} placeholder annotations to delete:`);
-        placeholdersToDelete.forEach((p, idx) => {
-            logCleanup(`  [${idx}] page=${p.pageIdx}, xref=${p.xref}, identifier=${p.identifier}, content="${p.content}"`);
-        });
-
-        // Delete each placeholder
-        let deletedCount = 0;
-        let failedCount = 0;
-
-        for (const placeholder of placeholdersToDelete) {
-            const stableIdentifier = normalizeAnnotationIdentifierValue(placeholder.identifier);
-            if (!stableIdentifier) {
-                logCleanup(`[CLEANUP] ⚠️ Skipping placeholder with no stable identifier:`, placeholder);
-                failedCount++;
-                continue;
-            }
-
-            try {
-                const apiIdentifier = buildApiAnnotationIdentifier({
-                    identifier: stableIdentifier,
-                    xref: null,
-                    requestId: null,
-                });
-
-                if (!apiIdentifier) {
-                    logCleanup(`[CLEANUP] ⚠️ Could not build API identifier for:`, placeholder);
-                    failedCount++;
-                    continue;
-                }
-
-                if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                const data = await deleteAnnotationRequest(apiIdentifier);
-                if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                if (data.success) {
-                    // Remove from annotationsData
-                    if (annotationsData[placeholder.pageIdx]) {
-                        const removalIdx = findAnnotationIndex(placeholder.pageIdx, stableIdentifier);
-                        if (removalIdx >= 0) {
-                            annotationsData[placeholder.pageIdx].splice(removalIdx, 1);
-                            deletedCount++;
-                            logCleanup(`[CLEANUP] ✓ Deleted placeholder: page=${placeholder.pageIdx}, xref=${placeholder.xref}`);
-                        }
-                    }
-                } else {
-                    logCleanup(`[CLEANUP] ❌ Backend returned success=false for xref=${placeholder.xref}`);
-                    failedCount++;
-                }
-            } catch (error) {
-                if (!isCurrentHistoryEpoch(requestEpoch)) return;
-                console.error(`[CLEANUP] ❌ Error deleting placeholder xref=${placeholder.xref}:`, error);
-                failedCount++;
-            }
-        }
-
-        logCleanup(`[CLEANUP] ✓ Cleanup complete: deleted=${deletedCount}, failed=${failedCount}, total=${placeholdersToDelete.length}`);
     }
 
     async function deleteAnnotationSilently(pageIdx, identifier) {
@@ -10015,7 +9924,7 @@
                     },
                     listAnnotationsRequest: function () { return listAnnotationsRequest(); },
                     normalizeAnnotationsPayload: normalizeAnnotationsPayload,
-                    cleanupPlaceholderAnnotations: cleanupPlaceholderAnnotations,
+                    markLocalAnnotationChange: markLocalAnnotationChange,
                     refreshMarkupFromAnnotations: refreshMarkupFromAnnotations,
                     buildAnnotationVisibilityKey: buildAnnotationVisibilityKey,
                     buildDisplayOrderByPagePosition: buildDisplayOrderByPagePosition,
