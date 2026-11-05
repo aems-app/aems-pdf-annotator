@@ -19,9 +19,10 @@ beforeEach(async () => {
   viewer.useSinglePageMode = false;
   viewer.renderedPages = new Set([1, 2]);
   viewer.container.getBoundingClientRect = () => ({ top: 50, bottom: 550, height: 500, width: 1093 });
+  viewer.updatePageInfo();
   viewer.setupIntersectionObserver();
 });
-afterEach(() => { viewer.destroy(); vi.unstubAllGlobals(); });
+afterEach(() => { viewer.destroy(); delete window.PdfPreviewModalComparison; vi.unstubAllGlobals(); });
 
 function geometry(top1, top2, height = 500) {
   const pages = [...viewer.container.children];
@@ -102,4 +103,16 @@ it('does not send annotation updates for an original-document viewer', () => {
   viewer.container.dispatchEvent(new Event('scroll'));
   expect(viewer.currentPage).toBe(2);
   expect(viewer._onAnnotationsPageChange).not.toHaveBeenCalled();
+});
+
+it('updates comparison, slider and annotations once per visible page change', () => {
+  geometry(-410, 110);
+  viewer._onSliderSync = vi.fn();
+  viewer._onAnnotationsPageChange = vi.fn();
+  window.PdfPreviewModalComparison = { isActive: () => true, onPageChange: vi.fn() };
+  for (let i = 0; i < 3; i++) viewer.container.dispatchEvent(new Event('scroll'));
+  expect(viewer.currentPage).toBe(2);
+  expect(viewer._onSliderSync).toHaveBeenCalledTimes(1);
+  expect(viewer._onAnnotationsPageChange).toHaveBeenCalledTimes(1);
+  expect(window.PdfPreviewModalComparison.onPageChange).toHaveBeenCalledTimes(1);
 });

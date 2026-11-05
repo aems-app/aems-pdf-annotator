@@ -21,6 +21,7 @@ it.each(['active', 'hover', 'active hover'])('dark comment %s meets AA for conte
     await page.setContent(`<body data-theme="dark"><div id="pdfPreviewModal"><div class="comments-panel">
       <div id="pdfGradedCommentsList"><div class="list-group-item ${state.includes('active') ? 'active item-focused' : ''}">
       <div class="annotation-content">Synthetic comment</div><div class="small">Page 1</div>
+      <small class="text-muted grader-name-badge">Synthetic teacher</small>
       </div></div></div></div></body>`);
     await page.addStyleTag({ content: readFileSync('src/annotator-ui.css', 'utf8') + '\n* { transition: none !important; }' });
     if (state.includes('hover')) await page.locator('.list-group-item').hover();
