@@ -58,3 +58,48 @@ it('scroll updates counter, slider and annotations to the most visible page', ()
   expect(viewer._onSliderSync).toHaveBeenCalledWith(viewer);
   expect(viewer._onAnnotationsPageChange).toHaveBeenCalledWith(1);
 });
+
+it('keeps an explicit jump pinned until its target is visible, then follows scrolling', () => {
+  geometry(50, 570);
+  viewer.pendingNavigationPage = 2;
+  viewer.currentPage = 2;
+  viewer.container.dispatchEvent(new Event('scroll'));
+  expect(viewer.pendingNavigationPage).toBe(2);
+  expect(viewer.currentPage).toBe(2);
+  geometry(-470, 50);
+  viewer.container.dispatchEvent(new Event('scroll'));
+  expect(viewer.pendingNavigationPage).toBeNull();
+  expect(document.getElementById('pdfGradedPageInput').value).toBe('2');
+  geometry(50, 570);
+  viewer.container.dispatchEvent(new Event('scroll'));
+  expect(viewer.currentPage).toBe(2);
+  viewer.navigationLockUntil = 0;
+  viewer.container.dispatchEvent(new Event('scroll'));
+  expect(viewer.currentPage).toBe(1);
+});
+
+it('keeps the counter when every page is outside the visible viewport', () => {
+  geometry(600, 1120);
+  viewer.currentPage = 2;
+  viewer.container.dispatchEvent(new Event('scroll'));
+  expect(viewer.currentPage).toBe(2);
+});
+
+it.each(['hidden', 'single-page', 'unloaded', 'destroyed'])('ignores scroll while %s', state => {
+  geometry(-410, 110);
+  if (state === 'hidden') viewer.container.getBoundingClientRect = () => ({ height: 0 });
+  if (state === 'single-page') viewer.useSinglePageMode = true;
+  if (state === 'unloaded') viewer.pdf = null;
+  if (state === 'destroyed') viewer.destroy();
+  viewer.container.dispatchEvent(new Event('scroll'));
+  expect(viewer.currentPage).toBe(1);
+});
+
+it('does not send annotation updates for an original-document viewer', () => {
+  geometry(-410, 110);
+  viewer.isGradedViewer = false;
+  viewer._onAnnotationsPageChange = vi.fn();
+  viewer.container.dispatchEvent(new Event('scroll'));
+  expect(viewer.currentPage).toBe(2);
+  expect(viewer._onAnnotationsPageChange).not.toHaveBeenCalled();
+});
