@@ -126,9 +126,12 @@ async function openPackage({ pendingCreate = false, createFailure = false } = {}
   const originalEditor = w.document.querySelector('.inline-annotation-editor');
   // Ensure the optimistic editor was opened before the POST response, as on a
   // live server. The response remaps its identity without replacing the textarea.
-  async function completeCreate() {
+  async function completeCreate({ closing = false } = {}) {
     finishCreate();
-    await vi.waitFor(() => expect(w.document.querySelector('.annotation-marker')?.dataset.annotationRequestId).toBe('created-1'));
+    await vi.waitFor(() => {
+      if (closing) expect(hostApi.deleteAnnotation).toHaveBeenCalledWith(10, 1, 'created-1', { offline: false });
+      else expect(w.document.querySelector('.annotation-marker')?.dataset.annotationRequestId).toBe('created-1');
+    });
     await settle(130);
   }
   if (!pendingCreate) await completeCreate();
@@ -264,7 +267,7 @@ describe('page double-click and first comment commit through the package entry',
     }));
     await settle(20);
     expect(h.hostApi.deleteAnnotation).not.toHaveBeenCalled();
-    await h.completeCreate();
+    await h.completeCreate({ closing: true });
     await vi.waitFor(() => expect(h.stored.size).toBe(0));
     expect(h.writes.map(([method, id]) => [method, method === 'POST' ? null : id])).toEqual([
       ['POST', null], ['DELETE', 'created-1'],
