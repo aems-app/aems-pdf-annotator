@@ -2579,9 +2579,13 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 textarea._escapeHandler = escapeHandler;
             }, 100);
 
-            var abortController = new AbortController();
-            optimisticAnnotation._abortController = abortController;
-            optimisticAnnotation._createPromise = (async function () {
+            // Retry the same draft and identity remapping, without adding another
+            // optimistic marker or installing a second set of editor handlers.
+            function createDraft(isRetry) {
+                if (optimisticAnnotation._createPromise) return optimisticAnnotation._createPromise;
+                var abortController = new AbortController();
+                optimisticAnnotation._abortController = abortController;
+                optimisticAnnotation._createPromise = (async function () {
                 try {
                     if (!_h.createAnnotationRequest) {
                         throw new Error(t('Annotation create request helper is unavailable.'));
@@ -2684,6 +2688,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                     delete optimisticAnnotation._abortController;
                     delete optimisticAnnotation._createPromise;
+                    delete optimisticAnnotation._retryCreate;
                     var restoreIdentifier = newIdentifier || previousIdentifier || identifier;
                     pushUndoOperation({
                         type: 'create-comment',
@@ -2716,12 +2721,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         return;
                     }
                     // Keep the failed local draft and its live editor for the teacher.
-                    // No server identity exists yet, so writes remain blocked by the
-                    // shared mutation boundary until creation has succeeded.
+                    // The next content save can retry through the shared save lane.
                     var failedMarker = _findMarkerForIdentifiers(targetPage, [tempStableId, tempXref, identifier]);
                     var failedEditor = failedMarker && failedMarker.querySelector('.inline-annotation-editor');
                     failedEditor = failedEditor || document.getElementById('edit-annotation-text-' + identifier);
                     if (failedEditor) optimisticAnnotation.content = failedEditor.value;
+                    if (isRetry) throw new Error(t('Failed to create annotation.'));
                     if (_h.showToast) {
                         _h.showToast('error', error.message || t('Failed to create annotation.'));
                     }
@@ -2731,9 +2736,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         delete optimisticAnnotation._createPromise;
                     }
                 }
-            })();
+                })();
+                return optimisticAnnotation._createPromise;
+            }
 
-            return optimisticAnnotation._createPromise;
+            optimisticAnnotation._retryCreate = function () { return createDraft(true); };
+            return createDraft(false);
         }
 
         async function saveAnnotationEdit(identifier, sourceButton) {
@@ -2809,7 +2817,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 btnText.textContent = t('Saving...');
             }
             _savingAnnotationId = currentEditingId;
-            if (originalAnn && originalAnn._createPromise) originalAnn._savingContent = true;
+            if (originalAnn && (originalAnn._createPromise || originalAnn._isOptimistic)) originalAnn._savingContent = true;
 
             try {
                 if (originalAnn && originalAnn._createPromise) {
@@ -2855,6 +2863,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 if (!data.success || !data.annotation) {
                     throw new Error((data && data.error) || t('Update failed'));
                 }
+
+                // A failed draft may have been created by the shared content save.
+                stableIdentifier = _h.resolveAnnotationIdentifierValue
+                    ? _h.resolveAnnotationIdentifierValue(data.annotation) : stableIdentifier;
+                requestIdentifier = stableIdentifier;
+                existingXref = data.annotation.xref ? String(data.annotation.xref) : existingXref;
 
                 // The undo entry's old text is the last PERSISTED one (_originalContent; content can hold a draft),
                 // read against the entry as it stands now, before this save replaces it: an overlapping inline save
@@ -2904,7 +2918,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     editedLabel.dataset.fullText = newContent;
                     _h.collapseInlineLabel(editedLabel);
                 }
-                if (_getEditingAnnotationId() === currentEditingId) _setEditingId(null);
+                if (_getEditingAnnotationId() === currentEditingId ||
+                    _getEditingAnnotationId() === 'ann-' + pageIdx + '-' + stableIdentifier) _setEditingId(null);
                 markLocalChange();
                 _renderAfterMutation();
                 if (originalSource === 'AI' && data.annotation && data.annotation.source === 'HUMAN' && _h.showToast) {

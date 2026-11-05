@@ -1590,7 +1590,7 @@
         }
         const identity = annotationWriteIdentity(annotationId);
         if (!identity || /(^|[|:])(tmp-|_tmp_)/.test(String(identity))) {
-            throw new Error('Comment creation has not completed. Please try again.');
+            throw new Error(t('Failed to create annotation.'));
         }
         return identity;
     }
@@ -1654,6 +1654,11 @@
     // actions join the same content; a later edit waits for the previous PUT.
     async function saveAnnotationContentRequest(annotationId, body) {
         const epoch = currentHistoryEpoch();
+        const local = Object.keys(annotationsData)
+            .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
+        if (local?._createPromise) await local._createPromise;
+        if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+        if (local?._isOptimistic && local._retryCreate) await local._retryCreate();
         const resolved = resolveAnnotationWriteIdentity(annotationId, epoch);
         annotationId = typeof resolved === 'string' ? resolved : await resolved;
         const key = `${epoch}:${annotationWriteIdentity(annotationId)}`;
@@ -3131,6 +3136,8 @@
         if (identifier) {
             textarea.addEventListener('input', () => {
                 const identifier = currentIdentifier();
+                const draft = findAnnotationEntry(Number(marker.dataset.annotationPage || marker.dataset.pageIdx || 0), identifier);
+                if (draft?._isOptimistic) draft.content = textarea.value;
                 // SEC-FIX: Try multiple ID formats to handle escaped/unescaped identifiers
                 let sidebarTextarea = document.getElementById(`edit-annotation-text-${identifier}`);
 
@@ -3484,7 +3491,7 @@
         // Save to backend
 
         if (annotation?._savingContent) return;
-        if (annotation?._createPromise) annotation._savingContent = true;
+        if (annotation?._createPromise || annotation?._isOptimistic) annotation._savingContent = true;
         try {
             const apiIdentifier = buildApiAnnotationIdentifier({
                 identifier: identifier,
