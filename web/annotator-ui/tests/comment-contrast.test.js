@@ -22,7 +22,7 @@ it.each(['active', 'hover', 'active hover'])('dark comment %s meets AA for conte
       <div id="pdfGradedCommentsList"><div class="list-group-item ${state.includes('active') ? 'active item-focused' : ''}">
       <div class="annotation-content">Synthetic comment</div><div class="small">Page 1</div>
       </div></div></div></div></body>`);
-    await page.addStyleTag({ content: readFileSync('src/annotator-ui.css', 'utf8') });
+    await page.addStyleTag({ content: readFileSync('src/annotator-ui.css', 'utf8') + '\n* { transition: none !important; }' });
     if (state.includes('hover')) await page.locator('.list-group-item').hover();
     // Read final browser colours; gradients must pass at every stop.
     const colors = await page.locator('.list-group-item').evaluate(card => {

@@ -43,6 +43,14 @@ describe('comparison mode identifier escaping', () => {
     vi.restoreAllMocks();
   });
 
+  it('renders agreement with a gettext-compatible parameterized message', async () => {
+    document.body.innerHTML = '<div id="pdfPreviewModal"><span id="comparisonAgreementBadge"></span></div>';
+    window.PdfPreviewModalUtils.translateText = (key, params) => key.replace(/%\((\w+)\)s/g, (_, name) => params[name]);
+    const comparison = await loadComparisonModeModule();
+    comparison.openComparisonMode({ pdf_url: '/synthetic.pdf', comparison: { agreement_rate: 0.8 } });
+    expect(document.getElementById('comparisonAgreementBadge').textContent).toBe('80 percent agreement');
+  });
+
   it('renders and selects quote-bearing feedback ids without attribute or selector injection', async () => {
     const comparison = await loadComparisonModeModule();
     const payload = 'fb" onmouseover="window.__comparisonXss=1" data-z="';
