@@ -64,6 +64,7 @@ it('keeps an explicit jump pinned until its target is visible, then follows scro
   geometry(50, 570);
   viewer.pendingNavigationPage = 2;
   viewer.currentPage = 2;
+  viewer.updatePageInfo();
   viewer.container.dispatchEvent(new Event('scroll'));
   expect(viewer.pendingNavigationPage).toBe(2);
   expect(viewer.currentPage).toBe(2);

@@ -679,6 +679,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             } else if (Date.now() < this.navigationLockUntil && visiblePage !== this.currentPage) {
                 return;
             }
+            if (visiblePage === this.currentPage) return;
             this.currentPage = visiblePage;
             this.updatePageInfo();
             if (this.isGradedViewer && this._onAnnotationsPageChange) {

@@ -1622,6 +1622,10 @@
     color: #64748b !important;
 }
 
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .list-group-item:is(.active, :hover) .text-muted {
+    color: #e2e8f0 !important;
+}
+
 :is([data-theme="dark"], .dark-mode) #pdfPreviewModal .form-control {
     background: #1e293b;
     border-color: #475569;
