@@ -504,6 +504,45 @@ describe('new comment survives production polling and relayout', () => {
     expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
   });
 
+  it.each([[60, 0], [60, 1], [700, 0], [700, 1]])('starting another box after %i ms on page %i deletes the first empty draft once', async (delay, page) => {
+    let nextId = 0;
+    adapter.createAnnotation.mockImplementation(async (_a, _s, body) => {
+      const id = 'created-' + ++nextId;
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const annotation = { ...ai, ...body, id, stable_id: id, xref: 2000 + nextId };
+      stored.set(id, annotation);
+      return { success: true, annotation };
+    });
+    await open(0);
+    const overlays = document.querySelectorAll('.pdf-annotation-overlay');
+    overlays[0].dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 200, clientY: 200 }));
+    await vi.advanceTimersByTimeAsync(delay);
+    overlays[page].dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 300, clientY: 250 + page * 850 }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(2);
+    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false });
+    expect([...stored.keys()]).toEqual(['created-2']);
+    expect(instances.at(-1).options.getAnnotationsData()[page].map(a => a.id)).toEqual(['created-2']);
+    expect(document.querySelector('.inline-annotation-editor')).not.toBeNull();
+    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+  });
+
+  it('starting another box keeps the meaningful text in the first draft', async () => {
+    const editor = await create();
+    editor.value = 'Keep this draft';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    adapter.createAnnotation.mockImplementationOnce(async (_a, _s, body) => {
+      const annotation = { ...ai, ...body, id: 'created-2', stable_id: 'created-2', xref: 2047 };
+      stored.set(annotation.id, annotation);
+      return { success: true, annotation };
+    });
+    document.querySelector('.pdf-annotation-overlay').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 300, clientY: 250 }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
+    expect(stored.has('created-1')).toBe(true);
+    expect(instances.at(-1).options.getAnnotationsData()[0].find(a => a.id === 'created-1')?.content).toBe('Keep this draft');
+  });
+
   it('own POST followed by the 10 s version poll never reloads/deletes the new comment', async () => {
     const editor = await create();
     const reloads = adapter.listAnnotations.mock.calls.length;
