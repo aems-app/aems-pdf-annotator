@@ -414,6 +414,40 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         var _pendingListFrame = null;
         var _annotationVisibilityScrollHandler = null;
         var _scheduleUpdateTimer = null;
+        var _editorReloadTimer = null;
+        var _deferredReload = null;
+        var _deferredReloadEpoch = null;
+
+        function hasOpenEditor() {
+            return !!((_getEditingAnnotationId() && Object.keys(_getAnnotationsData() || {}).length)
+                || document.querySelector('.annotation-label.label-editing')
+                || (typeof options.isEditingFn === 'function' && options.isEditingFn()));
+        }
+
+        // Coalesce reloads without ever timing out an active teacher edit. A
+        // response fetched before editing started is discarded and fetched again
+        // after close, so it cannot overwrite a save with an older snapshot.
+        function deferReload(submissionId, assignmentId) {
+            _deferredReload = [submissionId, assignmentId];
+            _deferredReloadEpoch = _currentHistoryEpoch();
+            if (!_editorReloadTimer) {
+                _editorReloadTimer = setTimeout(function retryReload() {
+                    _editorReloadTimer = null;
+                    if (_destroyed || !_isCurrentEpoch(_deferredReloadEpoch)) {
+                        _deferredReload = null;
+                        return;
+                    }
+                    if (hasOpenEditor()) {
+                        _editorReloadTimer = setTimeout(retryReload, 50);
+                        return;
+                    }
+                    var args = _deferredReload;
+                    _deferredReload = null;
+                    if (args) loadAnnotations(args[0], args[1]).catch(function () {});
+                }, 50);
+            }
+            return { deferred: true };
+        }
         var _drawingIdleRetryTimer = null;
         var _drawingIdlePromise = null;
         var _resolveDrawingIdle = null;
@@ -1110,6 +1144,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
         function markLocalChange() {
             _skipNextPoll = true;
+            if (_h.markLocalAnnotationChange) _h.markLocalAnnotationChange();
         }
 
         function startPolling() {
@@ -2062,6 +2097,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             if (!listEl) {
                 return;
             }
+            var openContent = listEl.querySelector('.annotation-content.editing');
+            if (openContent && openContent.dataset.annotationId === _getEditingAnnotationId()
+                && openContent.querySelector('textarea')) return;
 
             var annotationsData = _getAnnotationsData() || {};
             var allAnnotations = [];
@@ -2157,12 +2195,15 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 return Promise.resolve();
             }
 
+            if (hasOpenEditor()) return deferReload(submissionId, assignmentId);
+
             // The eventual markup refresh clears DrawingCanvas.pageStrokes and
             // rebuilds it from annotationsData.  Wait before even fetching so an
             // external reload cannot race either a pointer-down stroke or the
             // create request that publishes a just-finished stroke.
             await waitForDrawingIdle();
             if (_destroyed || !_isCurrentEpoch(requestEpoch)) return Promise.resolve();
+            if (hasOpenEditor()) return deferReload(submissionId, assignmentId);
 
             var sub = submissionId || _getCurrentSubmissionId();
             var asgn = assignmentId || _getCurrentAssignmentId();
@@ -2182,17 +2223,14 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     : { success: false, annotations: {} };
                 if (!_isCurrentEpoch(requestEpoch)) return;
 
+                if (hasOpenEditor()) return deferReload(submissionId, assignmentId);
+
                 if (data && data.success) {
                     var normalizedData = _h.normalizeAnnotationsPayload
                         ? _h.normalizeAnnotationsPayload(data.annotations)
                         : (data.annotations || {});
                     _setAnnotationsData(normalizedData);
                     _syncAnnotationsState({ annotationsData: normalizedData });
-
-                    if (_h.cleanupPlaceholderAnnotations) {
-                        await _h.cleanupPlaceholderAnnotations();
-                        if (!_isCurrentEpoch(requestEpoch)) return;
-                    }
 
                     if (listEl) {
                         listEl.innerHTML = '<div class="text-center p-3"><div class="spinner-border spinner-border-sm" role="status"></div> <span class="ms-2">' +
@@ -2223,6 +2261,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 return data;
             } catch (error) {
                 if (!_isCurrentEpoch(requestEpoch)) return;
+                if (hasOpenEditor()) return deferReload(submissionId, assignmentId);
                 console.error('Error loading annotations:', error);
                 if (listEl) {
                     listEl.innerHTML = '<div class="text-danger small text-center p-3">' + th('Error loading annotations') + '</div>';
@@ -2362,7 +2401,6 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 _visibleMarkers.add(optimisticMarkerKey);
             }
 
-            markLocalChange();
             var identifier = _h.resolveAnnotationIdentifierValue
                 ? _h.resolveAnnotationIdentifierValue(optimisticAnnotation)
                 : tempStableId;
@@ -2474,91 +2512,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     }
                 };
 
-                var blurHandler = function (e) {
-                    var currentEditingId = 'ann-' + targetPage + '-' + identifier;
-                    var relatedTarget = e.relatedTarget;
-                    var isPriorityDotClick = relatedTarget && (
-                        relatedTarget.classList.contains('priority-dot') ||
-                        relatedTarget.closest('.priority-dots') !== null ||
-                        relatedTarget.closest('.priority-dot') !== null
-                    );
-                    var isSaveButtonClick = relatedTarget && (
-                        relatedTarget.classList.contains('save-annotation-btn') ||
-                        relatedTarget.closest('.save-annotation-btn') !== null
-                    );
-                    var isAnnotationMarkerClick = relatedTarget && (
-                        relatedTarget.classList.contains('annotation-marker') ||
-                        relatedTarget.classList.contains('annotation-label') ||
-                        relatedTarget.classList.contains('inline-annotation-editor') ||
-                        relatedTarget.closest('.annotation-marker') !== null
-                    );
-
-                    if (isPriorityDotClick || isSaveButtonClick || isAnnotationMarkerClick ||
-                        document.querySelector('.annotation-label.label-editing') !== null) {
-                        return;
-                    }
-
-                    setTimeout(async function () {
-                        if (!_isCurrentEpoch(requestEpoch)) return;
-                        try {
-                            // Ignore blur events caused by rerender/removal of the
-                            // old temporary textarea after the create POST returns.
-                            // The replacement editor will be rebound separately.
-                            if (!textarea.isConnected) {
-                                return;
-                            }
-
-                            if (_savingAnnotationId === currentEditingId ||
-                                _updatingPriorityId === currentEditingId ||
-                                _isDraggingAnnotation ||
-                                document.querySelector('.annotation-label.label-editing') !== null) {
-                                return;
-                            }
-
-                            if (_getEditingAnnotationId() === currentEditingId) {
-                                var currentAnnotation = _h.findAnnotationEntry
-                                    ? _h.findAnnotationEntry(targetPage, identifier)
-                                    : null;
-                                var currentContent = textarea.value.trim();
-                                var latestOriginalContent = (currentAnnotation && currentAnnotation.content) || optimisticAnnotation.content || '';
-                                latestOriginalContent = latestOriginalContent.trim();
-                                var isPlaceholderNow = currentContent === '' ||
-                                    currentContent === 'New comment...' ||
-                                    currentContent === 'New comment';
-                                var contentWasEditedNow = currentContent !== latestOriginalContent;
-                                var neverEditedNow = !contentWasEditedNow && (
-                                    latestOriginalContent === 'New comment...' ||
-                                    latestOriginalContent === 'New comment' ||
-                                    latestOriginalContent === ''
-                                );
-                                var isTemporary = currentAnnotation && currentAnnotation._isTemporary !== undefined
-                                    ? currentAnnotation._isTemporary
-                                    : optimisticAnnotation._isTemporary;
-                                var hasEditedFlagsNow = currentAnnotation?._hasBeenEdited === true || currentAnnotation?._priorityChanged === true;
-
-                                if (isTemporary && !hasEditedFlagsNow && !contentWasEditedNow && (neverEditedNow || isPlaceholderNow)) {
-                                    var latestRequestId = (currentAnnotation && currentAnnotation.requestIdentifier) ||
-                                        optimisticAnnotation.requestIdentifier ||
-                                        identifier;
-                                    await deleteAnnotationSilently(targetPage, latestRequestId);
-                                    if (!_isCurrentEpoch(requestEpoch)) return;
-                                    _setEditingId(null);
-                                    _scheduleAnnotationUpdate();
-                                }
-                            }
-                        } catch (err) {
-                            if (_ignoreMutationFailure(err, requestEpoch)) return;
-                            console.error('[ANNOTATION-CTRL] Blur handler error:', err);
-                            _setEditingId(null);
-                            _scheduleAnnotationUpdate();
-                        }
-                    }, 100);
-                };
-
+                // Empty drafts are discarded by Escape/Cancel, never focus loss:
+                // fullscreen and rendering can move focus without teacher intent.
                 textarea.addEventListener('keydown', escapeHandler, true);
                 textarea._escapeHandler = escapeHandler;
-                textarea.addEventListener('blur', blurHandler);
-                textarea._blurHandler = blurHandler;
             }, 100);
 
             var abortController = new AbortController();
@@ -2587,6 +2544,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         throw new Error((data && data.error) || t('Failed to add annotation'));
                     }
 
+                    markLocalChange();
                     var localPageAnns = _getAnnotationsData()[targetPage] || [];
                     var optimisticIdx = _h.findAnnotationIndex ? _h.findAnnotationIndex(targetPage, tempXref) : -1;
                     if (optimisticIdx < 0) {
@@ -2869,6 +2827,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     }
                     await deleteAnnotationSilently(pageIdx, requestIdentifier || stableIdentifier);
                     if (!_isCurrentEpoch(requestEpoch)) return;
+                    var emptyMarker = _findMarkerForIdentifiers(pageIdx, [stableIdentifier, requestIdentifier]);
+                    var emptyLabel = emptyMarker && emptyMarker.querySelector('.annotation-label');
+                    if (emptyLabel && _h.collapseInlineLabel) _h.collapseInlineLabel(emptyLabel);
                     _setEditingId(null);
                     _renderAfterMutation();
                     return;
@@ -2936,7 +2897,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                 var editedMarker = _findMarkerForIdentifiers(pageIdx, [stableIdentifier, requestIdentifier, originalAnn && originalAnn._tempIdentifier]);
                 var editedLabel = editedMarker && editedMarker.querySelector('.annotation-label');
-                if (originalAnn && originalAnn._savingContent && editedLabel && _h.collapseInlineLabel) {
+                if (editedLabel && _h.collapseInlineLabel) {
                     editedLabel.dataset.fullText = newContent;
                     _h.collapseInlineLabel(editedLabel);
                 }
@@ -3479,6 +3440,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     _resolveDrawingIdle = null;
                     _drawingIdlePromise = null;
                 }
+
+                if (_editorReloadTimer) clearTimeout(_editorReloadTimer);
+                _editorReloadTimer = null;
+                _deferredReload = null;
 
                 // Stop polling
                 stopPolling();

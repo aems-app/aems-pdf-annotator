@@ -103,7 +103,11 @@ describe('real modal sidebar controller lifecycle', () => {
       const previousRow = list.querySelector('.list-group-item');
       current.options.setAnnotationsData({ 0: [{ ...annotation, content: `Reload ${i}` }] });
       current.controller.renderSidebar();
-      expect(previousRow.isConnected, `replacement ${i + 1} must detach the old row`).toBe(false);
+      if (previousRow.querySelector('.annotation-content.editing')) {
+        expect(list.querySelector('.list-group-item'), `render ${i + 1} preserves the open editor`).toBe(previousRow);
+      } else {
+        expect(previousRow.isConnected, `replacement ${i + 1} must detach the old row`).toBe(false);
+      }
     }
   }
 
@@ -214,7 +218,7 @@ describe('real modal sidebar controller lifecycle', () => {
     if (expectedBody) expect(hostMethod.mock.calls[0][3]).toEqual(expectedBody);
   });
 
-  it('Cancel and textarea synchronization still work after reopening and 50 editing replacements', async () => {
+  it('Cancel and textarea synchronization still work after reopening and 50 editing render attempts', async () => {
     const current = await reopen();
     current.controller.beginEdit(0, 'Q1-04', list.querySelector('.list-group-item').dataset.annotationId);
     replaceSidebar(current);

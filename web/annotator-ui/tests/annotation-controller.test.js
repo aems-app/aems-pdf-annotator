@@ -1455,7 +1455,7 @@ describe('annotation-controller state ownership', () => {
     expect(document.querySelector('.confirm-delete-yes')).not.toBeNull();
   });
 
-  it.each(['Save', 'Escape', 'blur', 'Cancel'])('a stale placeholder %s deletion leaves the new document editor untouched', async (action) => {
+  it.each(['Save', 'Escape', 'blur', 'Cancel'])('placeholder %s respects close intent and leaves a new document editor untouched', async (action) => {
     vi.useFakeTimers();
     let controller;
     try {
@@ -1513,7 +1513,11 @@ describe('annotation-controller state ownership', () => {
         textarea.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       } else if (action === 'blur') {
         textarea.dispatchEvent(new window.FocusEvent('blur', { relatedTarget: null }));
-        await vi.advanceTimersByTimeAsync(100);
+        await vi.advanceTimersByTimeAsync(350);
+        expect(helpers.deleteAnnotationRequest).not.toHaveBeenCalled();
+        expect(document.querySelector('textarea')).toBe(textarea);
+        expect(editingId).not.toBeNull();
+        return;
       } else {
         document.querySelector('.cancel-edit-btn').click();
       }
