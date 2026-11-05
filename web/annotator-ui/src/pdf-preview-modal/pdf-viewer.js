@@ -643,22 +643,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                     // Use the actual viewport whenever layout is available.
                     if (this.container.getBoundingClientRect().height <= 0
                         && entry.isIntersecting && entry.intersectionRatio > 0.5) {
-                        if (this.pendingNavigationPage !== null) {
-                            if (pageNum !== this.pendingNavigationPage) {
-                                return;
-                            }
-                            this._clearPendingNavigation(pageNum);
-                        } else if (Date.now() < this.navigationLockUntil && pageNum !== this.currentPage) {
-                            return;
-                        }
-                        this.currentPage = pageNum;
-                        this.updatePageInfo();
-
-                        // Notify annotations page change
-                        if (this.isGradedViewer && this._onAnnotationsPageChange) {
-                            const pageIdx = pageNum - 1;
-                            this._onAnnotationsPageChange(pageIdx);
-                        }
+                        this._setVisiblePage(pageNum);
                     }
                 });
                 this._syncVisiblePage();
@@ -684,6 +669,10 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                 }
             });
             if (visiblePage === null) return;
+            this._setVisiblePage(visiblePage);
+        }
+
+        _setVisiblePage(visiblePage) {
             if (this.pendingNavigationPage !== null) {
                 if (visiblePage !== this.pendingNavigationPage) return;
                 this._clearPendingNavigation(visiblePage);
