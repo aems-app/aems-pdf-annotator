@@ -322,7 +322,7 @@ window.PdfPreviewModalComparison = window.PdfPreviewModalComparison || {};
         const rate = exports.comparisonData.agreementRate;
         const percent = Math.round(rate * 100);
 
-        badge.textContent = t('%(percent)s% agreement', { percent: percent });
+        badge.textContent = t('%(percent)s percent agreement', { percent: percent });
         badge.classList.remove('high-agreement', 'medium-agreement', 'low-agreement');
 
         if (percent >= 70) {

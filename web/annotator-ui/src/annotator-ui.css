@@ -465,6 +465,7 @@
 
 .comments-panel .list-group-item:hover {
     background: #f8fafc;
+    color: #1e293b;
     border-left-color: #94a3b8;
 }
 
@@ -1621,6 +1622,10 @@
     color: #64748b !important;
 }
 
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .list-group-item:is(.active, :hover) .text-muted {
+    color: #e2e8f0 !important;
+}
+
 :is([data-theme="dark"], .dark-mode) #pdfPreviewModal .form-control {
     background: #1e293b;
     border-color: #475569;
@@ -1672,6 +1677,13 @@
 
 :is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .list-group-item:hover {
     background: #334155;
+    color: #e2e8f0;
+}
+
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal #pdfGradedCommentsList .list-group-item.active .annotation-content,
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal #pdfGradedCommentsList .list-group-item.active .small,
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .list-group-item:hover .small {
+    color: #e2e8f0;
 }
 
 :is([data-theme="dark"], .dark-mode) #pdfPreviewModal .comments-panel .list-group-item .small {
@@ -1775,9 +1787,9 @@
 
 /* Dark mode: Active list item */
 :is([data-theme="dark"], .dark-mode) #pdfPreviewModal #pdfGradedCommentsList .list-group-item.active {
-    background-color: rgba(59, 130, 246, 0.15) !important;
-    border-color: rgba(59, 130, 246, 0.4);
-    color: #f1f5f9;
+    background: #334155;
+    border-color: #60a5fa;
+    color: #e2e8f0;
 }
 
 :is([data-theme="dark"], .dark-mode) #pdfGradedCommentsList .list-group-item.active .btn-outline-primary {

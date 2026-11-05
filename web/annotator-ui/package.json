@@ -10,6 +10,8 @@
     "lint:fix": "eslint src/ --fix"
   },
   "devDependencies": {
+    "@playwright/test": "1.57.0",
+    "@vitest/coverage-v8": "4.1.0",
     "eslint": "^9.39.4",
     "globals": "^16.5.0",
     "jsdom": "^24.0.0",

@@ -199,6 +199,8 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             }
 
             this.setupControls();
+            this._scrollHandler = () => this._syncVisiblePage();
+            this.container?.addEventListener('scroll', this._scrollHandler, { passive: true });
             this.updateNavigationButtons();
         }
 
@@ -212,6 +214,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
          */
         destroy() {
             this._isDestroyed = true;
+            this.container?.removeEventListener('scroll', this._scrollHandler);
             this._loadSequence += 1;
 
             // Remove keyboard listener
@@ -636,29 +639,52 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
                     }
 
                     // Update current page based on visibility
-                    if (entry.isIntersecting && entry.intersectionRatio > 0.5) {
-                        if (this.pendingNavigationPage !== null) {
-                            if (pageNum !== this.pendingNavigationPage) {
-                                return;
-                            }
-                            this._clearPendingNavigation(pageNum);
-                        } else if (Date.now() < this.navigationLockUntil && pageNum !== this.currentPage) {
-                            return;
-                        }
-                        this.currentPage = pageNum;
-                        this.updatePageInfo();
-
-                        // Notify annotations page change
-                        if (this.isGradedViewer && this._onAnnotationsPageChange) {
-                            const pageIdx = pageNum - 1;
-                            this._onAnnotationsPageChange(pageIdx);
-                        }
+                    // The loading observer includes a 100px prefetch margin.
+                    // Use the actual viewport whenever layout is available.
+                    if (this.container.getBoundingClientRect().height <= 0
+                        && entry.isIntersecting && entry.intersectionRatio > 0.5) {
+                        this._setVisiblePage(pageNum);
                     }
                 });
+                this._syncVisiblePage();
             }, options);
 
             const wrappers = this.container.querySelectorAll('.pdf-page-wrapper');
             wrappers.forEach(wrapper => this.observer.observe(wrapper));
+        }
+
+        /** Keep navigation and annotations on the page with most visible pixels. */
+        _syncVisiblePage() {
+            if (this._isDestroyed || this.useSinglePageMode || !this.pdf || !this.container) return;
+            const viewport = this.container.getBoundingClientRect();
+            if (!(viewport.height > 0)) return;
+            let visiblePage = null;
+            let greatestOverlap = 0;
+            this.container.querySelectorAll('.pdf-page-wrapper').forEach(wrapper => {
+                const rect = wrapper.getBoundingClientRect();
+                const overlap = Math.min(rect.bottom, viewport.bottom) - Math.max(rect.top, viewport.top);
+                if (overlap > greatestOverlap) {
+                    greatestOverlap = overlap;
+                    visiblePage = Number(wrapper.dataset.pageNum);
+                }
+            });
+            if (visiblePage === null) return;
+            this._setVisiblePage(visiblePage);
+        }
+
+        _setVisiblePage(visiblePage) {
+            if (this.pendingNavigationPage !== null) {
+                if (visiblePage !== this.pendingNavigationPage) return;
+                this._clearPendingNavigation(visiblePage);
+            } else if (Date.now() < this.navigationLockUntil && visiblePage !== this.currentPage) {
+                return;
+            }
+            if (visiblePage === this.currentPage) return;
+            this.currentPage = visiblePage;
+            this.updatePageInfo();
+            if (this.isGradedViewer && this._onAnnotationsPageChange) {
+                this._onAnnotationsPageChange(visiblePage - 1);
+            }
         }
 
         // =====================================================================
@@ -1323,6 +1349,7 @@ window.PdfPreviewModalViewer = window.PdfPreviewModalViewer || {};
             // _onSliderSync and PdfPreviewModalComparison.onPageChange, which
             // would otherwise be orphaned on every resize.
             this.updatePageInfo();
+            this._syncVisiblePage();
 
             // Annotation markers and text boxes are positioned in CSS pixels,
             // so they need repositioning even though nothing was rebuilt.
