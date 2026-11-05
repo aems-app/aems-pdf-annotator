@@ -1581,12 +1581,15 @@
 
     // Every mutation (including inline edits, priority, delete and revert) crosses
     // this boundary. A temporary identity is only a local alias, never an API id.
-    function resolveAnnotationWriteIdentity(annotationId, epoch) {
+    function resolveAnnotationWriteIdentity(annotationId, epoch, retryCreate = false) {
         if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
         const local = Object.keys(annotationsData)
             .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
         if (local?._createPromise) {
-            return local._createPromise.then(() => resolveAnnotationWriteIdentity(annotationId, epoch));
+            return local._createPromise.then(() => resolveAnnotationWriteIdentity(annotationId, epoch, retryCreate));
+        }
+        if (retryCreate && local?._isOptimistic && local._retryCreate) {
+            return local._retryCreate().then(() => resolveAnnotationWriteIdentity(annotationId, epoch));
         }
         const identity = annotationWriteIdentity(annotationId);
         if (!identity || /(^|[|:])(tmp-|_tmp_)/.test(String(identity))) {
@@ -1654,12 +1657,7 @@
     // actions join the same content; a later edit waits for the previous PUT.
     async function saveAnnotationContentRequest(annotationId, body) {
         const epoch = currentHistoryEpoch();
-        const local = Object.keys(annotationsData)
-            .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
-        if (local?._createPromise) await local._createPromise;
-        if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
-        if (local?._isOptimistic && local._retryCreate) await local._retryCreate();
-        const resolved = resolveAnnotationWriteIdentity(annotationId, epoch);
+        const resolved = resolveAnnotationWriteIdentity(annotationId, epoch, true);
         annotationId = typeof resolved === 'string' ? resolved : await resolved;
         const key = `${epoch}:${annotationWriteIdentity(annotationId)}`;
         const previous = annotationContentSaves.get(key);
