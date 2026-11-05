@@ -338,6 +338,389 @@ describe('new comment survives production polling and relayout', () => {
     expect(document.querySelector('.inline-annotation-editor')).toBeNull();
   });
 
+  async function deleteCreated() {
+    instances.at(-1).controller.renderList();
+    const button = document.querySelector('.delete-annotation') || document.createElement('button');
+    button.dataset.confirmed = 'true';
+    await instances.at(-1).controller.deleteAnnotation(0, 'created-1', button);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(stored.has('created-1')).toBe(false);
+  }
+
+  it.each(['inline', 'sidebar'])('delete closes the open %s editor and its keyboard/blur saves', async location => {
+    const inline = await create();
+    instances.at(-1).controller.renderList();
+    const editor = location === 'inline' ? inline : document.querySelector('.auto-resize-textarea');
+    editor.focus();
+    editor.value = 'Do not save a deleted comment';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    await deleteCreated();
+    expect.soft(document.querySelector('.inline-annotation-editor')).toBeNull();
+    expect.soft(document.querySelector('.auto-resize-textarea')).toBeNull();
+    editor.dispatchEvent(new FocusEvent('blur'));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+  });
+
+  it('delete cancels a queued content save and ignores a PUT response already in flight', async () => {
+    await create();
+    let finishPut;
+    adapter.updateAnnotation.mockImplementationOnce((_a, _s, _id, body) => new Promise(resolve => {
+      finishPut = () => resolve({ success: true, annotation: { ...hostAnnotation, ...body } });
+    }));
+    const { helpers } = instances.at(-1).options;
+    const first = helpers.saveAnnotationContentRequest('created-1', { content: 'First' }).catch(error => error);
+    const queued = helpers.saveAnnotationContentRequest('created-1', { content: 'Queued' }).catch(error => error);
+    await deleteCreated();
+    finishPut();
+    await first;
+    await vi.advanceTimersByTimeAsync(600);
+    await queued;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    expect(instances.at(-1).options.getAnnotationsData()[0]).toEqual([]);
+  });
+
+  it('delete prevents an in-flight editor save from adding history or restoring its marker', async () => {
+    const editor = await create();
+    editor.value = 'Saving while deleted';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    let finishPut;
+    adapter.updateAnnotation.mockImplementationOnce((_a, _s, _id, body) => new Promise(resolve => {
+      finishPut = () => resolve({ success: true, annotation: { ...hostAnnotation, ...body } });
+    }));
+    commitDraft('keyboard', editor);
+    await vi.advanceTimersByTimeAsync(0);
+    await deleteCreated();
+    finishPut();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(document.querySelector('.inline-annotation-editor')).toBeNull();
+    expect(instances.at(-1).controller.getUndoStack().map(op => op.type)).not.toContain('edit');
+  });
+
+  it('delete cancels a blur save already scheduled before the DELETE resolves', async () => {
+    const editor = await create();
+    editor.value = 'Pending blur text';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    editor.blur();
+    await deleteCreated();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+  });
+
+  it('delete then undo explicitly re-creates; earlier history follows the new identity', async () => {
+    await save(await create());
+    await deleteCreated();
+    adapter.createAnnotation.mockImplementationOnce(async (_a, _s, body) => {
+      const annotation = { ...hostAnnotation, ...body, id: 'restored-2', stable_id: 'restored-2', xref: 2047 };
+      stored.set(annotation.id, annotation);
+      return { success: true, annotation };
+    });
+    adapter.updateAnnotation.mockClear();
+    document.activeElement?.blur();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+    await vi.advanceTimersByTimeAsync(700);
+    expect(stored.get('restored-2')?.content).toBe('Check the units');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+    await vi.advanceTimersByTimeAsync(700);
+    expect(adapter.updateAnnotation.mock.calls.every(call => call[2] === 'restored-2')).toBe(true);
+    expect(adapter.deleteAnnotation).toHaveBeenCalledTimes(1);
+  });
+
+  it('a captured create-retry cannot create or save after the retried identity was deleted', async () => {
+    adapter.createAnnotation.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await startTypingDraft();
+    await vi.advanceTimersByTimeAsync(400);
+    const draft = instances.at(-1).options.getAnnotationsData()[0][0];
+    const retry = draft._retryCreate;
+    const creating = retry();
+    await vi.advanceTimersByTimeAsync(500);
+    await creating;
+    await deleteCreated();
+    const lateRetry = retry().catch(() => {});
+    await vi.advanceTimersByTimeAsync(500);
+    await lateRetry;
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(2);
+    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+  });
+
+  const missingMessage = 'This comment was deleted. Your text is kept. You can re-create it as a new comment.';
+  const recoveryTranslations = {
+    [missingMessage]: 'Kommentaren har tagits bort. Din text finns kvar. Du kan återskapa den som en ny kommentar.',
+    'Re-create comment': 'Återskapa kommentar',
+  };
+
+  it.each([
+    ['inline', 'en', 'throw'], ['inline', 'sv', 'throw'],
+    ['sidebar', 'en', 'throw'], ['sidebar', 'sv', 'throw'],
+    ['inline', 'en', 'response'], ['inline', 'sv', 'response'],
+    ['sidebar', 'en', 'response'], ['sidebar', 'sv', 'response'],
+  ])('a missing %s save (%s, %s) keeps text, notifies once and explicitly re-creates', async (location, language, failure) => {
+    window.i18n = { t: vi.fn(key => language === 'sv' ? recoveryTranslations[key] || key : key) };
+    const inline = await create();
+    instances.at(-1).controller.renderList();
+    const editor = location === 'inline' ? inline : document.querySelector('.auto-resize-textarea');
+    editor.focus();
+    editor.value = 'Keep <my> feedback';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    stored.delete('created-1'); // Server-side disappearance, not a local DELETE.
+    adapter.updateAnnotation.mockImplementationOnce(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      if (failure === 'throw') throw Object.assign(new Error('Annotation not found'), { status: 404 });
+      return { success: false, status: 404, error: 'Annotation not found' };
+    });
+    commitDraft(location === 'inline' ? 'keyboard' : 'button', editor);
+    await vi.advanceTimersByTimeAsync(700);
+    expect.soft(editor.isConnected).toBe(true);
+    expect.soft(editor.value).toBe('Keep <my> feedback');
+    const message = language === 'sv' ? recoveryTranslations[missingMessage] : missingMessage;
+    expect.soft(document.querySelector('.alert-danger')?.textContent).toContain(message);
+    for (let i = 0; i < 3; i++) {
+      editor.value = 'Keep <my> updated feedback';
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      commitDraft(location === 'inline' ? 'keyboard' : 'button', editor);
+      editor.blur();
+      await vi.advanceTimersByTimeAsync(700);
+    }
+    expect.soft(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    expect.soft(document.querySelectorAll('.alert-danger')).toHaveLength(1);
+    const recovery = document.querySelector('.recreate-annotation-btn');
+    expect(recovery?.textContent).toBe(language === 'sv' ? recoveryTranslations['Re-create comment'] : 'Re-create comment');
+    adapter.createAnnotation.mockImplementationOnce(async (_a, _s, body) => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const annotation = { ...hostAnnotation, ...body, id: 'recreated-2', stable_id: 'recreated-2', xref: 2047 };
+      stored.set(annotation.id, annotation);
+      return { success: true, annotation };
+    });
+    recovery.click();
+    recovery.click();
+    await vi.advanceTimersByTimeAsync(900);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(2);
+    expect(stored.get('recreated-2')?.content).toBe('Keep <my> updated feedback');
+    expect(stored.has('created-1')).toBe(false);
+    expect(instances.at(-1).options.getAnnotationsData()[0].map(a => a.id)).toEqual(['recreated-2']);
+    expect(document.querySelector('.recreate-annotation-btn')).toBeNull();
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+  });
+
+  async function missingDraft() {
+    const editor = await create();
+    editor.value = 'Retained feedback';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    stored.delete('created-1');
+    adapter.updateAnnotation.mockRejectedValueOnce(Object.assign(new Error('Annotation not found'), { status: 404 }));
+    commitDraft('keyboard', editor);
+    await vi.advanceTimersByTimeAsync(600);
+    const button = document.querySelector('.recreate-annotation-btn');
+    expect(button).not.toBeNull();
+    return { editor, button };
+  }
+
+  it.each(['annotationIdentifier', 'identifier'])('recovery reads and closes legacy editors using data-%s', async identityField => {
+    const editor = await create();
+    instances.at(-1).controller.renderList();
+    editor.value = 'Legacy editor draft';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    adapter.updateAnnotation.mockImplementationOnce(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      throw Object.assign(new Error('Annotation not found'), { status: 404 });
+    });
+    commitDraft('keyboard', editor);
+    await vi.advanceTimersByTimeAsync(0);
+    document.querySelectorAll('.annotation-marker, .list-group-item[data-annotation-page]').forEach(owner => {
+      owner.dataset[identityField] = 'created-1';
+      delete owner.dataset.annotationRequestId;
+      if (identityField === 'identifier') delete owner.dataset.annotationIdentifier;
+    });
+    await vi.advanceTimersByTimeAsync(600);
+    const button = document.querySelector('.recreate-annotation-btn');
+    expect(button).not.toBeNull();
+    expect(instances.at(-1).options.getAnnotationsData()[0][0].content).toBe('Legacy editor draft');
+    adapter.createAnnotation.mockResolvedValueOnce({ success: true, annotation: {
+      ...hostAnnotation, id: 'recovered-2', stable_id: 'recovered-2', content: editor.value,
+    } });
+    button.click();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(adapter.createAnnotation.mock.calls.at(-1)[2].content).toBe('Legacy editor draft');
+    expect(editor.isConnected).toBe(false);
+    expect(document.querySelector('.recreate-annotation-btn')).toBeNull();
+    expect(instances.at(-1).options.getAnnotationsData()[0][0].id).toBe('recovered-2');
+  });
+
+  it.each(['throw', 'response', 'empty response', 'opaque error'])('a %s recreation failure retains the draft and permits another explicit POST', async failure => {
+    const { editor, button } = await missingDraft();
+    adapter.createAnnotation.mockImplementationOnce(async () => {
+      if (failure === 'throw') throw new TypeError('Failed to fetch');
+      if (failure === 'opaque error') throw {};
+      if (failure === 'empty response') return undefined;
+      return { success: false, error: 'Create refused' };
+    });
+    button.click();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(button.disabled).toBe(false);
+    expect(editor.isConnected).toBe(true);
+    expect(editor.value).toBe('Retained feedback');
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(2);
+    const annotation = { ...hostAnnotation, id: 'recovered-3', stable_id: 'recovered-3', content: editor.value, xref: 3000 };
+    adapter.createAnnotation.mockImplementationOnce(async () => {
+      stored.set(annotation.id, annotation);
+      return { success: true, annotation };
+    });
+    button.click();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(stored.get('recovered-3')?.content).toBe('Retained feedback');
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+  });
+
+  it('an emptied recovery draft never creates a placeholder comment', async () => {
+    const { editor, button } = await missingDraft();
+    editor.value = '   ';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    button.click();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain('Comment cannot be empty.');
+    expect(button.disabled).toBe(false);
+    expect(editor.isConnected).toBe(true);
+  });
+
+  it('recreation uses retained text even after the viewer releases both editors', async () => {
+    const { button } = await missingDraft();
+    releasePages();
+    document.getElementById('pdfGradedCommentsList').replaceChildren();
+    const local = instances.at(-1).options.getAnnotationsData()[0][0];
+    delete local.type; // Minimal legacy comment payload; recovery defaults to Text.
+    adapter.createAnnotation.mockResolvedValueOnce({ success: true, annotation: {
+      ...hostAnnotation, id: 'recovered-2', stable_id: 'recovered-2', content: local.content,
+    } });
+    button.click();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(adapter.createAnnotation.mock.calls.at(-1)[2]).toMatchObject({ content: 'Retained feedback', type: 'Text' });
+    expect(instances.at(-1).options.getAnnotationsData()[0][0].content).toBe('Retained feedback');
+    expect(document.querySelector('.recreate-annotation-btn')).toBeNull();
+  });
+
+  it('a detached recovery button cannot create after the document closes', async () => {
+    const { button } = await missingDraft();
+    releasePages();
+    modals.at(-1).destroy();
+    button.click();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(1);
+    expect(button.isConnected).toBe(false);
+  });
+
+  it('closing while recreation resolves geometry prevents its POST', async () => {
+    const { button } = await missingDraft();
+    let finishGeometry;
+    window.__pdfGradedViewer.pdf.getPage.mockImplementationOnce(() => new Promise(resolve => { finishGeometry = resolve; }));
+    button.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(finishGeometry).toBeTypeOf('function');
+    releasePages();
+    modals.at(-1).destroy();
+    finishGeometry({ view: [0, 0, 600, 800] });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('.recreate-annotation-btn')).toBeNull();
+  });
+
+  it('an explicitly discarded draft cannot start a content save while its POST is pending', async () => {
+    await open(0);
+    document.querySelector('.pdf-annotation-overlay').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 200, clientY: 200 }));
+    await vi.advanceTimersByTimeAsync(60);
+    const { controller, options } = instances.at(-1);
+    const draft = options.getAnnotationsData()[0][0];
+    const closing = controller.closeEmptyNewDrafts();
+    const save = options.helpers.saveAnnotationContentRequest(draft.id, { content: 'Too late' }).catch(error => error);
+    await vi.advanceTimersByTimeAsync(700);
+    await closing;
+    expect(await save).toBeInstanceOf(Error);
+    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(1);
+    expect(adapter.deleteAnnotation).toHaveBeenCalledTimes(1);
+    expect(stored.has('created-1')).toBe(false);
+  });
+
+  it.each(['resolve', 'reject'])('a recovery POST that %ss after document close never restores the old draft', async outcome => {
+    const { button } = await missingDraft();
+    let finish;
+    adapter.createAnnotation.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      finish = () => outcome === 'resolve'
+        ? resolve({ success: true, annotation: { ...hostAnnotation, id: 'late', stable_id: 'late' } })
+        : reject(new TypeError('Failed to fetch'));
+    }));
+    button.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(2);
+    releasePages();
+    modals.at(-1).destroy();
+    finish();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(document.querySelector('.recreate-annotation-btn')).toBeNull();
+    expect(document.querySelector('.inline-annotation-editor')).toBeNull();
+    expect(document.querySelectorAll('.alert-danger')).toHaveLength(0);
+  });
+
+  it('joined missing-content saves share their failure and one recovery offer', async () => {
+    const editor = await create();
+    editor.value = 'Same draft';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    adapter.updateAnnotation.mockImplementationOnce(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      throw Object.assign(new Error('Annotation not found'), { status: 404 });
+    });
+    const { helpers } = instances.at(-1).options;
+    const saves = [1, 2].map(() => helpers.saveAnnotationContentRequest('created-1', { content: editor.value }).catch(error => error));
+    await vi.advanceTimersByTimeAsync(600);
+    const results = await Promise.all(saves);
+    expect(results[0]).toBe(results[1]);
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    expect(document.querySelectorAll('.recreate-annotation-btn')).toHaveLength(1);
+    expect(editor.value).toBe('Same draft');
+  });
+
+  it.each([[60, 0], [60, 1], [700, 0], [700, 1]])('starting another box after %i ms on page %i deletes the first empty draft once', async (delay, page) => {
+    let nextId = 0;
+    adapter.createAnnotation.mockImplementation(async (_a, _s, body) => {
+      const id = 'created-' + ++nextId;
+      const xref = 2000 + nextId;
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const annotation = { ...ai, ...body, id, stable_id: id, xref };
+      stored.set(id, annotation);
+      return { success: true, annotation };
+    });
+    await open(0);
+    const overlays = document.querySelectorAll('.pdf-annotation-overlay');
+    overlays[0].dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 200, clientY: 200 }));
+    await vi.advanceTimersByTimeAsync(delay);
+    overlays[page].dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 300, clientY: 250 + page * 850 }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(2);
+    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false });
+    expect([...stored.keys()]).toEqual(['created-2']);
+    expect(instances.at(-1).options.getAnnotationsData()[page].map(a => a.id)).toEqual(['created-2']);
+    expect(document.querySelector('.inline-annotation-editor')).not.toBeNull();
+    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+  });
+
+  it('starting another box keeps the meaningful text in the first draft', async () => {
+    const editor = await create();
+    editor.value = 'Keep this draft';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    adapter.createAnnotation.mockImplementationOnce(async (_a, _s, body) => {
+      const annotation = { ...ai, ...body, id: 'created-2', stable_id: 'created-2', xref: 2047 };
+      stored.set(annotation.id, annotation);
+      return { success: true, annotation };
+    });
+    document.querySelector('.pdf-annotation-overlay').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 300, clientY: 250 }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
+    expect(stored.has('created-1')).toBe(true);
+    expect(instances.at(-1).options.getAnnotationsData()[0].find(a => a.id === 'created-1')?.content).toBe('Keep this draft');
+  });
+
   it('own POST followed by the 10 s version poll never reloads/deletes the new comment', async () => {
     const editor = await create();
     const reloads = adapter.listAnnotations.mock.calls.length;

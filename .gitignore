@@ -6,6 +6,7 @@ dist/
 build/
 .pytest_cache/
 .pytest-temp/
+.test-output/
 .mypy_cache/
 .ruff_cache/
 .eggs/

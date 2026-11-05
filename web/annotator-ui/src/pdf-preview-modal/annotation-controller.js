@@ -588,7 +588,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
         function _ignoreMutationFailure(error, epoch) {
             return !_isCurrentEpoch(epoch) || (typeof _h.isConcurrentAnnotationWrite === 'function'
-                && _h.isConcurrentAnnotationWrite(error));
+                && _h.isConcurrentAnnotationWrite(error)) || (typeof _h.isCanceledAnnotationWrite === 'function'
+                && _h.isCanceledAnnotationWrite(error));
         }
 
         function getUndoStack() {
@@ -2406,6 +2407,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 return Promise.resolve();
             }
 
+            // Starting another box explicitly closes the previous empty draft.
+            // Its pending POST/DELETE can finish without delaying the new editor.
+            closeEmptyNewDrafts();
             var targetPage = (typeof pageIdx === 'number' && !Number.isNaN(pageIdx))
                 ? pageIdx
                 : Math.max(0, (viewer.currentPage || 1) - 1);
@@ -2471,6 +2475,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
             setTimeout(function () {
                 if (!_isCurrentEpoch(requestEpoch)) return;
+                if (optimisticAnnotation._discardOnClose || optimisticAnnotation._deleted) return;
                 if (_getEditingAnnotationId() === null || !_h.escapeCssAttribute) {
                     return;
                 }
@@ -2582,6 +2587,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             // Retry the same draft and identity remapping, without adding another
             // optimistic marker or installing a second set of editor handlers.
             function createDraft(isRetry) {
+                if (optimisticAnnotation._deleted || optimisticAnnotation._discardOnClose) return Promise.resolve();
                 if (optimisticAnnotation._createPromise) return optimisticAnnotation._createPromise;
                 var abortController = new AbortController();
                 optimisticAnnotation._abortController = abortController;
@@ -3228,8 +3234,16 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     var editor = marker && marker.querySelector('.inline-annotation-editor');
                     editor = editor || document.getElementById('edit-annotation-text-' + id);
                     var content = String(editor ? editor.value : annotation.content || '').trim();
-                    if (PLACEHOLDER_STRINGS.indexOf(content) === -1) return;
+                    if (PLACEHOLDER_STRINGS.indexOf(content) === -1) {
+                        // The next editor may collapse this label; retain its draft
+                        // without replacing the last persisted-content snapshot.
+                        if (editor) annotation.content = editor.value;
+                        return;
+                    }
                     annotation._discardOnClose = true;
+                    var label = marker && marker.querySelector('.annotation-label');
+                    if (label && _h.collapseInlineLabel) _h.collapseInlineLabel(label);
+                    if (_getEditingAnnotationId() === 'ann-' + pageIdx + '-' + id) _setEditingId(null);
                     if (!_draftDeleteRequests.has(annotation) && _h.captureDraftDeleteRequest) {
                         _draftDeleteRequests.set(annotation, _h.captureDraftDeleteRequest());
                     }
