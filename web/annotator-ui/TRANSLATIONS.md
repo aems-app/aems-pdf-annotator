@@ -19,7 +19,7 @@ host translator separately.
 
 ```json
 [
-  "%(percent)s% agreement",
+  "%(percent)s percent agreement",
   "A/B Model Comparison",
   "AI-generated",
   "Annotation create request helper is unavailable.",

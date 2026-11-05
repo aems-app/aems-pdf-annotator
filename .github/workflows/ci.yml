@@ -56,8 +56,11 @@ jobs:
       - name: Install JS deps
         run: npm ci
 
-      - name: Run Vitest
-        run: npm test -- --run
+      - name: Install Chromium for component contrast tests
+        run: npx playwright install --with-deps chromium
 
       - name: Build Rollup bundle
         run: npm run build
+
+      - name: Run Vitest
+        run: npm test -- --run
