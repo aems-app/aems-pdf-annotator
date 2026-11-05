@@ -588,7 +588,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
         function _ignoreMutationFailure(error, epoch) {
             return !_isCurrentEpoch(epoch) || (typeof _h.isConcurrentAnnotationWrite === 'function'
-                && _h.isConcurrentAnnotationWrite(error));
+                && _h.isConcurrentAnnotationWrite(error)) || (typeof _h.isCanceledAnnotationWrite === 'function'
+                && _h.isCanceledAnnotationWrite(error));
         }
 
         function getUndoStack() {
@@ -2582,6 +2583,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             // Retry the same draft and identity remapping, without adding another
             // optimistic marker or installing a second set of editor handlers.
             function createDraft(isRetry) {
+                if (optimisticAnnotation._deleted || optimisticAnnotation._discardOnClose) return Promise.resolve();
                 if (optimisticAnnotation._createPromise) return optimisticAnnotation._createPromise;
                 var abortController = new AbortController();
                 optimisticAnnotation._abortController = abortController;

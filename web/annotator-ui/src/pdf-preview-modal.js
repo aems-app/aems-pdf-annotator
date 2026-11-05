@@ -1559,9 +1559,16 @@
      * @returns {Promise<Object>} Parsed JSON response with created annotation
      */
     async function createAnnotationRequest(body) {
-        return _requireAnnotationAdapter().createAnnotation(currentAssignmentId, currentSubmissionId, body, {
+        const epoch = currentHistoryEpoch();
+        const data = await _requireAnnotationAdapter().createAnnotation(currentAssignmentId, currentSubmissionId, body, {
             offline: _isOfflineMode()
         });
+        if (data?.success && data.annotation && isCurrentHistoryEpoch(epoch)) {
+            deletedAnnotationIdentities.delete(String(buildApiAnnotationIdentifier({
+                identifier: data.annotation.stable_id || data.annotation.id, xref: data.annotation.xref,
+            })));
+        }
+        return data;
     }
 
     /**
@@ -1583,8 +1590,10 @@
     // this boundary. A temporary identity is only a local alias, never an API id.
     function resolveAnnotationWriteIdentity(annotationId, epoch, retryCreate = false) {
         if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+        if (deletedAnnotationIdentities.has(String(annotationWriteIdentity(annotationId)))) throw CANCELED_ANNOTATION_WRITE;
         const local = Object.keys(annotationsData)
             .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
+        if (local?._deleted || local?._discardOnClose && retryCreate) throw CANCELED_ANNOTATION_WRITE;
         if (local?._createPromise) {
             return local._createPromise.then(() => resolveAnnotationWriteIdentity(annotationId, epoch, retryCreate));
         }
@@ -1638,6 +1647,7 @@
                     failure = error;
                 }
                 if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+                if (deletedAnnotationIdentities.has(String(identity))) throw CANCELED_ANNOTATION_WRITE;
                 writes.version += 1;
                 if (writes.conflicted) {
                     await refreshConflictingAnnotation(identity, epoch, writes);
@@ -1741,6 +1751,7 @@
         });
         if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
         if (data?.success) {
+            invalidateDeletedAnnotation(annotationId);
             const writes = annotationWrites.get(key);
             if (writes) {
                 writes.version += 1;
@@ -1750,6 +1761,30 @@
         return data;
     }
 
+    function invalidateDeletedAnnotation(annotationId) {
+        const identity = annotationWriteIdentity(annotationId);
+        deletedAnnotationIdentities.add(String(identity));
+        const local = Object.keys(annotationsData)
+            .map((pageIdx) => findAnnotationEntry(Number(pageIdx), identity)).find(Boolean);
+        if (local) {
+            local._deleted = true;
+            delete local._retryCreate;
+        }
+        // Existing delete undo explicitly POSTs a new annotation, then remaps
+        // the whole timeline. Until then the write boundary blocks this id.
+        const target = { identifier: identity, xref: local?.xref };
+        annotationContentSaves.delete(`${currentHistoryEpoch()}:${identity}`);
+        document.querySelectorAll('.annotation-marker, .list-group-item[data-annotation-page]').forEach((element) => {
+            if (!historyIdentityMatches({
+                identifier: element.dataset.annotationRequestId || element.dataset.annotationIdentifier || element.dataset.identifier,
+                xref: element.dataset.annotationXref,
+            }, target)) return;
+            const label = element.querySelector('.annotation-label');
+            if (label) collapseInlineLabel(label);
+            if (!element.classList.contains('annotation-marker')) element.remove();
+        });
+    }
+
     function captureDraftDeleteRequest() {
         // Explicit close cleanup belongs to the document being left, including
         // when its create POST completes after the next booklet has opened.
@@ -1757,7 +1792,12 @@
         const assignmentId = currentAssignmentId;
         const submissionId = currentSubmissionId;
         const offline = _isOfflineMode();
-        return (id) => adapter.deleteAnnotation(assignmentId, submissionId, id, { offline });
+        const epoch = currentHistoryEpoch();
+        return async (id) => {
+            const data = await adapter.deleteAnnotation(assignmentId, submissionId, id, { offline });
+            if (data?.success && isCurrentHistoryEpoch(epoch)) invalidateDeletedAnnotation(id);
+            return data;
+        };
     }
 
     function closeEmptyNewDrafts(keep) {
@@ -3569,7 +3609,7 @@
                 markLocalAnnotationChange(); // Prevent polling reload
             }
         } catch (error) {
-            if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE) return;
+            if (!isCurrentHistoryEpoch(requestEpoch) || error === CONCURRENT_ANNOTATION_WRITE || error === CANCELED_ANNOTATION_WRITE) return;
             console.error('Error saving inline annotation:', error);
             showToast('error', error.message || t('Failed to save annotation. Please try again.'));
             return false;
@@ -3597,6 +3637,7 @@
     const annotationWrites = new Map();
     const annotationContentSaves = new Map();
     const annotationIdentityAliases = new Map();
+    const deletedAnnotationIdentities = new Set();
     // Numbers every new operation in the order it was recorded. A step that puts an operation back goes below
     // any operation numbered after it, and a step learns from it whether a new operation arrived meanwhile.
     let historySequence = 0;
@@ -3742,6 +3783,7 @@
         annotationWrites.clear();
         annotationContentSaves.clear();
         annotationIdentityAliases.clear();
+        deletedAnnotationIdentities.clear();
     }
 
     const HISTORY_IDENTITY_FIELDS = ['annotationId', 'identifier', 'requestId', 'requestIdentifier', 'stable_id', 'stableId', 'id'];
@@ -4494,6 +4536,7 @@
 
     const STALE_HISTORY_STEP = new Error('The history step belongs to a document that is no longer open.');
     const CONCURRENT_ANNOTATION_WRITE = new Error('Overlapping annotation writes require a server refresh.');
+    const CANCELED_ANNOTATION_WRITE = new Error('The annotation was deleted.');
 
     // One undo or redo. Its requests go out only while the document it began on is still open, and their
     // answers count only if it still is when they arrive; otherwise they throw STALE_HISTORY_STEP.
@@ -4525,6 +4568,7 @@
             return HISTORY_STALE;
         }
         if (error === CONCURRENT_ANNOTATION_WRITE) return HISTORY_DROPPED;
+        if (error === CANCELED_ANNOTATION_WRITE) return HISTORY_DROPPED;
         if (isMissingAnnotationFailure(error)) {
             dropMissingHighlightUndo();
             return HISTORY_DROPPED;
@@ -10063,6 +10107,7 @@
                     getHistoryEpoch: currentHistoryEpoch,
                     isCurrentHistoryEpoch: isCurrentHistoryEpoch,
                     isConcurrentAnnotationWrite: (error) => error === CONCURRENT_ANNOTATION_WRITE,
+                    isCanceledAnnotationWrite: (error) => error === CANCELED_ANNOTATION_WRITE,
                     collapseInlineLabel: collapseInlineLabel,
                     expandInlineLabelEdit: expandInlineLabelEdit,
                     setupTextareaAutoResize: setupTextareaAutoResize,
