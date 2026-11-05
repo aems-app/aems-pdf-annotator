@@ -2005,6 +2005,14 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 if (!item) {
                     return;
                 }
+                if (event.target.matches('.auto-resize-textarea') &&
+                    (event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                    event.preventDefault();
+                    var saveButton = item.querySelector('.save-annotation-btn');
+                    if (saveButton) handle.saveAnnotationEdit(
+                        saveButton.dataset.annotationIdentifier || saveButton.dataset.annotationXref, saveButton);
+                    return;
+                }
                 var key = (event.key || '').toLowerCase();
                 var isDeleteKey =
                     key === 'delete' ||
@@ -2084,6 +2092,27 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 if (event.target.matches('.list-group-item')) {
                     event.target.classList.remove('item-focused', 'active');
                 }
+                var textarea = event.target;
+                if (!textarea.matches('.auto-resize-textarea')) return;
+                var item = textarea.closest('.list-group-item');
+                var saveButton = item && item.querySelector('.save-annotation-btn');
+                if (!saveButton) return;
+                var identifier = saveButton.dataset.annotationIdentifier || saveButton.dataset.annotationXref;
+                var requestEpoch = _currentHistoryEpoch();
+                function staysInEditor(target) {
+                    if (item.contains(target)) return true;
+                    var marker = _findMarkerForIdentifiers(_parseDatasetPageIndex(item.dataset.annotationPage), [identifier]);
+                    return !!(target && marker && marker.contains(target));
+                }
+                if (staysInEditor(event.relatedTarget)) return;
+                setTimeout(function () {
+                    if (!_isCurrentEpoch(requestEpoch) || !textarea.isConnected || saveButton.disabled ||
+                        staysInEditor(document.activeElement) ||
+                        (_h.isAnnotationContentSaveInFlight && _h.isAnnotationContentSaveInFlight(identifier))) return;
+                    // Empty drafts follow the explicit Cancel/Escape rules, never focus loss.
+                    if (isPlaceholderContent(textarea.value.trim())) return;
+                    handle.saveAnnotationEdit(identifier, saveButton);
+                }, 100);
             });
         }
 
@@ -2754,7 +2783,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
 
             var currentEditingId = _getEditingAnnotationId();
-            if (_savingAnnotationId === currentEditingId) {
+            if (_savingAnnotationId && _savingAnnotationId === currentEditingId) {
                 return Promise.resolve();
             }
 
@@ -2854,7 +2883,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     requestId: requestIdentifier,
                 });
                 if (!_isCurrentEpoch(requestEpoch)) return;
-                var data = await _h.updateAnnotationRequest(apiIdentifier, { content: newContent });
+                var saveContent = _h.saveAnnotationContentRequest || _h.updateAnnotationRequest;
+                var data = await saveContent(apiIdentifier, { content: newContent });
                 if (!_isCurrentEpoch(requestEpoch)) return;
                 if (!data.success || !data.annotation) {
                     throw new Error((data && data.error) || t('Update failed'));
@@ -2908,7 +2938,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     editedLabel.dataset.fullText = newContent;
                     _h.collapseInlineLabel(editedLabel);
                 }
-                _setEditingId(null);
+                if (_getEditingAnnotationId() === currentEditingId) _setEditingId(null);
                 markLocalChange();
                 _renderAfterMutation();
                 if (originalSource === 'AI' && data.annotation && data.annotation.source === 'HUMAN' && _h.showToast) {
@@ -2924,7 +2954,6 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         currentAnnotations[pageIdx][originalIdx].content = originalContent;
                     }
                 }
-                renderSidebar();
                 if (_h.showToast) {
                     _h.showToast('error', error.message || t('Failed to save annotation. Please try again.'));
                 }
