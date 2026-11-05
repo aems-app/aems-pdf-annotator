@@ -92,6 +92,7 @@ describe('new comment survives production polling and relayout', () => {
         return { success: true, annotation: { ...hostAnnotation } };
       }),
       updateAnnotation: vi.fn(async (_a, _s, id, body) => {
+        await new Promise(resolve => setTimeout(resolve, 300));
         if (!stored.has(id)) throw new Error('PUT 404: annotation deleted');
         hostAnnotation = { ...stored.get(id), ...body };
         stored.set(id, hostAnnotation);
@@ -169,6 +170,72 @@ describe('new comment survives production polling and relayout', () => {
     expect(adapter.updateAnnotation).toHaveBeenCalledWith('assignment-1', 'submission-1', 'created-1', expect.objectContaining({ content: 'Check the units' }), { offline: false });
     expect(stored.get('created-1')?.content).toBe('Check the units');
   }
+
+  async function startTypingDraft(interval = 20, location = 'inline') {
+    await open(0);
+    document.querySelector('.pdf-annotation-overlay').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 200, clientY: 200 }));
+    await vi.advanceTimersByTimeAsync(60);
+    // jsdom's observer is a layout stub; run the real sidebar visibility pass.
+    if (location === 'sidebar') instances.at(-1).controller.renderList();
+    const editor = document.querySelector(location === 'sidebar' ? '.auto-resize-textarea' : '.inline-annotation-editor');
+    expect(editor).not.toBeNull();
+    if (location === 'sidebar') editor.focus();
+    for (const character of 'kommentar') {
+      const active = document.activeElement;
+      expect(active).toBeInstanceOf(HTMLTextAreaElement);
+      active.dispatchEvent(new KeyboardEvent('keydown', { key: character, bubbles: true }));
+      active.setRangeText(character, active.selectionStart, active.selectionEnd, 'end');
+      active.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: character }));
+      active.dispatchEvent(new KeyboardEvent('keyup', { key: character, bubbles: true }));
+      await vi.advanceTimersByTimeAsync(interval);
+    }
+    return editor;
+  }
+
+  it.each([
+    ['inline', 20], ['inline', 30], ['sidebar', 20], ['sidebar', 30],
+  ])('keeps each typed character, focus and caret through POST identity remapping (%s, %i ms keys)', async (location, interval) => {
+    const editor = await startTypingDraft(interval, location);
+    await vi.advanceTimersByTimeAsync(400);
+    const live = document.querySelector(location === 'sidebar' ? '.auto-resize-textarea' : '.inline-annotation-editor');
+    expect.soft(live).toBe(editor);
+    expect.soft(live?.value).toBe('kommentar');
+    expect.soft(document.activeElement).toBe(editor);
+    expect.soft([live?.selectionStart, live?.selectionEnd]).toEqual([9, 9]);
+    expect.soft(document.querySelector('.auto-resize-textarea')?.value).toBe('kommentar');
+    document.querySelector('.save-annotation-btn').click();
+    await vi.advanceTimersByTimeAsync(700);
+    expect(stored.get('created-1')?.content).toBe('kommentar');
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    expect(adapter.updateAnnotation.mock.calls[0][2]).toBe('created-1');
+  });
+
+  it('preserves a backward selection moved before the POST resolves', async () => {
+    const editor = await startTypingDraft();
+    editor.setSelectionRange(2, 7, 'backward');
+    await vi.advanceTimersByTimeAsync(400);
+    expect(document.querySelector('.inline-annotation-editor')).toBe(editor);
+    expect(document.activeElement).toBe(editor);
+    expect([editor.selectionStart, editor.selectionEnd, editor.selectionDirection]).toEqual([2, 7, 'backward']);
+  });
+
+  it.each(['throw', 'unsuccessful'])('a %s POST failure keeps the typed draft focused with an error', async failure => {
+    adapter.createAnnotation.mockImplementationOnce(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      if (failure === 'throw') throw new Error('Create refused');
+      return { success: false, error: 'Create refused' };
+    });
+    const editor = await startTypingDraft();
+    await vi.advanceTimersByTimeAsync(400);
+    expect.soft(document.querySelector('.inline-annotation-editor')).toBe(editor);
+    expect.soft(editor.isConnected).toBe(true);
+    expect.soft(editor.value).toBe('kommentar');
+    expect.soft(document.activeElement).toBe(editor);
+    expect.soft([editor.selectionStart, editor.selectionEnd]).toEqual([9, 9]);
+    expect.soft(instances.at(-1).options.getAnnotationsData()[0]?.[0]?.content).toBe('kommentar');
+    expect(document.querySelector('.alert-danger')?.textContent).toContain('Create refused');
+    expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
+  });
 
   it('own POST followed by the 10 s version poll never reloads/deletes the new comment', async () => {
     const editor = await create();

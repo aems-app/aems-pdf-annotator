@@ -2128,8 +2128,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 return;
             }
             var openContent = listEl.querySelector('.annotation-content.editing');
-            if (openContent && openContent.dataset.annotationId === _getEditingAnnotationId()
-                && openContent.querySelector('textarea')) return;
+            var preservedRow = openContent && openContent.dataset.annotationId === _getEditingAnnotationId()
+                && openContent.querySelector('textarea') ? openContent.closest('.list-group-item') : null;
 
             var annotationsData = _getAnnotationsData() || {};
             var allAnnotations = [];
@@ -2157,7 +2157,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     var shouldDisplay = SidebarPanelModule.shouldDisplayAnnotation
                         ? SidebarPanelModule.shouldDisplayAnnotation(ann, isVisible)
                         : (isVisible && !isPlaceholderContent(ann.content || ''));
-                    if (!shouldDisplay) {
+                    var isEditing = preservedRow && _h.findAnnotationEntry
+                        && Number(preservedRow.dataset.annotationPage) === pageIdx
+                        && _h.findAnnotationEntry(pageIdx, preservedRow.dataset.annotationIdentifier) === ann;
+                    if (!shouldDisplay && !isEditing) {
                         return;
                     }
 
@@ -2194,7 +2197,34 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
 
             var newHtml = _renderSidebarHtml(allAnnotations);
-            if (listEl.innerHTML !== newHtml) {
+            if (preservedRow) {
+                // Refresh saved cards without detaching the other comment's live
+                // editor: detachment would lose focus, selection and its draft.
+                var template = document.createElement('template');
+                template.innerHTML = newHtml;
+                var cursor = listEl.firstChild;
+                Array.from(template.content.children).forEach(function (next) {
+                    if (next.dataset.annotationId === preservedRow.dataset.annotationId) {
+                        while (cursor && cursor !== preservedRow) {
+                            var obsolete = cursor;
+                            cursor = cursor.nextSibling;
+                            obsolete.remove();
+                        }
+                        cursor = preservedRow.nextSibling;
+                    } else if (cursor && cursor !== preservedRow) {
+                        var following = cursor.nextSibling;
+                        cursor.replaceWith(next);
+                        cursor = following;
+                    } else {
+                        listEl.insertBefore(next, cursor);
+                    }
+                });
+                while (cursor) {
+                    var trailing = cursor;
+                    cursor = cursor.nextSibling;
+                    trailing.remove();
+                }
+            } else if (listEl.innerHTML !== newHtml) {
                 listEl.innerHTML = newHtml;
             }
 
@@ -2591,12 +2621,13 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         ? _h.resolveAnnotationIdentifierValue(optimisticAnnotation)
                         : null;
                     var draftContent = null;
-                    var inlineDraftTextarea = document.querySelector('.annotation-label.label-editing .inline-annotation-editor');
+                    var existingMarker = _findMarkerForIdentifiers(targetPage, [tempStableId, tempXref, previousIdentifier]);
+                    var inlineDraftTextarea = existingMarker && existingMarker.querySelector('.inline-annotation-editor');
+                    var sidebarDraftTextarea = document.getElementById('edit-annotation-text-' + previousIdentifier);
                     if (inlineDraftTextarea) {
                         draftContent = inlineDraftTextarea.value;
                     }
                     if (draftContent === null || draftContent === undefined) {
-                        var sidebarDraftTextarea = document.querySelector('.auto-resize-textarea[id^="edit-annotation-text-"]');
                         if (sidebarDraftTextarea) {
                             draftContent = sidebarDraftTextarea.value;
                         }
@@ -2604,11 +2635,6 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     var updatedAnnotation = _h.enhanceAnnotationEntry
                         ? _h.enhanceAnnotationEntry(data.annotation)
                         : data.annotation;
-                    var existingMarker = _findMarkerForIdentifiers(targetPage, [
-                        tempStableId,
-                        tempXref,
-                        previousIdentifier,
-                    ]);
                     Object.assign(optimisticAnnotation, updatedAnnotation);
                     if (draftContent !== null && draftContent !== undefined) {
                         optimisticAnnotation.content = draftContent;
@@ -2665,97 +2691,37 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         annotationId: restoreIdentifier,
                         xref: optimisticAnnotation.xref,
                     }, { epoch: requestEpoch });
-                    var existingLabel = _applyAnnotationIdentityToMarker(existingMarker, targetPage, optimisticAnnotation);
-                    // The save captured its draft before awaiting this POST. Keep
-                    // its editor until it finishes instead of opening a new one.
-                    if (optimisticAnnotation._savingContent) return;
-                    var keepInlineEditor = !!(
-                        existingLabel &&
-                        existingLabel.classList.contains('label-editing') &&
-                        _h.expandInlineLabelEdit
-                    );
-
-                    if (keepInlineEditor) {
-                        var preservedOriginalFullText = existingLabel.dataset.originalFullText
-                            || existingLabel.dataset.fullText
-                            || 'New comment...';
-                        existingLabel.dataset.fullText = preservedOriginalFullText;
-                        _h.expandInlineLabelEdit(existingLabel);
-                        if (existingLabel.dataset.originalFullText !== preservedOriginalFullText) {
-                            existingLabel.dataset.originalFullText = preservedOriginalFullText;
-                        }
-                        _renderAfterMutation({ renderOverlays: false });
-                        if (draftContent !== null && draftContent !== undefined) {
-                            setTimeout(function () {
-                                if (!_isCurrentEpoch(requestEpoch)) return;
-                                var restoredSidebarTextarea = document.getElementById('edit-annotation-text-' + restoreIdentifier)
-                                    || document.querySelector('.auto-resize-textarea[id^="edit-annotation-text-"]');
-                                if (restoredSidebarTextarea) {
-                                    restoredSidebarTextarea.value = draftContent;
-                                    if (_h.setupTextareaAutoResize) {
-                                        _h.setupTextareaAutoResize(restoredSidebarTextarea);
-                                    }
-                                }
-                                var restoredInlineTextarea = existingLabel.querySelector('.inline-annotation-editor')
-                                    || document.querySelector('.annotation-label.label-editing .inline-annotation-editor');
-                                if (restoredInlineTextarea) {
-                                    restoredInlineTextarea.value = draftContent;
-                                    _focusElementWithoutScroll(restoredInlineTextarea);
-                                }
-                            }, 50);
-                        }
-                    } else {
-                        _renderAfterMutation();
-                        setTimeout(function () {
-                            if (!_isCurrentEpoch(requestEpoch)) return;
-                            if (!restoreIdentifier) {
-                                return;
+                    _applyAnnotationIdentityToMarker(existingMarker, targetPage, optimisticAnnotation);
+                    // Remap the sidebar in place too. The live textareas and their
+                    // selection survive; subsequent input resolves the new identity.
+                    var sidebarRow = sidebarDraftTextarea && sidebarDraftTextarea.closest('.list-group-item');
+                    if (sidebarRow) {
+                        [sidebarRow].concat(Array.from(sidebarRow.querySelectorAll('*'))).forEach(function (element) {
+                            if (element.hasAttribute('data-annotation-id')) {
+                                element.dataset.annotationId = 'ann-' + targetPage + '-' + restoreIdentifier;
                             }
-                            beginEdit(
-                                targetPage,
-                                restoreIdentifier,
-                                'ann-' + targetPage + '-' + restoreIdentifier
-                            );
-                            if (draftContent === null || draftContent === undefined) {
-                                return;
+                            ['annotationIdentifier', 'annotationRequestId', 'annotationStableId'].forEach(function (key) {
+                                if (element.dataset[key] !== undefined) element.dataset[key] = restoreIdentifier;
+                            });
+                            if (element.dataset.annotationXref !== undefined) {
+                                element.dataset.annotationXref = String(optimisticAnnotation.xref);
                             }
-                            setTimeout(function () {
-                                if (!_isCurrentEpoch(requestEpoch)) return;
-                                var restoredSidebarTextarea = document.getElementById('edit-annotation-text-' + restoreIdentifier)
-                                    || document.querySelector('.auto-resize-textarea[id^="edit-annotation-text-"]');
-                                if (restoredSidebarTextarea) {
-                                    restoredSidebarTextarea.value = draftContent;
-                                    if (_h.setupTextareaAutoResize) {
-                                        _h.setupTextareaAutoResize(restoredSidebarTextarea);
-                                    }
-                                }
-                                var restoredInlineTextarea = document.querySelector('.annotation-label.label-editing .inline-annotation-editor');
-                                if (restoredInlineTextarea) {
-                                    restoredInlineTextarea.value = draftContent;
-                                }
-                            }, 50);
-                        }, 0);
+                        });
+                        sidebarDraftTextarea.id = 'edit-annotation-text-' + restoreIdentifier;
                     }
+                    _renderAfterMutation({ renderOverlays: false });
                 } catch (error) {
                     if (_ignoreMutationFailure(error, requestEpoch)) return;
                     if (error && error.name === 'AbortError') {
                         return;
                     }
-                    var removalIdx = _h.findAnnotationIndex ? _h.findAnnotationIndex(targetPage, tempXref) : -1;
-                    if (removalIdx >= 0 && _getAnnotationsData()[targetPage]) {
-                        _getAnnotationsData()[targetPage].splice(removalIdx, 1);
-                    }
-                    var failedMarkerKey = _buildVisibilityKey(targetPage, {
-                        xref: tempXref,
-                        identifier: tempStableId,
-                    });
-                    if (failedMarkerKey) {
-                        _visibleMarkers.delete(failedMarkerKey);
-                    }
-                    if (_getEditingAnnotationId() === 'ann-' + targetPage + '-' + identifier) {
-                        _setEditingId(null);
-                    }
-                    _renderAfterMutation();
+                    // Keep the failed local draft and its live editor for the teacher.
+                    // No server identity exists yet, so writes remain blocked by the
+                    // shared mutation boundary until creation has succeeded.
+                    var failedMarker = _findMarkerForIdentifiers(targetPage, [tempStableId, tempXref, identifier]);
+                    var failedEditor = failedMarker && failedMarker.querySelector('.inline-annotation-editor');
+                    failedEditor = failedEditor || document.getElementById('edit-annotation-text-' + identifier);
+                    if (failedEditor) optimisticAnnotation.content = failedEditor.value;
                     if (_h.showToast) {
                         _h.showToast('error', error.message || t('Failed to create annotation.'));
                     }
