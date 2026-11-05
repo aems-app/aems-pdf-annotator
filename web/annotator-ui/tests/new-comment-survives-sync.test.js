@@ -16,6 +16,7 @@ describe('new comment survives production polling and relayout', () => {
   let version;
   let sync;
   let renderer;
+  let syncState;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -71,7 +72,7 @@ describe('new comment survives production polling and relayout', () => {
     vi.spyOn(window.PdfPreviewModalOverlayRenderer, 'createOverlayRenderer').mockImplementation(options => (renderer = renderFactory(options)));
     await import('../src/pdf-preview-modal/version-sync.js');
     const syncFactory = window.PdfPreviewModalVersionSync.createVersionSync;
-    vi.spyOn(window.PdfPreviewModalVersionSync, 'createVersionSync').mockImplementation((state, options) => (sync = syncFactory(state, options)));
+    vi.spyOn(window.PdfPreviewModalVersionSync, 'createVersionSync').mockImplementation((state, options) => { syncState = state; return (sync = syncFactory(state, options)); });
     await import('../src/pdf-preview-modal/annotation-controller.js');
     const factory = window.PdfPreviewModalAnnotationController.createAnnotationController;
     vi.spyOn(window.PdfPreviewModalAnnotationController, 'createAnnotationController').mockImplementation((options) => {
@@ -176,6 +177,9 @@ describe('new comment survives production polling and relayout', () => {
     expect.soft(adapter.listAnnotations).toHaveBeenCalledTimes(reloads);
     expect.soft(document.querySelector('.inline-annotation-editor')).toBe(editor);
     await save(editor);
+    await vi.advanceTimersByTimeAsync(21000);
+    expect(syncState.versionToken).toBe(String(version));
+    expect(adapter.listAnnotations).toHaveBeenCalledTimes(reloads);
   });
 
   it('defers a genuine external change beyond the drawing timeout and applies it after save', async () => {
@@ -210,6 +214,79 @@ describe('new comment survives production polling and relayout', () => {
     expect(document.activeElement).toBe(editor);
     expect(editor.selectionStart).toBe(2);
     expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
+  });
+
+  it('own explicit cancellation deletes once and adopts its version without a list reload', async () => {
+    await create();
+    const reloads = adapter.listAnnotations.mock.calls.length;
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await vi.advanceTimersByTimeAsync(21000);
+    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false });
+    expect(stored.has('created-1')).toBe(false);
+    expect(syncState.versionToken).toBe(String(version));
+    expect(adapter.listAnnotations).toHaveBeenCalledTimes(reloads);
+  });
+
+  it('defers a reload response already in flight when an existing comment is opened', async () => {
+    const editor = await create();
+    await save(editor);
+    const { controller, options } = instances.at(-1);
+    let finishList;
+    adapter.listAnnotations.mockImplementationOnce(() => new Promise(resolve => { finishList = resolve; }));
+    const reload = controller.loadAnnotations();
+    await vi.advanceTimersByTimeAsync(0);
+    controller.beginEdit(0, 'created-1');
+    await vi.advanceTimersByTimeAsync(200);
+    const live = document.querySelector('.inline-annotation-editor');
+    live.focus();
+    live.value = 'Unsaved existing comment';
+    live.setSelectionRange(5, 5);
+    finishList({ success: true, annotations: { 0: [{ ...hostAnnotation, content: 'Stale snapshot' }] } });
+    await reload;
+    renderer.renderAnnotations(true);
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(document.querySelector('.inline-annotation-editor')).toBe(live);
+    expect(live.value).toBe('Unsaved existing comment');
+    expect(live.selectionStart).toBe(5);
+    expect(options.getAnnotationsData()[0][0].content).toBe('Check the units');
+    await save(live);
+    expect(options.getAnnotationsData()[0][0].content).toBe('Check the units');
+  });
+
+  it('keeps an existing sidebar editor, focus and caret across rendering and external polling', async () => {
+    await save(await create());
+    const { controller, options } = instances.at(-1);
+    controller.beginEdit(0, 'created-1');
+    await vi.advanceTimersByTimeAsync(200);
+    const editor = document.querySelector('#pdfGradedCommentsList textarea');
+    editor.focus();
+    editor.value = 'Sidebar draft';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    editor.setSelectionRange(4, 4);
+    const reloads = adapter.listAnnotations.mock.calls.length;
+    stored.set('external', { ...ai, id: 'external', stable_id: 'external', xref: 99, content: 'Other reviewer' });
+    version++;
+    controller.renderSidebar();
+    renderer.renderAnnotations(true);
+    await vi.advanceTimersByTimeAsync(25000);
+    expect(document.querySelector('#pdfGradedCommentsList textarea')).toBe(editor);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.selectionStart).toBe(4);
+    expect(editor.value).toBe('Sidebar draft');
+    expect(adapter.listAnnotations).toHaveBeenCalledTimes(reloads);
+    document.querySelector('.save-annotation-btn').click();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(stored.get('created-1').content).toBe('Sidebar draft');
+    expect(options.getAnnotationsData()[0].map(a => a.content)).toEqual(expect.arrayContaining(['Other reviewer', 'Sidebar draft']));
+  });
+
+  it('a focus loss with no explicit close never deletes an empty new comment', async () => {
+    const editor = await create();
+    editor.focus();
+    editor.blur();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
+    expect(document.querySelector('.inline-annotation-editor')).toBe(editor);
   });
 
   it('a list reload never garbage-collects another reviewer new empty comment', async () => {
