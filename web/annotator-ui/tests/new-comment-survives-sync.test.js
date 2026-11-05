@@ -517,10 +517,42 @@ describe('new comment survives production polling and relayout', () => {
     return { editor, button };
   }
 
-  it.each(['throw', 'response', 'empty response'])('a %s recreation failure retains the draft and permits another explicit POST', async failure => {
+  it.each(['annotationIdentifier', 'identifier'])('recovery reads and closes legacy editors using data-%s', async identityField => {
+    const editor = await create();
+    instances.at(-1).controller.renderList();
+    editor.value = 'Legacy editor draft';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    adapter.updateAnnotation.mockImplementationOnce(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      throw Object.assign(new Error('Annotation not found'), { status: 404 });
+    });
+    commitDraft('keyboard', editor);
+    await vi.advanceTimersByTimeAsync(0);
+    document.querySelectorAll('.annotation-marker, .list-group-item[data-annotation-page]').forEach(owner => {
+      owner.dataset[identityField] = 'created-1';
+      delete owner.dataset.annotationRequestId;
+      if (identityField === 'identifier') delete owner.dataset.annotationIdentifier;
+    });
+    await vi.advanceTimersByTimeAsync(600);
+    const button = document.querySelector('.recreate-annotation-btn');
+    expect(button).not.toBeNull();
+    expect(instances.at(-1).options.getAnnotationsData()[0][0].content).toBe('Legacy editor draft');
+    adapter.createAnnotation.mockResolvedValueOnce({ success: true, annotation: {
+      ...hostAnnotation, id: 'recovered-2', stable_id: 'recovered-2', content: editor.value,
+    } });
+    button.click();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(adapter.createAnnotation.mock.calls.at(-1)[2].content).toBe('Legacy editor draft');
+    expect(editor.isConnected).toBe(false);
+    expect(document.querySelector('.recreate-annotation-btn')).toBeNull();
+    expect(instances.at(-1).options.getAnnotationsData()[0][0].id).toBe('recovered-2');
+  });
+
+  it.each(['throw', 'response', 'empty response', 'opaque error'])('a %s recreation failure retains the draft and permits another explicit POST', async failure => {
     const { editor, button } = await missingDraft();
     adapter.createAnnotation.mockImplementationOnce(async () => {
       if (failure === 'throw') throw new TypeError('Failed to fetch');
+      if (failure === 'opaque error') throw {};
       if (failure === 'empty response') return undefined;
       return { success: false, error: 'Create refused' };
     });
@@ -577,6 +609,38 @@ describe('new comment survives production polling and relayout', () => {
     await vi.advanceTimersByTimeAsync(600);
     expect(adapter.createAnnotation).toHaveBeenCalledTimes(1);
     expect(button.isConnected).toBe(false);
+  });
+
+  it('closing while recreation resolves geometry prevents its POST', async () => {
+    const { button } = await missingDraft();
+    let finishGeometry;
+    window.__pdfGradedViewer.pdf.getPage.mockImplementationOnce(() => new Promise(resolve => { finishGeometry = resolve; }));
+    button.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(finishGeometry).toBeTypeOf('function');
+    releasePages();
+    modals.at(-1).destroy();
+    finishGeometry({ view: [0, 0, 600, 800] });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('.recreate-annotation-btn')).toBeNull();
+  });
+
+  it('an explicitly discarded draft cannot start a content save while its POST is pending', async () => {
+    await open(0);
+    document.querySelector('.pdf-annotation-overlay').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 200, clientY: 200 }));
+    await vi.advanceTimersByTimeAsync(60);
+    const { controller, options } = instances.at(-1);
+    const draft = options.getAnnotationsData()[0][0];
+    const closing = controller.closeEmptyNewDrafts();
+    const save = options.helpers.saveAnnotationContentRequest(draft.id, { content: 'Too late' }).catch(error => error);
+    await vi.advanceTimersByTimeAsync(700);
+    await closing;
+    expect(await save).toBeInstanceOf(Error);
+    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+    expect(adapter.createAnnotation).toHaveBeenCalledTimes(1);
+    expect(adapter.deleteAnnotation).toHaveBeenCalledTimes(1);
+    expect(stored.has('created-1')).toBe(false);
   });
 
   it.each(['resolve', 'reject'])('a recovery POST that %ss after document close never restores the old draft', async outcome => {
