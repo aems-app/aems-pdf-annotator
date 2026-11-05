@@ -6377,8 +6377,12 @@
         const canvasHeight = canvasRect.height || canvas.clientHeight;
         if (!canvasWidth || !canvasHeight) return;
 
-        const scaleX = canvasWidth / viewport.width;
-        const scaleY = canvasHeight / viewport.height;
+        const markerOverlay = marker.closest('.pdf-annotation-overlay');
+        const geometry = window.PdfPreviewModalOverlayRenderer?.getPageGeometry && markerOverlay
+            ? window.PdfPreviewModalOverlayRenderer.getPageGeometry(canvas, markerOverlay, viewport)
+            : { x: 0, y: 0, scaleX: canvasWidth / viewport.width, scaleY: canvasHeight / viewport.height };
+        const scaleX = geometry.scaleX;
+        const scaleY = geometry.scaleY;
 
         const rect = ann.rect;
         if (!Array.isArray(rect) || rect.length !== 4) return;
@@ -6401,8 +6405,8 @@
         const minY = Math.min(viewportRect[1], viewportRect[3]);
         const maxY = Math.max(viewportRect[1], viewportRect[3]);
 
-        marker.style.left = (minX * scaleX) + 'px';
-        marker.style.top = (minY * scaleY) + 'px';
+        marker.style.left = (geometry.x + minX * scaleX) + 'px';
+        marker.style.top = (geometry.y + minY * scaleY) + 'px';
         marker.style.width = Math.max((maxX - minX) * scaleX, MIN_SIZE) + 'px';
         marker.style.height = Math.max((maxY - minY) * scaleY, MIN_SIZE) + 'px';
 
@@ -8184,16 +8188,26 @@
 
         // Convert container (pixel) coordinates to viewport (PDF.js) coordinates
         // Use canvas dimensions to calculate scale
-        const scaleX = viewport.width / canvasRect.width;
-        const scaleY = viewport.height / canvasRect.height;
-        const viewportX0 = containerX0 * scaleX;
-        const viewportY0 = containerY0 * scaleY;
-        const viewportX1 = containerX1 * scaleX;
-        const viewportY1 = containerY1 * scaleY;
+        const pageGeometry = window.PdfPreviewModalOverlayRenderer?.getPageGeometry
+            ? window.PdfPreviewModalOverlayRenderer.getPageGeometry(canvas, overlay, viewport)
+            : { x: 0, y: 0, scaleX: canvasRect.width / viewport.width, scaleY: canvasRect.height / viewport.height };
+        if (isCrossPageMove) {
+            const layerRect = overlay.getBoundingClientRect();
+            const unitX = layerRect.width && overlay.clientWidth ? layerRect.width / overlay.clientWidth : 1;
+            const unitY = layerRect.height && overlay.clientHeight ? layerRect.height / overlay.clientHeight : 1;
+            containerX0 /= unitX;
+            containerY0 /= unitY;
+            containerX1 = containerX0 + marker.offsetWidth;
+            containerY1 = containerY0 + marker.offsetHeight;
+        }
+        const viewportX0 = (containerX0 - pageGeometry.x) / pageGeometry.scaleX;
+        const viewportY0 = (containerY0 - pageGeometry.y) / pageGeometry.scaleY;
+        const viewportX1 = (containerX1 - pageGeometry.x) / pageGeometry.scaleX;
+        const viewportY1 = (containerY1 - pageGeometry.y) / pageGeometry.scaleY;
 
         debugLog('[DEBUG] Viewport coordinates:', {
-            scaleX,
-            scaleY,
+            scaleX: 1 / pageGeometry.scaleX,
+            scaleY: 1 / pageGeometry.scaleY,
             viewportX0,
             viewportY0,
             viewportX1,
