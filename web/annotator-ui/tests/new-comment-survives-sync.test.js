@@ -17,6 +17,7 @@ describe('new comment survives production polling and relayout', () => {
   let sync;
   let renderer;
   let syncState;
+  let pageChanged;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -29,7 +30,7 @@ describe('new comment survives production polling and relayout', () => {
       if (key.startsWith('PdfPreviewModal') || key.startsWith('__pdf') || key === 'PDFViewer') delete window[key];
     }
     document.body.innerHTML = `
-      <div id="pdfPreviewModal"></div><div id="pdfPreviewStudent"></div>
+      <div id="pdfPreviewModal"><button id="pdfPreviewFullscreenToggle"></button><button data-bs-dismiss="modal"></button></div><div id="pdfPreviewStudent"></div>
       <div id="pdfOriginalPane"></div><div id="pdfGradedPane"></div>
       <button id="pdfOriginalTab"></button><button id="pdfGradedTab"></button>
       <div id="pdfGradedCommentsList"></div><div id="pdfGradedAICommentsList"></div>
@@ -39,7 +40,7 @@ describe('new comment survives production polling and relayout', () => {
     window.PdfPreviewModalViewer = {
       resolvePdfjsLib: () => ({}),
       PDFViewer: class {
-        onAnnotationsPageChange() {} onPageRendered() {} onSliderSync() {} onResizeComplete() {}
+        onAnnotationsPageChange(cb) { pageChanged = cb; } onPageRendered() {} onSliderSync() {} onResizeComplete() {}
       },
     };
     // Supply layout/visibility only; controllers, rendering, drag and host bridges are real.
@@ -225,6 +226,60 @@ describe('new comment survives production polling and relayout', () => {
     expect(stored.has('created-1')).toBe(false);
     expect(syncState.versionToken).toBe(String(version));
     expect(adapter.listAnnotations).toHaveBeenCalledTimes(reloads);
+  });
+
+  it.each(['cancel', 'escape', 'another comment', 'close icon', 'modal hide', 'booklet', 'page'])(
+    'explicit %s discards an empty new draft exactly once', async (action) => {
+      await create();
+      // Overlap close gestures with a slow DELETE, as blur/hide can follow Cancel.
+      adapter.deleteAnnotation.mockImplementation(async (_a, _s, id) => {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        stored.delete(id);
+        return { success: true };
+      });
+      if (action === 'cancel') {
+        document.querySelector('.cancel-edit-btn').click();
+        document.querySelector('.cancel-edit-btn')?.click();
+      } else if (action === 'escape') {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      } else if (action === 'another comment') {
+        instances.at(-1).controller.beginEdit(0, 'other');
+      } else if (action === 'close icon') {
+        document.querySelector('[data-bs-dismiss="modal"]').click();
+      } else if (action === 'modal hide') {
+        document.getElementById('pdfPreviewModal').dispatchEvent(new Event('hide.bs.modal'));
+      } else if (action === 'booklet') {
+        releasePages();
+        modals.at(-1).destroy();
+      } else {
+        pageChanged(1);
+      }
+      await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false });
+      expect(stored.has('created-1')).toBe(false);
+    },
+  );
+
+  it.each(['missing API', 'rejected API'])('fallback fullscreen round trip recomputes marker geometry (%s)', async (mode) => {
+    await open(0);
+    stored.set(ai.id, { ...ai });
+    await instances.at(-1).controller.loadAnnotations();
+    const modal = document.getElementById('pdfPreviewModal');
+    if (mode === 'rejected API') modal.requestFullscreen = vi.fn(async () => { throw new Error('denied'); });
+    const canvas = document.querySelector('.pdf-page-canvas');
+    window.__pdfGradedViewer.relayoutPagesForContainer = vi.fn(async () => {
+      canvas.style.top = modal.classList.contains('preview-fullscreen') ? '90px' : '0px';
+    });
+    const top = () => parseFloat(document.querySelector(markerSelector).style.top);
+    const initial = top();
+    document.getElementById('pdfPreviewFullscreenToggle').click();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(modal.classList.contains('preview-fullscreen')).toBe(true);
+    expect(top()).toBe(initial + 90);
+    document.getElementById('pdfPreviewFullscreenToggle').click();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(modal.classList.contains('preview-fullscreen')).toBe(false);
+    expect(top()).toBe(initial);
   });
 
   it('defers a reload response already in flight when an existing comment is opened', async () => {
