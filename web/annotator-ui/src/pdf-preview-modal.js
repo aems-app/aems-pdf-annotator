@@ -1591,6 +1591,7 @@
     function resolveAnnotationWriteIdentity(annotationId, epoch, retryCreate = false) {
         if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
         if (deletedAnnotationIdentities.has(String(annotationWriteIdentity(annotationId)))) throw CANCELED_ANNOTATION_WRITE;
+        if (missingAnnotationDrafts.has(String(annotationWriteIdentity(annotationId)))) throw CANCELED_ANNOTATION_WRITE;
         const local = Object.keys(annotationsData)
             .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
         if (local?._deleted || local?._discardOnClose && retryCreate) throw CANCELED_ANNOTATION_WRITE;
@@ -1681,7 +1682,18 @@
         const save = { content: body.content, promise };
         annotationContentSaves.set(key, save);
         try {
-            return await promise;
+            const data = await promise;
+            if (isMissingAnnotationFailure(data)) {
+                retainMissingAnnotationDraft(annotationId, body.content, epoch);
+                throw CANCELED_ANNOTATION_WRITE;
+            }
+            return data;
+        } catch (error) {
+            if (isMissingAnnotationFailure(error)) {
+                retainMissingAnnotationDraft(annotationId, body.content, epoch);
+                throw CANCELED_ANNOTATION_WRITE;
+            }
+            throw error;
         } finally {
             if (annotationContentSaves.get(key) === save) annotationContentSaves.delete(key);
         }
@@ -1689,6 +1701,59 @@
 
     function isAnnotationContentSaveInFlight(identifier) {
         return annotationContentSaves.has(`${currentHistoryEpoch()}:${annotationWriteIdentity(identifier)}`);
+    }
+
+    function annotationDraftContent(identifier, fallback) {
+        const editors = [...document.querySelectorAll('.inline-annotation-editor, .auto-resize-textarea')].filter((editor) => {
+            const owner = editor.closest('.annotation-marker, .list-group-item');
+            return owner && historyIdentityMatches({
+                identifier: owner.dataset.annotationRequestId || owner.dataset.annotationIdentifier || owner.dataset.identifier,
+                xref: owner.dataset.annotationXref,
+            }, { identifier });
+        });
+        return (editors.find((editor) => editor === document.activeElement) || editors[0])?.value ?? fallback;
+    }
+
+    function retainMissingAnnotationDraft(identifier, content, epoch) {
+        const key = String(identifier);
+        if (missingAnnotationDrafts.has(key)) return;
+        const local = Object.keys(annotationsData)
+            .map((pageIdx) => findAnnotationEntry(Number(pageIdx), identifier)).find(Boolean);
+        if (!local) return;
+        local.content = annotationDraftContent(identifier, content);
+        const recovery = { local, pending: false };
+        missingAnnotationDrafts.set(key, recovery);
+        recovery.toast = showToast('error', t('This comment was deleted. Your text is kept. You can re-create it as a new comment.'), {
+            label: t('Re-create comment'),
+            onClick: async (button) => {
+                if (!isCurrentHistoryEpoch(epoch) || recovery.pending || deletedAnnotationIdentities.has(key)) return;
+                recovery.pending = true;
+                button.disabled = true;
+                try {
+                    const draft = annotationDraftContent(identifier, local.content).trim();
+                    if (!draft) throw new Error(t('Comment cannot be empty.'));
+                    local.content = draft;
+                    const rect = await convertHighlightTopLeftRectToPdf(local.rect, local.page_index);
+                    if (!isCurrentHistoryEpoch(epoch) || deletedAnnotationIdentities.has(key)) return;
+                    const data = await createAnnotationRequest({
+                        content: draft, type: local.type || 'Text', page_index: local.page_index,
+                        rect, color: deriveAnnotationPriority(local), source: 'HUMAN',
+                    });
+                    if (!isCurrentHistoryEpoch(epoch) || deletedAnnotationIdentities.has(key)) return;
+                    if (!data?.success || !data.annotation) throw new Error(t('Failed to create annotation.'));
+                    invalidateDeletedAnnotation(identifier);
+                    remapAnnotationHistory(data.annotation, { identifier, xref: local.xref });
+                    removeAnnotationEntryLocal(local.page_index, identifier);
+                    upsertAnnotationEntryLocal(data.annotation, local.page_index);
+                    rerenderAnnotationPage(local.page_index);
+                } catch (error) {
+                    if (isCurrentHistoryEpoch(epoch)) showToast('error', error.message || t('Failed to create annotation.'));
+                } finally {
+                    recovery.pending = false;
+                    button.disabled = false;
+                }
+            },
+        });
     }
 
     // Without server revisions or before-images, overlapping writes cannot supply trustworthy undo snapshots.
@@ -1764,6 +1829,8 @@
     function invalidateDeletedAnnotation(annotationId) {
         const identity = annotationWriteIdentity(annotationId);
         deletedAnnotationIdentities.add(String(identity));
+        missingAnnotationDrafts.get(String(identity))?.toast?.remove();
+        missingAnnotationDrafts.delete(String(identity));
         const local = Object.keys(annotationsData)
             .map((pageIdx) => findAnnotationEntry(Number(pageIdx), identity)).find(Boolean);
         if (local) {
@@ -3638,6 +3705,7 @@
     const annotationContentSaves = new Map();
     const annotationIdentityAliases = new Map();
     const deletedAnnotationIdentities = new Set();
+    const missingAnnotationDrafts = new Map();
     // Numbers every new operation in the order it was recorded. A step that puts an operation back goes below
     // any operation numbered after it, and a step learns from it whether a new operation arrived meanwhile.
     let historySequence = 0;
@@ -3784,6 +3852,8 @@
         annotationContentSaves.clear();
         annotationIdentityAliases.clear();
         deletedAnnotationIdentities.clear();
+        missingAnnotationDrafts.forEach((recovery) => recovery.toast?.remove());
+        missingAnnotationDrafts.clear();
     }
 
     const HISTORY_IDENTITY_FIELDS = ['annotationId', 'identifier', 'requestId', 'requestIdentifier', 'stable_id', 'stableId', 'id'];
@@ -8614,7 +8684,7 @@
         }
     }
 
-    function showToast(type, message) {
+    function showToast(type, message, action) {
         // Simple toast notification - you can replace with your toast library
         const toast = document.createElement('div');
         toast.className = `alert alert-${type === 'error' ? 'danger' : type === 'success' ? 'success' : 'info'} alert-dismissible fade show position-fixed`;
@@ -8624,10 +8694,19 @@
             ${escapeHtml(message)}
             <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
         `;
+        if (action) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'btn btn-primary btn-sm recreate-annotation-btn';
+            button.textContent = action.label;
+            button.addEventListener('click', () => action.onClick(button));
+            toast.appendChild(button);
+        }
         document.body.appendChild(toast);
-        setTimeout(() => {
+        if (!action) setTimeout(() => {
             toast.remove();
         }, 3000);
+        return toast;
     }
 
     async function getPdfPageText(pageNum) {
