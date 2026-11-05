@@ -1581,16 +1581,19 @@
 
     // Every mutation (including inline edits, priority, delete and revert) crosses
     // this boundary. A temporary identity is only a local alias, never an API id.
-    function resolveAnnotationWriteIdentity(annotationId, epoch) {
+    function resolveAnnotationWriteIdentity(annotationId, epoch, retryCreate = false) {
         if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
         const local = Object.keys(annotationsData)
             .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
         if (local?._createPromise) {
-            return local._createPromise.then(() => resolveAnnotationWriteIdentity(annotationId, epoch));
+            return local._createPromise.then(() => resolveAnnotationWriteIdentity(annotationId, epoch, retryCreate));
+        }
+        if (retryCreate && local?._isOptimistic && local._retryCreate) {
+            return local._retryCreate().then(() => resolveAnnotationWriteIdentity(annotationId, epoch));
         }
         const identity = annotationWriteIdentity(annotationId);
         if (!identity || /(^|[|:])(tmp-|_tmp_)/.test(String(identity))) {
-            throw new Error('Comment creation has not completed. Please try again.');
+            throw new Error(t('Failed to create annotation.'));
         }
         return identity;
     }
@@ -1654,7 +1657,7 @@
     // actions join the same content; a later edit waits for the previous PUT.
     async function saveAnnotationContentRequest(annotationId, body) {
         const epoch = currentHistoryEpoch();
-        const resolved = resolveAnnotationWriteIdentity(annotationId, epoch);
+        const resolved = resolveAnnotationWriteIdentity(annotationId, epoch, true);
         annotationId = typeof resolved === 'string' ? resolved : await resolved;
         const key = `${epoch}:${annotationWriteIdentity(annotationId)}`;
         const previous = annotationContentSaves.get(key);
@@ -3131,6 +3134,8 @@
         if (identifier) {
             textarea.addEventListener('input', () => {
                 const identifier = currentIdentifier();
+                const draft = findAnnotationEntry(Number(marker.dataset.annotationPage || marker.dataset.pageIdx || 0), identifier);
+                if (draft?._isOptimistic) draft.content = textarea.value;
                 // SEC-FIX: Try multiple ID formats to handle escaped/unescaped identifiers
                 let sidebarTextarea = document.getElementById(`edit-annotation-text-${identifier}`);
 
@@ -3484,7 +3489,7 @@
         // Save to backend
 
         if (annotation?._savingContent) return;
-        if (annotation?._createPromise) annotation._savingContent = true;
+        if (annotation?._createPromise || annotation?._isOptimistic) annotation._savingContent = true;
         try {
             const apiIdentifier = buildApiAnnotationIdentifier({
                 identifier: identifier,
