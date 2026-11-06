@@ -30,6 +30,14 @@ from aems_pdf_annotator.models import (
 logger = logging.getLogger(__name__)
 
 
+class DuplicateAnnotationIdError(RuntimeError):
+    """Refuse to save ambiguous annotation identities without discarding comments."""
+
+    def __init__(self, stable_id: str) -> None:
+        self.stable_id = stable_id
+        super().__init__(f"Duplicate annotation stable ID: {stable_id!r}")
+
+
 # PDF annotation type names that should not be used as stable IDs
 ANNOTATION_TYPE_NAMES = {
     "Text",
@@ -374,6 +382,36 @@ def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
             metadata["original_source"] = token
 
     return metadata
+
+
+def _annotation_stable_id(
+    info: Dict[str, Any], subject_metadata: Dict[str, Any]
+) -> Optional[str]:
+    """Resolve the reader's stable identity, including legacy annotation fields."""
+    stable_id = subject_metadata.get("stable_id")
+    if not stable_id or is_annotation_type_name(stable_id):
+        stable_id = info.get("name") or info.get("id")
+    return stable_id
+
+
+def _validate_unique_annotation_ids(doc: Any) -> None:
+    """Walk the open document once; never parse a second PDF or drop a comment.
+
+    Reading info also flushes pending metadata before incremental saves, replacing
+    the save path's former info-only traversal. Annotation type names are icon
+    placeholders, not stable IDs.
+    """
+    seen: set[str] = set()
+    for page in doc:
+        for annot in page.annots():
+            info = annot.info or {}
+            metadata = _decode_subject_metadata(info.get("subject", ""))
+            stable_id = _annotation_stable_id(info, metadata)
+            if not stable_id or is_annotation_type_name(stable_id):
+                continue
+            if stable_id in seen:
+                raise DuplicateAnnotationIdError(stable_id)
+            seen.add(stable_id)
 
 
 def _encode_subject_metadata(
@@ -2186,6 +2224,11 @@ class PDFAnnotator:
 
         Returns:
             Path to the saved PDF
+
+        Raises:
+            DuplicateAnnotationIdError: Two annotations share a stable ID, even
+                across pages or AI/HUMAN sources. Neither the source nor an
+                existing output file is written; no comments are removed.
         """
         if not self.doc:
             raise RuntimeError("PDF document not opened")
@@ -2199,18 +2242,12 @@ class PDFAnnotator:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
+            _validate_unique_annotation_ids(self.doc)
             _scale_note_icons(self.doc)
             output_resolved = output_path.resolve()
             source_resolved = self.pdf_path.resolve()
             # Use incremental save if overwriting, or full save if new file
             if output_resolved == source_resolved:
-                # Touch annotation info dicts so PyMuPDF flushes pending
-                # metadata writes before the incremental save.
-                for page_num in range(self.doc.page_count):
-                    page = self.doc[page_num]
-                    for annot in page.annots():
-                        _ = annot.info
-
                 self.doc.save(
                     str(output_path),
                     incremental=True,
@@ -2258,13 +2295,9 @@ class PDFAnnotator:
                 color = _color_name_from_rgb(stroke)
 
                 subject_metadata = _decode_subject_metadata(info.get("subject", ""))
-                stable_id = subject_metadata.get("stable_id")
+                stable_id = _annotation_stable_id(info, subject_metadata)
 
                 grader_name = info.get("title")
-
-                # If no stable ID in subject, check for legacy ID storage
-                if not stable_id or is_annotation_type_name(stable_id):
-                    stable_id = info.get("name") or info.get("id")
 
                 # Combine xref and stable_id for maximum compatibility
                 xref = getattr(annot, "xref", None)

@@ -67,6 +67,23 @@ Coordinates are normalised (`0.0`–`1.0`) with `(0, 0)` at the **top-left** of 
 
 The LLM-output payload format follows a versioned contract. Current values are exported as `CURRENT_CONTRACT_VERSION` and `CURRENT_COORDINATE_SPACE`. `payload_to_annotations()` validates the incoming payload's contract version against `SUPPORTED_CONTRACT_VERSIONS` and raises `ContractValidationError` on a mismatch.
 
+## Save integrity
+
+`PDFAnnotator.save()` raises `DuplicateAnnotationIdError` (a `RuntimeError`,
+exported from `aems_pdf_annotator`) before writing if two annotations share a
+stable ID. The exception's `stable_id` identifies the collision. IDs are unique
+across the entire document, including AI and HUMAN annotations. The check reuses
+subject metadata decoding and the reader's legacy identity fields; the combined
+row `id` containing the xref is not the stable identity. Missing IDs and annotation
+type/icon placeholders are ignored.
+
+The guard scans the in-memory document once without reopening the PDF. On a
+collision the original and any existing output file stay byte-identical, no new
+output file is created, and all in-memory comments remain available for diagnosis.
+It deliberately fails instead of silently choosing a copy and losing feedback.
+Callers should handle the exception as a failed save. Direct writes through the
+underlying `annotator.doc` bypass this API guard.
+
 ## License
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE).
