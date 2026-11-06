@@ -13,7 +13,8 @@ All notable changes to `aems-pdf-annotator` are recorded here. Format follows [K
 
 - `PDFAnnotator.save()` refuses duplicate stable annotation IDs with the exported
   `DuplicateAnnotationIdError`, preserving stored PDF bytes and every comment.
-  The check shares subject decoding and legacy identity lookup with the reader.
+  The check reuses the reader's subject decoder and counts only explicit encoded
+  stable IDs, allowing legacy PDFs with shared placeholder or fallback identities.
 
 - Deleting a comment closes its editors and cancels later saves and create retries for its old identity. Undo explicitly recreates the comment before remapping history. A missing comment save retains the draft, reports the deletion once, and offers explicit recreation. Starting another box deletes the previous empty draft once, including when its create request is still pending.
 

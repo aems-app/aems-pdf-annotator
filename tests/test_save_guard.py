@@ -24,10 +24,6 @@ def pdf_path(tmp_path: Path) -> Path:
     [
         ("encoded", 0, "AI"),
         ("encoded", 1, "HUMAN"),
-        ("raw", 1, "AI"),
-        ("legacy_subject", 0, "HUMAN"),
-        ("legacy_id", 1, "AI"),
-        ("type_subject", 0, "AI"),
     ],
 )
 def test_duplicate_stable_ids_refuse_save_without_changing_disk(
@@ -120,3 +116,53 @@ def test_annotations_without_stable_ids_are_ignored(pdf_path: Path, subject: str
 
     with fitz.open(pdf_path) as reopened:
         assert sum(len(list(reopened[i].annots())) for i in range(2)) == 2
+
+
+@pytest.mark.parametrize("explicit_count,refused", [(0, False), (1, False), (2, True)])
+@pytest.mark.parametrize(
+    "subjects", [
+        ("AEMS|HUMAN|synthetic", "AEMS|AI|synthetic"),
+        ("AEMS", "AEMS"),
+        ("", "Text"),
+        ("AEMS#invalid", "AEMS#invalid"),
+        ("#QUk=", "#QUk="),
+    ],
+)
+def test_legacy_pdf_save_counts_only_explicit_subject_ids(
+    tmp_path: Path, subjects: tuple[str, str], explicit_count: int, refused: bool
+) -> None:
+    """Legacy placeholders must not block saves (AEMS phase-B5 booklet shape)."""
+    path = tmp_path / "legacy.pdf"
+    # phase_b4_support.booklet: four pages, notes on pages 0/3, legacy AI/HUMAN subjects.
+    with fitz.open() as doc:
+        for index in range(4):
+            page = doc.new_page(width=300, height=400)
+            if index in (0, 3):
+                annotation = page.add_text_annot((10, 10), "Synthetic annotation")
+                annotation.set_info(subject=subjects[index // 3])
+                annotation.update()
+                # Exercise the reader's legacy /NM fallback as well.
+                doc.xref_set_key(annotation.xref, "NM", "(AEMS)")
+        doc.save(path)
+
+    before = path.read_bytes()
+    with PDFAnnotator(path) as annotator:
+        for index in range(explicit_count):
+            page = annotator.doc[index]
+            annotation = page.add_text_annot((40, 40), "Explicit verdict")
+            annotation.set_info(subject=_encode_subject_metadata("AEMS", "AI"))
+            annotation.update()
+        if refused:
+            from aems_pdf_annotator import DuplicateAnnotationIdError
+
+            with pytest.raises(DuplicateAnnotationIdError) as error:
+                annotator.save()
+            assert error.value.stable_id == "AEMS"
+            assert path.read_bytes() == before
+        else:
+            assert annotator.save() == path
+
+    with fitz.open(path) as reopened:
+        assert sum(len(list(page.annots())) for page in reopened) == (
+            2 if refused else 2 + explicit_count
+        )

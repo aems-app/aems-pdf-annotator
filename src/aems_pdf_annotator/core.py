@@ -297,6 +297,7 @@ def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
     subject_text = str(subject_value or "").strip()
     metadata: Dict[str, Any] = {
         "stable_id": None,
+        "has_explicit_stable_id": False,
         "check_id": None,
         "source": None,
         "original_source": None,
@@ -333,6 +334,7 @@ def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
             decoded_payload = base64.b64decode(encoded_payload).decode("utf-8")
         except Exception:
             return metadata
+        metadata["has_explicit_stable_id"] = bool(stable_id)
 
     tokens = decoded_payload.split("|")
     if tokens:
@@ -398,15 +400,17 @@ def _validate_unique_annotation_ids(doc: Any) -> None:
     """Walk the open document once; never parse a second PDF or drop a comment.
 
     Reading info also flushes pending metadata before incremental saves, replacing
-    the save path's former info-only traversal. Annotation type names are icon
-    placeholders, not stable IDs.
+    the save path's former info-only traversal. Only IDs explicitly stored in encoded
+    subject metadata count; the reader's legacy fallback identities may be shared.
     """
     seen: set[str] = set()
     for page in doc:
         for annot in page.annots():
             info = annot.info or {}
             metadata = _decode_subject_metadata(info.get("subject", ""))
-            stable_id = _annotation_stable_id(info, metadata)
+            if not metadata["has_explicit_stable_id"]:
+                continue
+            stable_id = metadata["stable_id"]
             if not stable_id or is_annotation_type_name(stable_id):
                 continue
             if stable_id in seen:
