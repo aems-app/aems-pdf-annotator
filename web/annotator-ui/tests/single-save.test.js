@@ -66,12 +66,16 @@ describe('one save with a 300 ms PUT', () => {
   function edit(id = ids[0], text = 'Saved feedback') {
     label(id).dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, detail: 2 }));
     const editor = label(id).querySelector('textarea'); expect(editor).not.toBeNull();
+    type(editor, text);
+    return editor;
+  }
+  function type(editor, text) {
+    editor.focus();
     editor.select();
     for (const character of text) {
       editor.setRangeText(character, editor.selectionStart, editor.selectionEnd, 'end');
       editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: character }));
     }
-    return editor;
   }
   // jsdom click() omits the browser's mousedown -> focus/blur -> mouseup order.
   function click(target) {
@@ -172,6 +176,178 @@ describe('one save with a 300 ms PUT', () => {
     editor.dispatchEvent(new Event('input', { bubbles: true }));
     return editor;
   }
+  describe.each(['canvas', 'offline'])('newer pending text in %s', mode => {
+    beforeEach(() => sessionStorage.setItem('aems_assignment_mode', mode === 'offline' ? 'offline' : 'server'));
+    afterEach(() => sessionStorage.removeItem('aems_assignment_mode'));
+    function start(location) {
+      const editor = location === 'standalone sidebar' ? editSidebarOnly() : edit();
+      return location === 'inline' ? editor : sidebar(ids[0]);
+    }
+    function expectDraft(editor, text) {
+      expect(editor.isConnected).toBe(true);
+      expect(editor.value).toBe(text);
+      expect(sidebar(ids[0])?.value).toBe(text);
+      expect(document.activeElement).toBe(editor);
+      expect([editor.selectionStart, editor.selectionEnd]).toEqual([2, 5]);
+    }
+    it.each(['inline', 'sidebar', 'standalone sidebar'])('%s keeps unsaved typing and caret after the first acknowledgement', async location => {
+      const editor = start(location);
+      type(editor, 'First edit');
+      click(button(ids[0]));
+      type(editor, 'Latest edit');
+      editor.setSelectionRange(2, 5);
+      await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+      expect(adapter.updateAnnotation.mock.calls[0][4]).toEqual({ offline: mode === 'offline' });
+      expect(stored.get(ids[0]).content).toBe('First edit');
+      expectDraft(editor, 'Latest edit');
+      expect(options.getAnnotationsData()[0][0]._originalContent).toBe('First edit');
+      key(editor);
+      await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect(stored.get(ids[0]).content).toBe('Latest edit');
+      expect(sidebar(ids[0])).toBeNull();
+      expect(toasts).not.toHaveBeenCalled();
+    });
+    it.each(['inline', 'sidebar', 'standalone sidebar'])('%s coalesces repeated saves to the latest requested text', async location => {
+      const editor = start(location);
+      type(editor, 'First edit');
+      key(editor);
+      type(editor, 'Middle edit');
+      key(editor);
+      type(editor, 'Latest edit');
+      click(button(ids[0]));
+      key(editor);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect(adapter.updateAnnotation.mock.calls.map(call => call[3].content)).toEqual(['First edit', 'Latest edit']);
+      expect(editor.isConnected).toBe(true);
+      expect(editor.value).toBe('Latest edit');
+      await vi.advanceTimersByTimeAsync(500);
+      expect(stored.get(ids[0]).content).toBe('Latest edit');
+      expect(sidebar(ids[0])).toBeNull();
+      expect(toasts).not.toHaveBeenCalled();
+    });
+    it.each(['inline', 'sidebar', 'standalone sidebar'])('%s keeps typing that was never requested while a trailing save settles', async location => {
+      const editor = start(location);
+      type(editor, 'First edit');
+      key(editor);
+      type(editor, 'Queued edit');
+      key(editor);
+      type(editor, 'Unsaved latest edit');
+      editor.setSelectionRange(2, 5);
+      await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect(stored.get(ids[0]).content).toBe('Queued edit');
+      expectDraft(editor, 'Unsaved latest edit');
+      expect(toasts).not.toHaveBeenCalled();
+    });
+    it.each(['inline', 'sidebar', 'standalone sidebar'])('%s saves a return to the original text after an in-flight edit', async location => {
+      const editor = start(location);
+      type(editor, 'First edit');
+      key(editor);
+      type(editor, 'Original feedback-1');
+      key(editor);
+      await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect(stored.get(ids[0]).content).toBe('Original feedback-1');
+      expect(sidebar(ids[0])).toBeNull();
+    });
+    it('the shared request lane coalesces intermediate content and resolves joined callers with the latest acknowledgement', async () => {
+      const request = options.helpers.saveAnnotationContentRequest;
+      const results = Promise.all([
+        request(ids[0], { content: 'First edit' }),
+        request(ids[0], { content: 'Middle edit' }),
+        request(ids[0], { content: 'Latest edit' }),
+        request(ids[0], { content: 'Latest edit' }),
+      ]);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect((await results).map(result => result.annotation.content)).toEqual(['First edit', 'Latest edit', 'Latest edit', 'Latest edit']);
+      expect(stored.get(ids[0]).content).toBe('Latest edit');
+    });
+    it('returning to the in-flight text cancels an intermediate requested edit without another PUT', async () => {
+      const request = options.helpers.saveAnnotationContentRequest;
+      const results = Promise.all([
+        request(ids[0], { content: 'First edit' }),
+        request(ids[0], { content: 'Middle edit' }),
+        request(ids[0], { content: 'First edit' }),
+      ]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+      expect((await results).every(result => result.annotation.content === 'First edit')).toBe(true);
+      expect(stored.get(ids[0]).content).toBe('First edit');
+    });
+    it('content queued after the trailing PUT starts also coalesces to one latest request', async () => {
+      const request = options.helpers.saveAnnotationContentRequest;
+      const first = request(ids[0], { content: 'First edit' });
+      const second = request(ids[0], { content: 'Second edit' });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      const third = request(ids[0], { content: 'Third edit' });
+      const latest = request(ids[0], { content: 'Latest edit' });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(adapter.updateAnnotation.mock.calls.map(call => call[3].content)).toEqual(['First edit', 'Second edit', 'Latest edit']);
+      expect((await Promise.all([first, second, third, latest])).map(result => result.annotation.content)).toEqual(['First edit', 'Second edit', 'Latest edit', 'Latest edit']);
+    });
+    it('a standalone controller without the draft lookup helper also preserves newer text', async () => {
+      delete options.helpers.annotationDraftContent;
+      const editor = start('standalone sidebar');
+      type(editor, 'First edit');
+      click(button(ids[0]));
+      type(editor, 'Latest edit');
+      editor.setSelectionRange(2, 5);
+      await vi.advanceTimersByTimeAsync(800);
+      expectDraft(editor, 'Latest edit');
+      expect(stored.get(ids[0]).content).toBe('First edit');
+    });
+    it.each(['inline', 'standalone sidebar'])('%s keeps text the host did not acknowledge', async location => {
+      adapter.updateAnnotation.mockImplementationOnce(async (_a, _s, id) => {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const annotation = { ...stored.get(id), content: '' };
+        stored.set(id, annotation);
+        return { success: true, annotation };
+      });
+      const editor = start(location);
+      type(editor, 'Latest edit');
+      key(editor);
+      editor.setSelectionRange(2, 5);
+      await vi.advanceTimersByTimeAsync(800);
+      expectDraft(editor, 'Latest edit');
+      expect(options.getAnnotationsData()[0][0]._originalContent).toBe('');
+      key(editor);
+      await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect(stored.get(ids[0]).content).toBe('Latest edit');
+      expect(sidebar(ids[0])).toBeNull();
+    });
+    it.each(['inline', 'sidebar', 'standalone sidebar'])('%s retains the latest text when the trailing save fails and permits retry', async location => {
+      const update = adapter.updateAnnotation.getMockImplementation();
+      adapter.updateAnnotation.mockImplementationOnce(update).mockImplementationOnce(async () => {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        throw new Error('Trailing save refused');
+      });
+      const editor = start(location);
+      type(editor, 'First edit');
+      key(editor);
+      type(editor, 'Latest edit');
+      key(editor);
+      editor.setSelectionRange(2, 5);
+      await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect(stored.get(ids[0]).content).toBe('First edit');
+      expectDraft(editor, 'Latest edit');
+      expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Trailing save refused'));
+      expect(options.getAnnotationsData()[0][0]).toMatchObject({ content: 'First edit', _originalContent: 'First edit' });
+      key(editor);
+      await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(3);
+      expect(stored.get(ids[0]).content).toBe('Latest edit');
+      expect(sidebar(ids[0])).toBeNull();
+    });
+  });
   it.each(['button', 'keyboard', 'blur'])('standalone sidebar %s saves once and closes', async path => {
     const editor = editSidebarOnly();
     await vi.advanceTimersByTimeAsync(160);

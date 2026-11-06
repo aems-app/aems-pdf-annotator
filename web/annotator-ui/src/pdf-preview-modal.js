@@ -1673,10 +1673,20 @@
         const key = `${epoch}:${annotationWriteIdentity(annotationId)}`;
         const previous = annotationContentSaves.get(key);
         if (previous?.content === body.content) return previous.promise;
+        // Only the trailing request is replaceable. Its callers all receive the
+        // acknowledgement for the latest requested content, never an old draft.
+        if (previous && !previous.started) {
+            previous.body = body;
+            previous.content = body.content;
+            return previous.promise;
+        }
+        const save = { content: body.content, body, started: !previous, promise: null };
         const request = previous
-            ? previous.promise.catch(() => {}).then(() => {
+            ? previous.promise.catch(() => {}).then((data) => {
                 if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
-                return updateAnnotationRequest(annotationId, body);
+                save.started = true;
+                if (data?.success && data.annotation?.content === save.content) return data;
+                return updateAnnotationRequest(annotationId, save.body);
             })
             : updateAnnotationRequest(annotationId, body);
         // Store the handled outcome so joined inline/sidebar callers cannot
@@ -1688,13 +1698,13 @@
                 return data;
             } catch (error) {
                 if (isMissingAnnotationFailure(error)) {
-                    retainMissingAnnotationDraft(annotationId, body.content, epoch);
+                    retainMissingAnnotationDraft(annotationId, save.content, epoch);
                     throw CANCELED_ANNOTATION_WRITE;
                 }
                 throw error;
             }
         })();
-        const save = { content: body.content, promise };
+        save.promise = promise;
         annotationContentSaves.set(key, save);
         try {
             return await promise;
@@ -3526,7 +3536,6 @@
     // Save edits and collapse label
     async function saveAndCollapseInlineLabel(label, newContent, options = {}) {
         if (!label) return false;
-        if (label._savePromise) return label._savePromise;
         const promise = persistInlineLabel(label, newContent, options);
         label._savePromise = promise;
         try {
@@ -3561,7 +3570,7 @@
 
         const trimmedContent = (newContent || '').trim();
 
-        // Use originalFullText (stored when editing started) for comparison, NOT fullText (which may have been updated)
+        // Fall back to the text from when editing started if no persisted entry is available.
         const originalFullText = label.dataset.originalFullText || label.dataset.fullText || '';
 
         // Check if original was placeholder
@@ -3576,8 +3585,9 @@
 
         // If content is empty/unchanged AND temporary AND no other edits → DELETE
         const contentIsEmpty = trimmedContent === '';
-        const contentUnchanged = trimmedContent === originalFullText.trim() ||
-            (contentIsEmpty && originalIsPlaceholder);
+        const contentUnchanged = !label._savePromise && !isAnnotationContentSaveInFlight(identifier) &&
+            (trimmedContent === (annotation?._originalContent ?? originalFullText).trim() ||
+            (contentIsEmpty && originalIsPlaceholder));
 
         if (contentIsEmpty || contentUnchanged) {
             if (isTemporary && (contentIsEmpty || !hasEditedFlags)) {
@@ -3599,8 +3609,7 @@
 
         // Save to backend
 
-        if (annotation?._savingContent) return;
-        if (annotation?._createPromise || annotation?._isOptimistic) annotation._savingContent = true;
+        let savedContent;
         try {
             const apiIdentifier = buildApiAnnotationIdentifier({
                 identifier: identifier,
@@ -3611,6 +3620,7 @@
             const data = await saveAnnotationContentRequest(apiIdentifier, { content: trimmedContent });
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (!data?.success || !data.annotation) throw new Error(data?.error || t('Update failed'));
+            savedContent = data.annotation.content || '';
 
             if (data.success && data.annotation) {
                 // The undo entry's old text is read now, against the entry as it stands when the response arrives
@@ -3651,14 +3661,14 @@
                     }
                 }
                 // Keep compact and expanded label text in sync after save.
-                label.dataset.fullText = trimmedContent;
+                label.dataset.fullText = savedContent;
 
                 // An inline edit is undoable exactly like a sidebar edit (issue #462): the same 'edit' operation,
                 // which performUndo replays by restoring the previous content and, after an ownership transfer,
                 // the previous source. A save that persisted nothing new, such as the blur handler re-saving what
                 // the sidebar Save already stored, pushes no entry.
                 const oldContent = persistedBefore.trim();
-                if (oldContent !== trimmedContent) {
+                if (oldContent !== savedContent) {
                     // The old source is read from the same entry as the old text, as it stood when the response
                     // arrived: an overlapping first save may already have transferred ownership.
                     const oldSource = resolveAnnotationSource(current || {});
@@ -3670,7 +3680,7 @@
                         requestId: marker.dataset.annotationRequestId || null,
                         pageIdx,
                         oldContent,
-                        newContent: trimmedContent,
+                        newContent: savedContent,
                         oldSource,
                         newSource,
                         isOwnershipTransfer: oldSource === 'AI' && newSource === 'HUMAN',
@@ -3684,10 +3694,12 @@
             console.error('Error saving inline annotation:', error);
             showToast('error', error.message || t('Failed to save annotation. Please try again.'));
             return false;
-        } finally {
-            if (annotation && isCurrentHistoryEpoch(requestEpoch)) delete annotation._savingContent;
         }
 
+        // The response acknowledges its payload, not text typed since Save.
+        // Keep the live DOM (including focus/caret) until the latest draft is saved.
+        if (isAnnotationContentSaveInFlight(identifier) ||
+            annotationDraftContent(identifier, savedContent).trim() !== savedContent) return false;
         collapseInlineLabel(label);
         renderAnnotationsList(); // Update the right panel too
         return true;
@@ -10160,6 +10172,7 @@
                     updateAnnotationRequest: updateAnnotationRequest,
                     saveAnnotationContentRequest: saveAnnotationContentRequest,
                     isAnnotationContentSaveInFlight: isAnnotationContentSaveInFlight,
+                    annotationDraftContent: annotationDraftContent,
                     remapAnnotationIdentity: remapAnnotationIdentity,
                     deleteAnnotationRequest: deleteAnnotationRequest,
                     captureDraftDeleteRequest: captureDraftDeleteRequest,

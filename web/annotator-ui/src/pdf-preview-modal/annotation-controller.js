@@ -2763,9 +2763,6 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
 
             var currentEditingId = _getEditingAnnotationId();
-            if (_savingAnnotationId && _savingAnnotationId === currentEditingId) {
-                return Promise.resolve();
-            }
 
             var textarea = document.getElementById('edit-annotation-text-' + stableIdentifier);
             if (!textarea) {
@@ -2807,13 +2804,11 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var originalAnn = _h.findAnnotationEntry
                 ? _h.findAnnotationEntry(pageIdx, requestIdentifier || stableIdentifier)
                 : null;
-            if (originalAnn && originalAnn._savingContent) return;
             var originalContent = ((originalAnn && originalAnn.content) || '').trim();
             var originalSource = _h.resolveAnnotationSource ? _h.resolveAnnotationSource(originalAnn || {}) : 'HUMAN';
             var hasEditedFlags = originalAnn?._hasBeenEdited === true || originalAnn?._priorityChanged === true;
             var existingXref = originalAnn && originalAnn.xref ? String(originalAnn.xref) : null;
 
-            saveBtn.disabled = true;
             var spinner = saveBtn.querySelector('.spinner-border');
             var btnText = saveBtn.querySelector('.btn-text');
             if (spinner) {
@@ -2823,7 +2818,6 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 btnText.textContent = t('Saving...');
             }
             _savingAnnotationId = currentEditingId;
-            if (originalAnn && (originalAnn._createPromise || originalAnn._isOptimistic)) originalAnn._savingContent = true;
 
             try {
                 if (originalAnn && originalAnn._createPromise) {
@@ -2869,6 +2863,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 if (!data.success || !data.annotation) {
                     throw new Error((data && data.error) || t('Update failed'));
                 }
+                // A coalesced trailing save may acknowledge a newer request.
+                newContent = data.annotation.content || '';
 
                 // A failed draft may have been created by the shared content save.
                 stableIdentifier = _h.resolveAnnotationIdentifierValue
@@ -2920,12 +2916,16 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                 var editedMarker = _findMarkerForIdentifiers(pageIdx, [stableIdentifier, requestIdentifier, originalAnn && originalAnn._tempIdentifier]);
                 var editedLabel = editedMarker && editedMarker.querySelector('.annotation-label');
+                var liveContent = _h.annotationDraftContent
+                    ? _h.annotationDraftContent(stableIdentifier, textarea.value) : textarea.value;
+                var keepEditor = liveContent.trim() !== newContent ||
+                    (_h.isAnnotationContentSaveInFlight && _h.isAnnotationContentSaveInFlight(stableIdentifier));
                 if (editedLabel && _h.collapseInlineLabel) {
                     editedLabel.dataset.fullText = newContent;
-                    _h.collapseInlineLabel(editedLabel);
+                    if (!keepEditor) _h.collapseInlineLabel(editedLabel);
                 }
-                if (_getEditingAnnotationId() === currentEditingId ||
-                    _getEditingAnnotationId() === 'ann-' + pageIdx + '-' + stableIdentifier) _setEditingId(null);
+                if (!keepEditor && (_getEditingAnnotationId() === currentEditingId ||
+                    _getEditingAnnotationId() === 'ann-' + pageIdx + '-' + stableIdentifier)) _setEditingId(null);
                 markLocalChange();
                 _renderAfterMutation();
                 if (originalSource === 'AI' && data.annotation && data.annotation.source === 'HUMAN' && _h.showToast) {
@@ -2938,14 +2938,14 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 if (originalAnn && currentAnnotations[pageIdx]) {
                     var originalIdx = _h.findAnnotationIndex ? _h.findAnnotationIndex(pageIdx, requestIdentifier || stableIdentifier) : -1;
                     if (originalIdx >= 0) {
-                        currentAnnotations[pageIdx][originalIdx].content = originalContent;
+                        var retainedAnn = currentAnnotations[pageIdx][originalIdx];
+                        retainedAnn.content = retainedAnn._originalContent ?? originalContent;
                     }
                 }
                 if (_h.showToast) {
                     _h.showToast('error', error.message || t('Failed to save annotation. Please try again.'));
                 }
             } finally {
-                if (originalAnn && _isCurrentEpoch(requestEpoch)) delete originalAnn._savingContent;
                 if (_savingAnnotationId === currentEditingId) _savingAnnotationId = null;
                 if (_isCurrentEpoch(requestEpoch)) {
                     saveBtn.disabled = false;

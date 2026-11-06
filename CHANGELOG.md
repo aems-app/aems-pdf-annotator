@@ -11,6 +11,10 @@ All notable changes to `aems-pdf-annotator` are recorded here. Format follows [K
 
 ### Fixed
 
+- Saving a comment keeps newer typing in the editor until that text is acknowledged.
+  Repeated saves of identical text share one request; different pending edits coalesce
+  into one trailing save of the latest requested text in Canvas and offline review.
+
 - `PDFAnnotator.save()` refuses duplicate stable annotation IDs with the exported
   `DuplicateAnnotationIdError`, preserving stored PDF bytes and every comment.
   The check reuses the reader's subject decoder and counts only explicit encoded
