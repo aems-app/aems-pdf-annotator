@@ -28,7 +28,7 @@ from aems_pdf_annotator.contract import (
 # core and convenience are imported lazily to avoid hard PyMuPDF dep at import
 # time — import them explicitly when needed, or use the helpers below.
 try:
-    from aems_pdf_annotator.core import PDFAnnotator
+    from aems_pdf_annotator.core import PDFAnnotator, DuplicateAnnotationIdError
     from aems_pdf_annotator.convenience import apply_annotations, apply_annotation_batch
 
     _has_fitz = True
@@ -53,6 +53,7 @@ __all__ = [
     "validate_contract_version",
     "ContractValidationError",
     "PDFAnnotator",
+    "DuplicateAnnotationIdError",
     "apply_annotations",
     "apply_annotation_batch",
 ]

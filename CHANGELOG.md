@@ -11,6 +11,10 @@ All notable changes to `aems-pdf-annotator` are recorded here. Format follows [K
 
 ### Fixed
 
+- `PDFAnnotator.save()` refuses duplicate stable annotation IDs with the exported
+  `DuplicateAnnotationIdError`, preserving stored PDF bytes and every comment.
+  The check shares subject decoding and legacy identity lookup with the reader.
+
 - Deleting a comment closes its editors and cancels later saves and create retries for its old identity. Undo explicitly recreates the comment before remapping history. A missing comment save retains the draft, reports the deletion once, and offers explicit recreation. Starting another box deletes the previous empty draft once, including when its create request is still pending.
 
 - New comment drafts survive annotation version polling and layout updates. Own comment mutations update the active version tracker, external reloads wait until editing finishes, and loading annotations or losing focus no longer deletes empty comments. Sidebar rendering preserves the active textarea, draft, focus, and caret.
