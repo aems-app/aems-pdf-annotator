@@ -122,12 +122,8 @@ class TestFeedbackItemConversion:
         assert annot.comment == "Good work"
         assert annot.check_id == "Q1-01"
 
-    def test_fail_body_item_uses_help_icon(self):
-        # 2026-05-06 bench audit (Hadi SE1020-2025): every body annotation
-        # across all 8 PDFs shipped with `icon=Comment`, including FAIL
-        # bodies that carried clearly-negative comments ("Saknar
-        # kompatibilitet, grovt fel!"). Body items must mirror the verdict
-        # marker's gradient: PASS body == Comment, FAIL/UNCERTAIN body == Help.
+    def test_fail_body_item_uses_comment_icon(self) -> None:
+        # The owner reserves Help for UNCERTAIN; colour carries failure.
         item = {
             "check_id": "Q2-03",
             "page": 2,
@@ -142,7 +138,7 @@ class TestFeedbackItemConversion:
         )
         assert annot.kind == AnnotationType.TEXT
         assert annot.color == AnnotationColor.RED
-        assert annot.icon == "Help"
+        assert annot.icon == "Comment"
         assert annot.page_index == 1
 
     def test_uncertain_body_item_uses_help_icon(self):
@@ -196,7 +192,7 @@ class TestFeedbackItemConversion:
         assert annot.is_verdict is True
         assert annot.icon == "Star"
 
-    def test_verdict_fail_item_uses_help_icon(self):
+    def test_verdict_fail_item_uses_star_icon(self) -> None:
         item = {
             "check_id": "Q2_SUMMARY",
             "page": 2,
@@ -211,7 +207,7 @@ class TestFeedbackItemConversion:
             item, page_width=612, page_height=792
         )
         assert annot.kind == AnnotationType.TEXT
-        assert annot.icon == "Help"
+        assert annot.icon == "Star"
 
     def test_grader_name_passed_through(self):
         item = {
