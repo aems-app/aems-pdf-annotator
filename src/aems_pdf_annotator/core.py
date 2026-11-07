@@ -2391,21 +2391,15 @@ class PDFAnnotator:
                     annotation_data.get("check_id")
                 )
 
-                # Icon: from subject metadata, or derive from verdict/color.
+                # Icon: from subject metadata, or derive from task identity.
                 # Only derive for Text annotations (sticky notes), not
                 # drawings, underlines, or other manual markup types.
                 annot_icon = subject_metadata.get("icon")
                 if not annot_icon and annot_type_str == "Text":
                     check_id_val = annotation_data.get("check_id") or ""
                     is_summary = str(check_id_val).endswith("_SUMMARY")
-                    if is_summary:
-                        annot_icon = (
-                            "Help" if color == "red" else "Star"
-                        )
-                    elif annotation_data.get("is_verdict"):
-                        annot_icon = (
-                            "Help" if color == "red" else "Star"
-                        )
+                    if is_summary or annotation_data.get("is_verdict"):
+                        annot_icon = "Star"
                     else:
                         annot_icon = "Comment"
                 annotation_data["icon"] = annot_icon
