@@ -5923,7 +5923,7 @@
         }
         pendingAnnotationsListFrame = requestAnimationFrame(() => {
             pendingAnnotationsListFrame = null;
-            if (!_suppressSidebarRender) {
+            if (_currentAnnotationCtrl && !_suppressSidebarRender) {
                 renderAnnotationsList();
             }
         });
