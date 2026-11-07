@@ -542,7 +542,7 @@
     function buildDisplayOrderByPagePosition(pageAnnotations) {
         const ordered = (pageAnnotations || [])
             .filter((ann) => {
-                if (isMarkupAnnotation(ann)) {
+                if (isMarkupAnnotation(ann) && !String(ann.content || '').trim()) {
                     return false;
                 }
                 const isPlaceholder = isPlaceholderAnnotation(ann);
@@ -5807,6 +5807,7 @@
         if (TextboxModule) {
             TextboxModule.loadTextboxesFromAnnotations(projectTextboxAnnotationsForDom(), wrappers);
         }
+        if (_currentAnnotationCtrl) _scheduleAnnotationsListRender();
     }
 
     function removeAnnotationEntryLocal(pageIdx, identifier) {
@@ -10164,6 +10165,9 @@
                     buildDisplayOrderByPagePosition: buildDisplayOrderByPagePosition,
                     resolveDisplayOrderFromLookup: resolveDisplayOrderFromLookup,
                     compareAnnotationsByDocumentPosition: compareAnnotationsByDocumentPosition,
+                    getPageTextboxes: function (pageIdx) {
+                        return TextboxModule ? TextboxModule.getPageTextboxes(pageIdx) : [];
+                    },
                     normalizeAnnotationIdentifierValue: normalizeAnnotationIdentifierValue,
                     resolveAnnotationIdParts: resolveAnnotationIdParts,
                     buildApiAnnotationIdentifier: buildApiAnnotationIdentifier,

@@ -1287,6 +1287,18 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
             });
 
+            // Text boxes use their own DOM layer instead of annotation markers.
+            Object.keys(_getAnnotationsData() || {}).forEach(function (pageKey) {
+                var pageIdx = parseInt(pageKey, 10);
+                var entries = _h.getPageTextboxes ? _h.getPageTextboxes(pageIdx) : [];
+                entries.forEach(function (entry) {
+                    var key = _buildVisibilityKey(pageIdx, { identifier: entry.annotationId });
+                    if (key && _isMarkerVisibleInContainer(entry.element, containerRect)) {
+                        nextVisibleMarkers.add(key);
+                    }
+                });
+            });
+
             var hasChanges = nextVisibleMarkers.size !== _visibleMarkers.size;
             if (!hasChanges) {
                 nextVisibleMarkers.forEach(function (markerKey) {
@@ -2142,7 +2154,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     : {};
 
                 pageAnnotations.forEach(function (ann, idx) {
-                    if (isMarkupType(ann.type)) {
+                    if (ann.type === 'drawing') {
                         return;
                     }
 
