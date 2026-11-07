@@ -21,6 +21,7 @@ describe('own markup editing with real pointer and click sequences', () => {
   let tool;
   let controller;
   let annotations;
+  let modal;
   const annotation = {
     stable_id: 'own-text', page_index: 0, type: 'textbox',
     content: 'Check units', rect: [80, 100, 180, 128], color: 'amber',
@@ -36,6 +37,7 @@ describe('own markup editing with real pointer and click sequences', () => {
       </div>`, { url: 'http://localhost', runScripts: 'outside-only', pretendToBeVisual: true });
     w = dom.window;
     d = w.document;
+    w.bootstrap = { Modal: { getInstance: () => null } };
     // jsdom lacks the browser's contentEditable reflection and pointer capture.
     Object.defineProperty(w.HTMLElement.prototype, 'contentEditable', {
       get() { return this.getAttribute('contenteditable') || 'inherit'; },
@@ -83,7 +85,7 @@ describe('own markup editing with real pointer and click sequences', () => {
       createAnnotation: vi.fn(async () => ({ success: true })),
       deleteAnnotation: vi.fn(async () => ({ success: true })),
     };
-    w.PdfPreviewModal.createPdfPreviewModal({ assignmentId: 'a', submissionId: 's', modeAdapter: adapter });
+    modal = w.PdfPreviewModal.createPdfPreviewModal({ assignmentId: 'a', submissionId: 's', modeAdapter: adapter });
     const viewport = {
       width: 600, height: 800, scale: 1,
       convertToPdfPoint: (x, y) => [x, y], convertToViewportPoint: (x, y) => [x, y],
@@ -116,6 +118,20 @@ describe('own markup editing with real pointer and click sequences', () => {
   const settle = () => new Promise((resolve) => w.setTimeout(resolve, 80));
 
   const commentRows = () => Array.from(d.querySelectorAll('#pdfGradedCommentsList .list-group-item'));
+
+  it('140e: a queued comment-column refresh is harmless after the modal is destroyed', async () => {
+    await settle();
+    const frames = [];
+    w.requestAnimationFrame = callback => { frames.push(callback); return 1; };
+    helpers.refreshMarkupFromAnnotations();
+    expect(frames).toHaveLength(1);
+    modal.destroy();
+    const errors = [];
+    frames.forEach(callback => {
+      try { callback(); } catch (error) { errors.push(error.message); }
+    });
+    expect(errors).toEqual([]);
+  });
 
   it('140e: reloaded teacher text boxes appear with their author in the comment column', () => {
     const ann = annotations()[0][0];
