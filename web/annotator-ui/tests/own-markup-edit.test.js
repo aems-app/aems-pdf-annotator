@@ -19,6 +19,9 @@ describe('own markup editing with real pointer and click sequences', () => {
   let adapter;
   let helpers;
   let tool;
+  let controller;
+  let annotations;
+  let modal;
   const annotation = {
     stable_id: 'own-text', page_index: 0, type: 'textbox',
     content: 'Check units', rect: [80, 100, 180, 128], color: 'amber',
@@ -34,6 +37,7 @@ describe('own markup editing with real pointer and click sequences', () => {
       </div>`, { url: 'http://localhost', runScripts: 'outside-only', pretendToBeVisual: true });
     w = dom.window;
     d = w.document;
+    w.bootstrap = { Modal: { getInstance: () => null } };
     // jsdom lacks the browser's contentEditable reflection and pointer capture.
     Object.defineProperty(w.HTMLElement.prototype, 'contentEditable', {
       get() { return this.getAttribute('contenteditable') || 'inherit'; },
@@ -66,18 +70,22 @@ describe('own markup editing with real pointer and click sequences', () => {
     for (const name of ['utils', 'annotation-helpers', 'rendering', 'modal-state', 'annotation-controller', 'textbox', 'markup-selection']) {
       w.eval(source(`pdf-preview-modal/${name}.js`));
     }
-    w.eval(source('pdf-preview-modal.js'));
+    // Expose the existing history action without opening a PDF/network viewer.
+    w.eval(source('pdf-preview-modal.js').replace('window.PdfPreviewModal.__test = {',
+      'window.PdfPreviewModal.__test = { performUndo,'));
     const factory = w.PdfPreviewModalAnnotationController.createAnnotationController;
     w.PdfPreviewModalAnnotationController.createAnnotationController = (options) => {
+      annotations = options.getAnnotationsData;
       options.setAnnotationsData({ 0: [{ ...annotation }] });
-      return factory(options);
+      controller = factory(options);
+      return controller;
     };
     adapter = {
       updateAnnotation: vi.fn(async (_assignment, _submission, _id, body) => ({ success: true, annotation: { ...annotation, ...body } })),
       createAnnotation: vi.fn(async () => ({ success: true })),
       deleteAnnotation: vi.fn(async () => ({ success: true })),
     };
-    w.PdfPreviewModal.createPdfPreviewModal({ assignmentId: 'a', submissionId: 's', modeAdapter: adapter });
+    modal = w.PdfPreviewModal.createPdfPreviewModal({ assignmentId: 'a', submissionId: 's', modeAdapter: adapter });
     const viewport = {
       width: 600, height: 800, scale: 1,
       convertToPdfPoint: (x, y) => [x, y], convertToViewportPoint: (x, y) => [x, y],
@@ -108,6 +116,95 @@ describe('own markup editing with real pointer and click sequences', () => {
   }
 
   const settle = () => new Promise((resolve) => w.setTimeout(resolve, 80));
+
+  const commentRows = () => Array.from(d.querySelectorAll('#pdfGradedCommentsList .list-group-item'));
+
+  it('140e: a queued comment-column refresh is harmless after the modal is destroyed', async () => {
+    await settle();
+    const frames = [];
+    w.requestAnimationFrame = callback => { frames.push(callback); return 1; };
+    helpers.refreshMarkupFromAnnotations();
+    expect(frames).toHaveLength(1);
+    modal.destroy();
+    const errors = [];
+    frames.forEach(callback => {
+      try { callback(); } catch (error) { errors.push(error.message); }
+    });
+    expect(errors).toEqual([]);
+  });
+
+  it('140e: reloaded teacher text boxes appear with their author in the comment column', () => {
+    const ann = annotations()[0][0];
+    ann.source = 'HUMAN';
+    ann.author_name = 'Teacher Example';
+    controller.renderList();
+    expect(commentRows()).toHaveLength(1);
+    expect(commentRows()[0].textContent).toContain('Check units');
+    expect(commentRows()[0].dataset.annotationSource).toBe('HUMAN');
+    expect(commentRows()[0].querySelector('.source-human .bi-person-fill')).not.toBeNull();
+    expect(commentRows()[0].querySelector('.grader-name-badge').title).toBe('Teacher Example');
+  });
+
+  it('140e: a newly committed text box appears immediately and disappears when creation is undone', async () => {
+    adapter.createAnnotation.mockResolvedValue({ success: true, annotation: {
+      ...annotation, stable_id: 'new-box', content: 'New teacher comment', source: 'HUMAN',
+    } });
+    const entry = boxes.createTextbox(0, wrapper, 160, 180);
+    entry.contentElement.textContent = 'New teacher comment';
+    entry.contentElement.dispatchEvent(new w.InputEvent('input', { bubbles: true }));
+    entry.contentElement.dispatchEvent(new w.Event('blur')); 
+    await settle();
+    expect(commentRows().map(row => row.dataset.annotationStableId)).toContain('new-box');
+    await helpers.performUndo();
+    await settle();
+    expect(adapter.deleteAnnotation).toHaveBeenCalled();
+    expect(commentRows().map(row => row.dataset.annotationStableId)).not.toContain('new-box');
+  });
+
+  it('140e: text-box text edits and moves redraw the saved comment column', async () => {
+    controller.renderList();
+    const entry = boxes.getPageTextboxes(0)[0];
+    boxes.editTextbox(entry);
+    entry.contentElement.textContent = '<b>Teacher edit</b>';
+    entry.contentElement.dispatchEvent(new w.InputEvent('input', { bubbles: true }));
+    entry.contentElement.dispatchEvent(new w.Event('blur')); 
+    await settle();
+    expect(commentRows()).toHaveLength(1);
+    expect(commentRows()[0].querySelector('.annotation-content').textContent).toBe('<b>Teacher edit</b>');
+    expect(commentRows()[0].querySelector('b')).toBeNull();
+    selection.select('textbox', boxes.getPageTextboxes(0)[0], 0, wrapper);
+    const overlay = d.querySelector('.markup-selection-overlay');
+    pointer(overlay, 'pointerdown');
+    pointer(overlay, 'pointermove', 110, 130);
+    pointer(overlay, 'pointerup', 110, 130);
+    await settle();
+    expect(commentRows()).toHaveLength(1);
+    expect(annotations()[0][0].rect[0]).toBe(100);
+  });
+
+  it('140e: delete removes the teacher comment and undo restores it', async () => {
+    controller.renderList();
+    expect(commentRows()).toHaveLength(1);
+    selection.select('textbox', boxes.getPageTextboxes(0)[0], 0, wrapper);
+    selection.onDeleteRequested();
+    await settle();
+    expect(commentRows()).toHaveLength(0);
+    adapter.createAnnotation.mockResolvedValue({ success: true, annotation });
+    await helpers.performUndo();
+    await settle();
+    expect(commentRows()).toHaveLength(1);
+  });
+
+  it('140e: notes and text boxes share page/y order; empty ink and offscreen boxes stay out', () => {
+    const data = annotations();
+    data[0].push({ ...annotation, stable_id: 'earlier', content: 'Earlier', rect: [80, 20, 180, 48] });
+    data[0].push({ ...annotation, stable_id: 'empty', type: 'drawing', content: '' });
+    data[0].push({ ...annotation, stable_id: 'offscreen', rect: [80, 900, 180, 928] });
+    helpers.refreshMarkupFromAnnotations();
+    controller.renderList();
+    expect(commentRows().map(row => row.dataset.annotationStableId)).toEqual(['earlier', 'own-text']);
+    expect(commentRows().map(row => row.querySelector('.badge').textContent)).toEqual(['1.1', '1.2']);
+  });
 
   it('a stationary second click edits the selected box without a move save or lost focus', async () => {
     const entry = boxes.getPageTextboxes(0)[0];
