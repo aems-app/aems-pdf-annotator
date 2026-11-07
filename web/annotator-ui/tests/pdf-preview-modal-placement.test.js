@@ -1402,7 +1402,7 @@ describe('pdf-preview-modal placement helpers', () => {
     expect(label.dataset.position).toBe('bottom-right');
   });
 
-  it('excludes drawing and textbox markup from display numbering', async () => {
+  it('numbers text-bearing markup with comments and excludes empty drawings', async () => {
     window.PdfPreviewModalCrud = {
       isMarkupType: (type) => type === 'drawing' || type === 'textbox',
     };
@@ -1416,9 +1416,9 @@ describe('pdf-preview-modal placement helpers', () => {
     ]);
 
     expect(lookup.get('ann-1')).toBe(1);
-    expect(lookup.get('ann-2')).toBe(2);
+    expect(lookup.get('ann-2')).toBe(3);
     expect(lookup.has('draw-1')).toBe(false);
-    expect(lookup.has('box-1')).toBe(false);
+    expect(lookup.get('box-1')).toBe(2);
   });
 
   it('keeps bare numeric stable-only identifiers stable in the monolith fallback', async () => {
