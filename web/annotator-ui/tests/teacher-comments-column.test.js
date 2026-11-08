@@ -52,3 +52,27 @@ it.each([false, true])('retains teacher notes and text boxes after an authoritat
   expect(rows.every(row => row.querySelector('.source-human .bi-person-fill'))).toBe(true);
   controller.destroy();
 });
+
+// Luca 2026-11-08 (item b): a text box the teacher adds after the column was drawn must
+// show up on the next render, in the plain comment list and in the split review column.
+it.each([false, true])('lists a teacher text box added after the first render (split=%s)', async split => {
+  let data = { 0: [{ xref: 42, type: 'Text', content: 'Teacher note', source: 'HUMAN' }] };
+  let boxes = [];
+  const controller = window.PdfPreviewModalAnnotationController.createAnnotationController({
+    getAnnotationsData: () => data, setAnnotationsData: value => { data = value; },
+    getSplitPanelActive: () => split,
+    helpers: {
+      resolveAnnotationSource: ann => ann.source,
+      getPageTextboxes: () => boxes,
+    },
+  });
+  controller.renderList();
+  const contents = () => [...document.querySelectorAll('.list-group-item .annotation-content')]
+    .map(cell => cell.textContent);
+  expect(contents()).toEqual(['Teacher note']);
+  data = { 0: [...data[0], { stable_id: 'box', type: 'textbox', content: 'Added box', source: 'HUMAN' }] };
+  boxes = [{ annotationId: 'box', element: document.getElementById('box') }];
+  controller.renderList();
+  expect(contents().sort()).toEqual(['Added box', 'Teacher note']);
+  controller.destroy();
+});
