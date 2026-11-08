@@ -415,6 +415,16 @@ describe('one save with a 300 ms PUT', () => {
     expect(adapter.listAnnotations).toHaveBeenCalled();
     expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Concurrent annotation changes refreshed'));
   });
+  it('a failed own-overlap still refreshes ambiguous history without sending its queued write', async () => {
+    adapter.updateAnnotation.mockRejectedValueOnce(new Error('Connection lost'));
+    const request = options.helpers.updateAnnotationRequest;
+    const outcomes = Promise.allSettled([request(ids[0], { color: 'red' }), request(ids[0], { content: 'Queued' })]);
+    await vi.advanceTimersByTimeAsync(800);
+    expect((await outcomes).every(r => r.status === 'rejected')).toBe(true);
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    expect(adapter.listAnnotations).toHaveBeenCalled();
+    expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Concurrent annotation changes refreshed'));
+  });
   it('a genuine external version still reloads after a local save', async () => {
     await sync._checkVersion(); key(edit()); await saved(); await sync._checkVersion();
     version = 'external-v2'; stored.get(ids[0]).content = 'Other reviewer'; await sync._checkVersion(); await vi.advanceTimersByTimeAsync(500);
@@ -456,13 +466,14 @@ describe('one save with a 300 ms PUT', () => {
       expect(toasts).not.toHaveBeenCalled();
     });
 
-    it('a write overlapping my own in-flight write to the comment names no stale etag', async () => {
+    it('an overlapping write waits and uses exactly the first response etag', async () => {
       const request = options.helpers.updateAnnotationRequest;
       const results = Promise.allSettled([request(ids[0], { color: 'red' }), request(ids[0], { content: 'Other edit' })]);
-      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
       expect(adapter.updateAnnotation.mock.calls[0][4]).toMatchObject({ ifMatch: 'e0-1' });
-      expect(adapter.updateAnnotation.mock.calls[1][4]).toEqual({ offline: false });
       await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect(adapter.updateAnnotation.mock.calls[1][4]).toMatchObject({ ifMatch: `e-${ids[0]}-2` });
       // Reconciled exactly as before this change: refresh from the server, one notice.
       expect((await results).every(r => r.status === 'rejected')).toBe(true);
       expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Concurrent annotation changes refreshed'));
@@ -500,14 +511,187 @@ describe('one save with a 300 ms PUT', () => {
       expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Someone else changed this comment'));
     });
 
-    it('a delete overlapping my own in-flight edit of the comment names no stale etag', async () => {
+    it('an overlapping delete waits and uses the first response etag', async () => {
       const edit = options.helpers.updateAnnotationRequest(ids[0], { color: 'red' });
       const removal = options.helpers.deleteAnnotationRequest(ids[0]);
-      expect(adapter.deleteAnnotation).toHaveBeenCalledTimes(1);
-      expect(adapter.deleteAnnotation.mock.calls[0][3]).toEqual({ offline: false });
+      const outcomes = Promise.allSettled([edit, removal]);
+      expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(800);
-      await Promise.allSettled([edit, removal]);
+      await outcomes;
+      expect(adapter.deleteAnnotation.mock.calls[0][3]).toMatchObject({ ifMatch: `e-${ids[0]}-2` });
       expect(toasts).not.toHaveBeenCalledWith('error', expect.stringContaining('Someone else changed'));
+    });
+
+    it.each(['content', 'delete'])('a priority conflict cancels queued %s and shows B text', async (operation) => {
+      const theirs = { ...stored.get(ids[0]), content: 'B newer text', etag: 'e-b' };
+      stored.set(ids[0], theirs);
+      adapter.updateAnnotation.mockImplementationOnce(async () => {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        throw conflict({ ...theirs });
+      });
+      const first = options.helpers.updateAnnotationRequest(ids[0], { color: 'red' });
+      const second = operation === 'delete'
+        ? options.helpers.deleteAnnotationRequest(ids[0])
+        : options.helpers.saveAnnotationContentRequest(ids[0], { content: 'A stale text' });
+      const outcomes = Promise.allSettled([first, second]);
+      await vi.advanceTimersByTimeAsync(1200);
+      expect((await outcomes).every(r => r.status === 'rejected')).toBe(true);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+      expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
+      expect(local(ids[0]).content).toBe('B newer text');
+      expect(stored.get(ids[0]).content).toBe('B newer text');
+      expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Someone else changed this comment'));
+      expect(toasts).not.toHaveBeenCalledWith('error', expect.stringContaining('Concurrent annotation changes refreshed'));
+    });
+
+    it('a conflict cancels the separately queued trailing content save too', async () => {
+      const theirs = { ...stored.get(ids[0]), content: 'B newer text', etag: 'e-b' };
+      adapter.updateAnnotation.mockImplementationOnce(async () => {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        stored.set(ids[0], theirs);
+        throw conflict({ ...theirs });
+      });
+      const request = options.helpers.saveAnnotationContentRequest;
+      const outcomes = Promise.allSettled([request(ids[0], { content: 'First stale' }), request(ids[0], { content: 'Second stale' })]);
+      await vi.advanceTimersByTimeAsync(1200);
+      expect((await outcomes).every(r => r.status === 'rejected')).toBe(true);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+      expect(stored.get(ids[0]).content).toBe('B newer text');
+      const useMine = [...document.querySelectorAll('.alert button')].find(b => b.textContent === 'Use my text');
+      expect(useMine).toBeTruthy();
+      useMine.click();
+      await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.updateAnnotation.mock.calls.at(-1)[3]).toEqual({ content: 'Second stale' });
+      expect(adapter.updateAnnotation.mock.calls.at(-1)[4].ifMatch).toBe('e-b');
+      expect(stored.get(ids[0]).content).toBe('Second stale');
+    });
+
+    it('B writing between chained requests conflicts against the first response tag', async () => {
+      adapter.updateAnnotation.mockImplementation(async (_a, _s, id, body, options) => {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        if (options.ifMatch !== stored.get(id).etag) throw conflict({ ...stored.get(id) });
+        const annotation = { ...stored.get(id), ...body, etag: 'first-response' };
+        stored.set(id, { ...annotation, content: 'B between writes', etag: 'e-b' });
+        return { success: true, annotation };
+      });
+      const request = options.helpers.updateAnnotationRequest;
+      const outcomes = Promise.allSettled([request(ids[0], { color: 'red' }), request(ids[0], { content: 'A stale' })]);
+      await vi.advanceTimersByTimeAsync(299);
+      expect(adapter.listAnnotations).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(900);
+      expect((await outcomes).every(r => r.status === 'rejected')).toBe(true);
+      expect(adapter.updateAnnotation.mock.calls[1][4].ifMatch).toBe('first-response');
+      expect(stored.get(ids[0]).content).toBe('B between writes');
+      expect(local(ids[0]).content).toBe('B between writes');
+    });
+
+    it('a revert sends the displayed comment tag and shows the current text on conflict', async () => {
+      const theirs = { ...stored.get(ids[0]), content: 'B newer text', etag: 'e-b' };
+      adapter.revertAnnotationToAi = vi.fn(async () => { throw conflict(theirs); });
+      const result = await options.helpers.revertAnnotationToAiRequest(ids[0]).catch(e => e);
+      expect(result).toBeTruthy();
+      expect(adapter.revertAnnotationToAi.mock.calls[0][3]).toMatchObject({ ifMatch: 'e0-1' });
+      expect(local(ids[0]).content).toBe('B newer text');
+      expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Someone else changed this comment'));
+    });
+
+    it('an update waits for an in-flight revert and uses its response tag', async () => {
+      adapter.revertAnnotationToAi = vi.fn(async (_a, _s, id) => {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const annotation = { ...stored.get(id), content: 'AI snapshot', etag: 'reverted' };
+        stored.set(id, annotation);
+        return { success: true, annotation };
+      });
+      const outcomes = Promise.allSettled([
+        options.helpers.revertAnnotationToAiRequest(ids[0]),
+        options.helpers.updateAnnotationRequest(ids[0], { content: 'After revert' }),
+      ]);
+      expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1200);
+      await outcomes;
+      expect(adapter.updateAnnotation.mock.calls[0][4].ifMatch).toBe('reverted');
+      expect(stored.get(ids[0]).content).toBe('After revert');
+    });
+
+    it('a delete in flight cancels a later edit without sending it', async () => {
+      adapter.deleteAnnotation.mockImplementation(async (_a, _s, id) => {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        stored.delete(id);
+        return { success: true };
+      });
+      const outcomes = Promise.allSettled([
+        options.helpers.deleteAnnotationRequest(ids[0]),
+        options.helpers.updateAnnotationRequest(ids[0], { content: 'Too late' }),
+      ]);
+      expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(800);
+      const results = await outcomes;
+      expect(results.map(r => r.status)).toEqual(['fulfilled', 'rejected']);
+      expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+      expect(stored.has(ids[0])).toBe(false);
+    });
+
+    it('destroying the document cancels queued writes before they reach the host', async () => {
+      const request = options.helpers.updateAnnotationRequest;
+      const outcomes = Promise.allSettled([request(ids[0], { color: 'red' }), request(ids[0], { content: 'Queued' })]);
+      handle.destroy();
+      await vi.advanceTimersByTimeAsync(800);
+      expect((await outcomes).every(r => r.status === 'rejected')).toBe(true);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+      expect(stored.get(ids[0]).content).toBe(`Original ${ids[0]}`);
+    });
+
+    it('destroying the document also cancels the separate trailing content lane', async () => {
+      const request = options.helpers.saveAnnotationContentRequest;
+      const outcomes = Promise.allSettled([request(ids[0], { content: 'First' }), request(ids[0], { content: 'Queued' })]);
+      handle.destroy();
+      await vi.advanceTimersByTimeAsync(800);
+      expect((await outcomes).every(r => r.status === 'rejected')).toBe(true);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    });
+
+    it('a missing comment cancels the separate trailing content lane', async () => {
+      adapter.updateAnnotation.mockRejectedValueOnce(Object.assign(new Error('Deleted'), { status: 404 }));
+      const request = options.helpers.saveAnnotationContentRequest;
+      const outcomes = Promise.allSettled([request(ids[0], { content: 'First' }), request(ids[0], { content: 'Queued' })]);
+      await vi.advanceTimersByTimeAsync(800);
+      expect((await outcomes).every(r => r.status === 'rejected')).toBe(true);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    });
+
+    it('a trailing content save may retry after a non-conflict failure', async () => {
+      adapter.updateAnnotation.mockRejectedValueOnce(new Error('Connection lost'));
+      const request = options.helpers.saveAnnotationContentRequest;
+      const outcomes = Promise.allSettled([request(ids[0], { content: 'First' }), request(ids[0], { content: 'Queued' })]);
+      await vi.advanceTimersByTimeAsync(800);
+      expect((await outcomes).map(r => r.status)).toEqual(['rejected', 'fulfilled']);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect(stored.get(ids[0]).content).toBe('Queued');
+      expect(adapter.updateAnnotation.mock.calls[1][4].ifMatch).toBe('e0-1');
+    });
+
+    it('a non-conflict revert error is preserved and releases the comment queue', async () => {
+      const error = new Error('Locked');
+      adapter.revertAnnotationToAi = vi.fn().mockRejectedValueOnce(error);
+      await expect(options.helpers.revertAnnotationToAiRequest(ids[0])).rejects.toBe(error);
+      const save = options.helpers.updateAnnotationRequest(ids[0], { content: 'After error' });
+      await vi.advanceTimersByTimeAsync(800);
+      await save;
+      expect(stored.get(ids[0]).content).toBe('After error');
+      expect(toasts).not.toHaveBeenCalled();
+    });
+
+    it('the revert button conflict shows B text without a success toast or reload', async () => {
+      adapter.supportsRevertToAi = () => true;
+      adapter.revertAnnotationToAi = vi.fn(async () => {
+        throw conflict({ ...stored.get(ids[0]), content: 'B newer text', etag: 'e-b' });
+      });
+      await controller.revertAnnotationToAi(0, ids[0]);
+      expect(adapter.revertAnnotationToAi.mock.calls[0][3]).toMatchObject({ ifMatch: 'e0-1' });
+      expect(local(ids[0]).content).toBe('B newer text');
+      expect(toasts).toHaveBeenCalledTimes(1);
+      expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Someone else changed this comment'));
+      expect(adapter.listAnnotations).not.toHaveBeenCalled();
     });
 
     it('a comment without an etag (old server) sends no If-Match', async () => {

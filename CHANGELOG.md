@@ -11,6 +11,11 @@ All notable changes to `aems-pdf-annotator` are recorded here. Format follows [K
 
 ### Fixed
 
+- Overlapping writes to one comment wait for the preceding response and carry its
+  comment etag. A conflict cancels queued writes and shows the current comment;
+  successful own overlaps retain the history refresh. Revert to AI carries the
+  displayed comment's etag and uses the same conflict recovery.
+
 - Saving a comment keeps newer typing in the editor until that text is acknowledged.
   Repeated saves of identical text share one request; different pending edits coalesce
   into one trailing save of the latest requested text in Canvas and offline review.

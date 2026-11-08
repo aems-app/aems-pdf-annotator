@@ -372,8 +372,9 @@ describe('new comment survives production polling and relayout', () => {
     const { helpers } = instances.at(-1).options;
     const first = helpers.saveAnnotationContentRequest('created-1', { content: 'First' }).catch(error => error);
     const queued = helpers.saveAnnotationContentRequest('created-1', { content: 'Queued' }).catch(error => error);
-    await deleteCreated();
+    const deletion = deleteCreated();
     finishPut();
+    await deletion;
     await first;
     await vi.advanceTimersByTimeAsync(600);
     await queued;
@@ -392,8 +393,9 @@ describe('new comment survives production polling and relayout', () => {
     }));
     commitDraft('keyboard', editor);
     await vi.advanceTimersByTimeAsync(0);
-    await deleteCreated();
+    const deletion = deleteCreated();
     finishPut();
+    await deletion;
     await vi.advanceTimersByTimeAsync(600);
     expect(document.querySelector('.inline-annotation-editor')).toBeNull();
     expect(instances.at(-1).controller.getUndoStack().map(op => op.type)).not.toContain('edit');

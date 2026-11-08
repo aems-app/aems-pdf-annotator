@@ -2650,9 +2650,9 @@ describe('pdf-preview-modal placement helpers', () => {
       const before = structuredClone(h.getUndoStacks());
       const finish = pending(h.updateAnnotation);
       const first = h.options.helpers.updateAnnotationRequest('A', { content: 'overlap one' }).catch(() => {});
-      await h.options.helpers.updateAnnotationRequest('A', { content: 'overlap two' }).catch(() => {});
+      const second = h.options.helpers.updateAnnotationRequest('A', { content: 'overlap two' }).catch(() => {});
       finish({ success: true });
-      await first;
+      await Promise.all([first, second]);
 
       expect.soft(h.getUndoStacks()).toEqual({
         local: before.local.filter((op) => op.identifier === '42'),
@@ -2780,9 +2780,9 @@ describe('pdf-preview-modal placement helpers', () => {
       const before = h.getUndoStacks();
       const finish = pending(h.updateAnnotation);
       const first = h.options.helpers.updateAnnotationRequest('owned-comment', { content: 'overlap one' }).catch(() => {});
-      await h.options.helpers.updateAnnotationRequest('owned-comment', { content: 'overlap two' }).catch(() => {});
+      const second = h.options.helpers.updateAnnotationRequest('owned-comment', { content: 'overlap two' }).catch(() => {});
       finish({ success: true });
-      await first;
+      await Promise.all([first, second]);
       expect(h.getUndoStacks()).toEqual({
         local: before.local.filter((op) => op.identifier === 'B'),
         controller: before.controller.filter((op) => op.identifier === 'B'),
@@ -2811,6 +2811,7 @@ describe('pdf-preview-modal placement helpers', () => {
       const finishRefresh = pending(h.adapter.listAnnotations);
       const first = h.options.helpers.updateAnnotationRequest('owned-comment', { color: 'red' }).catch(() => {});
       const second = h.options.helpers.updateAnnotationRequest('owned-comment', { content: 'Changed' }).catch(() => {});
+      finishWrite({ success: true, annotation: original });
       await vi.waitFor(() => expect(h.adapter.listAnnotations).toHaveBeenCalledTimes(1));
       const obsoleteSnapshot = { success: true, annotations: { 0: [{ ...stored }] } };
       h.adapter.deleteAnnotation.mockImplementation(async () => { stored = null; return { success: true }; });
@@ -2821,8 +2822,7 @@ describe('pdf-preview-modal placement helpers', () => {
       await second;
       expect(stored).toBeNull();
       expect(entries(h)).toEqual([]);
-      // Also release the other overlapping write; it must not bring A back either.
-      finishWrite({ success: true, annotation: original });
+      // The other caller waiting on this refresh must not bring A back either.
       await first;
       expect(entries(h)).toEqual([]);
     });
@@ -2841,8 +2841,9 @@ describe('pdf-preview-modal placement helpers', () => {
       h.dispatchRedo(); // redoes the first edit
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(5));
 
-      await moveMarker(h); // lands while the redo request is still out
+      const move = moveMarker(h); // queues while the redo request is still out
       finishRedo({ success: true, annotation: { ...h.annotation, content: 'First edit' } });
+      await move;
       await settle();
 
       expect(stackTypes(h)).toEqual({ local: [], controller: [] });
@@ -2871,8 +2872,9 @@ describe('pdf-preview-modal placement helpers', () => {
       h.dispatchRedo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
 
-      await saveSidebarEdit(h, 'Third edit'); // lands while the redo request is still out
+      const edit = saveSidebarEdit(h, 'Third edit'); // queues while the redo request is still out
       finishRedo();
+      await edit;
       await settle();
 
       expect(server.stored.content).toBe('Third edit');
@@ -2906,8 +2908,9 @@ describe('pdf-preview-modal placement helpers', () => {
       h.dispatchUndo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
 
-      await moveMarker(h); // lands while the undo request is still out
+      const move = moveMarker(h); // queues while the undo request is still out
       finishUndo({ success: true, annotation: { ...h.annotation } });
+      await move;
       await settle();
 
       expect(stackTypes(h)).toEqual({ local: [], controller: [] });
@@ -2930,8 +2933,9 @@ describe('pdf-preview-modal placement helpers', () => {
       h.dispatchUndo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2));
 
-      await moveMarker(h);
+      const move = moveMarker(h);
       finishUndo({ success: false, error: 'locked' });
+      await move;
       await settle();
 
       expect(stackTypes(h)).toEqual({ local: [], controller: [] });
@@ -2950,8 +2954,9 @@ describe('pdf-preview-modal placement helpers', () => {
       h.dispatchRedo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(3));
 
-      await moveMarker(h);
+      const move = moveMarker(h);
       finishRedo({ success: false, error: 'locked' });
+      await move;
       await settle();
       const calls = h.updateAnnotation.mock.calls.length;
       h.dispatchRedo();

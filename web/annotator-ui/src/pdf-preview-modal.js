@@ -1586,6 +1586,21 @@
         }) : annotationId;
     }
 
+    function beginAnnotationWrite(key) {
+        let writes = annotationWrites.get(key);
+        if (!writes) {
+            writes = { pending: 0, version: 0, conflicted: false, requests: new Map() };
+            annotationWrites.set(key, writes);
+        }
+        writes.pending += 1;
+        return writes;
+    }
+
+    function finishAnnotationWrite(key, writes) {
+        writes.pending -= 1;
+        if (!writes.pending && annotationWrites.get(key) === writes) annotationWrites.delete(key);
+    }
+
     // Every mutation (including inline edits, priority, delete and revert) crosses
     // this boundary. A temporary identity is only a local alias, never an API id.
     function resolveAnnotationWriteIdentity(annotationId, epoch, retryCreate = false) {
@@ -1622,20 +1637,18 @@
         annotationId = typeof resolved === 'string' ? resolved : await resolved;
         const identity = annotationWriteIdentity(annotationId);
         const key = `${epoch}:${identity}`;
-        let writes = annotationWrites.get(key);
-        if (!writes) {
-            writes = { pending: 0, version: 0, conflicted: false, requests: new Map() };
-            annotationWrites.set(key, writes);
-        }
         const signature = Object.keys(body).length === 1 && typeof body.content === 'string' ? body.content : null;
-        if (signature !== null && writes.requests.has(signature)) return writes.requests.get(signature);
-        // A write overlapping this page's own in-flight write to the same comment cannot know
-        // the version that write will produce. It names none (the server accepts it, as from an
-        // old page) and the overlap refresh below reconciles both: never a self-conflict.
-        const overlapping = writes.pending > 0;
+        const existing = annotationWrites.get(key);
+        if (signature !== null && existing?.requests.has(signature)) return existing.requests.get(signature);
+        const writes = beginAnnotationWrite(key);
+        // Keep the #540 refresh for ambiguous history, but serialize the actual writes.
+        // A queued write must use its predecessor's response tag, never a refresh's tag.
+        const overlapping = writes.pending > 1;
         writes.conflicted ||= overlapping;
-        writes.pending += 1;
         writes.version += 1;
+        if (typeof body.content === 'string') writes.contentBody = body;
+        const mutation = chainAnnotationWrite(writes, identity, epoch, (options) =>
+            _requireAnnotationAdapter().updateAnnotation(currentAssignmentId, currentSubmissionId, annotationId, body, options));
         const request = performAnnotationUpdate();
         if (signature !== null) writes.requests.set(signature, request);
         return request;
@@ -1645,29 +1658,28 @@
                 let data;
                 let failure;
                 try {
-                    data = await _requireAnnotationAdapter().updateAnnotation(currentAssignmentId, currentSubmissionId, annotationId, body,
-                        annotationWriteOptions(identity, !overlapping));
+                    data = await mutation;
+                    // Finish the serialized batch before refreshing its final state.
+                    if (writes.conflicted) await waitForAnnotationWrites(writes);
                 } catch (error) {
                     failure = error;
                 }
                 if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
                 if (deletedAnnotationIdentities.has(String(identity))) throw CANCELED_ANNOTATION_WRITE;
                 writes.version += 1;
-                rememberAnnotationEtag(identity, data);
-                if (writes.conflicted) {
-                    await refreshConflictingAnnotation(identity, epoch, writes);
-                    throw CONCURRENT_ANNOTATION_WRITE;
-                }
                 if (isAnnotationConflict(failure)) {
-                    showAnnotationConflict(identity, failure, epoch, typeof body.content === 'string' ? body : null);
+                    refuseConflictingAnnotation(identity, failure, epoch, writes);
+                }
+                if (writes.conflicted) {
+                    writes.refresh ||= refreshConflictingAnnotation(identity, epoch, writes);
+                    await writes.refresh;
                     throw CONCURRENT_ANNOTATION_WRITE;
                 }
                 if (failure) throw failure;
                 return data;
             } finally {
-                writes.pending -= 1;
                 writes.requests.delete(signature);
-                if (!writes.pending) annotationWrites.delete(key);
+                finishAnnotationWrite(key, writes);
             }
         }
     }
@@ -1690,7 +1702,9 @@
         }
         const save = { content: body.content, body, started: !previous, promise: null };
         const request = previous
-            ? previous.promise.catch(() => {}).then((data) => {
+            ? previous.promise.catch((error) => {
+                if (error === CONCURRENT_ANNOTATION_WRITE || error === CANCELED_ANNOTATION_WRITE || error === STALE_HISTORY_STEP) throw error;
+            }).then((data) => {
                 if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
                 save.started = true;
                 if (data?.success && data.annotation?.content === save.content) return data;
@@ -1787,11 +1801,37 @@
 
     // The version of a comment this page last received from the host. Sent as If-Match so a
     // write based on an older copy is refused instead of replacing a colleague's newer text.
-    function annotationWriteOptions(annotationId, withEtag = true) {
+    function annotationWriteOptions(annotationId) {
         const options = { offline: _isOfflineMode() };
-        const etag = withEtag ? findLocalAnnotation(annotationId)?.etag : null;
+        const etag = findLocalAnnotation(annotationId)?.etag;
         if (etag) options.ifMatch = etag;
         return options;
+    }
+
+    function chainAnnotationWrite(writes, annotationId, epoch, send) {
+        const previous = writes.tail;
+        const options = annotationWriteOptions(annotationId);
+        const request = (async () => {
+            if (previous) {
+                const data = await previous; // A refusal cancels all queued writes.
+                if (data?.annotation?.etag) options.ifMatch = data.annotation.etag;
+            }
+            if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+            if (deletedAnnotationIdentities.has(String(annotationId))) throw CANCELED_ANNOTATION_WRITE;
+            const data = await send(options);
+            if (isCurrentHistoryEpoch(epoch)) rememberAnnotationEtag(annotationId, data);
+            return data;
+        })();
+        writes.tail = request;
+        return request;
+    }
+
+    async function waitForAnnotationWrites(writes) {
+        let tail;
+        do {
+            tail = writes.tail;
+            await tail;
+        } while (tail !== writes.tail);
     }
 
     function rememberAnnotationEtag(annotationId, data) {
@@ -1802,6 +1842,15 @@
 
     function isAnnotationConflict(error) {
         return Boolean(error && error.code === 'ANNOTATION_CONFLICT');
+    }
+
+    function refuseConflictingAnnotation(annotationId, error, epoch, writes) {
+        if (!writes.refused) {
+            writes.refused = true;
+            const latestSave = annotationContentSaves.get(`${epoch}:${annotationId}`);
+            showAnnotationConflict(annotationId, error, epoch, latestSave?.body || writes.contentBody || null);
+        }
+        throw CONCURRENT_ANNOTATION_WRITE;
     }
 
     // Someone else changed this comment after this page loaded it. Show their version (the
@@ -1914,18 +1963,17 @@
         annotationId = typeof resolved === 'string' ? resolved : await resolved;
         const key = `${epoch}:${annotationWriteIdentity(annotationId)}`;
         let data;
-        // Same rule as an overlapping update: this page's own in-flight write to the comment
-        // will change its version, so a delete racing it names none (never a self-conflict).
-        const overlapping = (annotationWrites.get(key)?.pending || 0) > 0;
+        const writes = beginAnnotationWrite(key);
         try {
-            data = await _requireAnnotationAdapter().deleteAnnotation(currentAssignmentId, currentSubmissionId, annotationId,
-                annotationWriteOptions(annotationId, !overlapping));
+            data = await chainAnnotationWrite(writes, annotationId, epoch, (options) =>
+                _requireAnnotationAdapter().deleteAnnotation(currentAssignmentId, currentSubmissionId, annotationId, options));
         } catch (error) {
             if (isCurrentHistoryEpoch(epoch) && isAnnotationConflict(error)) {
-                showAnnotationConflict(annotationId, error, epoch, null);
-                throw CONCURRENT_ANNOTATION_WRITE;
+                refuseConflictingAnnotation(annotationId, error, epoch, writes);
             }
             throw error;
+        } finally {
+            finishAnnotationWrite(key, writes);
         }
         if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
         if (data?.success) {
@@ -1998,7 +2046,19 @@
         if (typeof adapter.revertAnnotationToAi !== 'function') {
             throw new Error(t('Revert-to-AI is not supported by this host.'));
         }
-        return adapter.revertAnnotationToAi(currentAssignmentId, currentSubmissionId, annotationId);
+        const key = `${epoch}:${annotationWriteIdentity(annotationId)}`;
+        const writes = beginAnnotationWrite(key);
+        try {
+            return await chainAnnotationWrite(writes, annotationId, epoch, (options) =>
+                adapter.revertAnnotationToAi(currentAssignmentId, currentSubmissionId, annotationId, options));
+        } catch (error) {
+            if (isCurrentHistoryEpoch(epoch) && isAnnotationConflict(error)) {
+                refuseConflictingAnnotation(annotationId, error, epoch, writes);
+            }
+            throw error;
+        } finally {
+            finishAnnotationWrite(key, writes);
+        }
     }
 
     /**
