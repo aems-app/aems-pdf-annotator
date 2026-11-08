@@ -1629,7 +1629,11 @@
         }
         const signature = Object.keys(body).length === 1 && typeof body.content === 'string' ? body.content : null;
         if (signature !== null && writes.requests.has(signature)) return writes.requests.get(signature);
-        writes.conflicted ||= writes.pending > 0;
+        // A write overlapping this page's own in-flight write to the same comment cannot know
+        // the version that write will produce. It names none (the server accepts it, as from an
+        // old page) and the overlap refresh below reconciles both: never a self-conflict.
+        const overlapping = writes.pending > 0;
+        writes.conflicted ||= overlapping;
         writes.pending += 1;
         writes.version += 1;
         const request = performAnnotationUpdate();
@@ -1641,17 +1645,21 @@
                 let data;
                 let failure;
                 try {
-                    data = await _requireAnnotationAdapter().updateAnnotation(currentAssignmentId, currentSubmissionId, annotationId, body, {
-                        offline: _isOfflineMode()
-                    });
+                    data = await _requireAnnotationAdapter().updateAnnotation(currentAssignmentId, currentSubmissionId, annotationId, body,
+                        annotationWriteOptions(identity, !overlapping));
                 } catch (error) {
                     failure = error;
                 }
                 if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
                 if (deletedAnnotationIdentities.has(String(identity))) throw CANCELED_ANNOTATION_WRITE;
                 writes.version += 1;
+                rememberAnnotationEtag(identity, data);
                 if (writes.conflicted) {
                     await refreshConflictingAnnotation(identity, epoch, writes);
+                    throw CONCURRENT_ANNOTATION_WRITE;
+                }
+                if (isAnnotationConflict(failure)) {
+                    showAnnotationConflict(identity, failure, epoch, typeof body.content === 'string' ? body : null);
                     throw CONCURRENT_ANNOTATION_WRITE;
                 }
                 if (failure) throw failure;
@@ -1772,15 +1780,105 @@
 
     // Without server revisions or before-images, overlapping writes cannot supply trustworthy undo snapshots.
     // Read the server's current annotation instead of applying either response, and discard ambiguous history.
-    async function refreshConflictingAnnotation(annotationId, epoch, writes) {
-        if (!isCurrentHistoryEpoch(epoch) || writes.deleted) return;
-        const local = Object.keys(annotationsData)
+    function findLocalAnnotation(annotationId) {
+        return Object.keys(annotationsData)
             .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
-        const identity = { identifier: annotationId, xref: local?.xref };
+    }
+
+    // The version of a comment this page last received from the host. Sent as If-Match so a
+    // write based on an older copy is refused instead of replacing a colleague's newer text.
+    function annotationWriteOptions(annotationId, withEtag = true) {
+        const options = { offline: _isOfflineMode() };
+        const etag = withEtag ? findLocalAnnotation(annotationId)?.etag : null;
+        if (etag) options.ifMatch = etag;
+        return options;
+    }
+
+    function rememberAnnotationEtag(annotationId, data) {
+        const etag = data?.annotation?.etag;
+        const local = etag ? findLocalAnnotation(annotationId) : null;
+        if (local) local.etag = etag;
+    }
+
+    function isAnnotationConflict(error) {
+        return Boolean(error && error.code === 'ANNOTATION_CONFLICT');
+    }
+
+    // Someone else changed this comment after this page loaded it. Show their version (the
+    // refusal carries it) and keep the teacher's own text one click away: never overwrite
+    // silently, never drop the teacher's text silently.
+    function showCurrentAnnotationText(annotationId, content) {
+        const target = { identifier: annotationId, xref: findLocalAnnotation(annotationId)?.xref };
+        document.querySelectorAll('.annotation-marker').forEach((marker) => {
+            if (!historyIdentityMatches({
+                identifier: marker.dataset.annotationRequestId || marker.dataset.annotationIdentifier || marker.dataset.identifier,
+                xref: marker.dataset.annotationXref,
+            }, target)) return;
+            const label = marker.querySelector('.annotation-label');
+            if (!label) return;
+            label.dataset.fullText = content;
+            collapseInlineLabel(label);
+        });
+    }
+
+    function showAnnotationConflict(annotationId, error, epoch, mine) {
+        dropAnnotationHistory(annotationId);
+        if (error.current) {
+            replaceAnnotationLocally(annotationId, error.current);
+            // The open editor held the stale copy; the teacher's text stays in the notice.
+            showCurrentAnnotationText(annotationId, String(error.current.content ?? ''));
+        }
+        const message = error.message
+            || t('Someone else changed this comment after you opened it. Their version is shown; your change was not saved.');
+        if (!mine) {
+            showToast('error', message);
+            return;
+        }
+        const toast = showToast('error', message, {
+            label: t('Use my text'),
+            onClick: async (button) => {
+                if (!isCurrentHistoryEpoch(epoch)) return;
+                button.disabled = true;
+                try {
+                    const data = await updateAnnotationRequest(annotationId, mine);
+                    if (data?.annotation) replaceAnnotationLocally(annotationId, data.annotation);
+                    toast.remove();
+                } catch (failure) {
+                    if (failure !== CONCURRENT_ANNOTATION_WRITE && isCurrentHistoryEpoch(epoch)) {
+                        showToast('error', failure?.message || t('Failed to save annotation. Please try again.'));
+                    }
+                } finally {
+                    button.disabled = false;
+                }
+            },
+        });
+    }
+
+    function dropAnnotationHistory(annotationId) {
+        const identity = { identifier: annotationId, xref: findLocalAnnotation(annotationId)?.xref };
         const refersToConflict = (operation) => historyOperationMatches(operation, identity);
         undoStack = undoStack.filter((operation) => !refersToConflict(operation));
         redoStack = redoStack.filter((entry) => !refersToConflict(entry.operation));
         _currentAnnotationCtrl?.removeUndoOperations?.(refersToConflict);
+    }
+
+    // Replace just this annotation, including its persisted-content snapshot and ownership.
+    function replaceAnnotationLocally(annotationId, current) {
+        const affectedPages = new Set(Object.keys(annotationsData).map(Number));
+        Object.keys(annotationsData).forEach((pageIdx) => removeAnnotationEntryLocal(Number(pageIdx), annotationId));
+        if (current) {
+            upsertAnnotationEntryLocal(current, current.page_index);
+            affectedPages.add(current.page_index);
+        }
+        refreshMarkupFromAnnotations();
+        renderAnnotationsList();
+        affectedPages.forEach((pageIdx) => renderAnnotationsForPage(pageIdx + 1, true));
+        markLocalAnnotationChange();
+    }
+
+    async function refreshConflictingAnnotation(annotationId, epoch, writes) {
+        if (!isCurrentHistoryEpoch(epoch) || writes.deleted) return;
+        dropAnnotationHistory(annotationId);
         // Conflicting requests are dropped by their own outcome. Do not overtake a history step for another annotation.
         try {
             let data;
@@ -1794,17 +1892,7 @@
             if (!data?.success || !data.annotations) throw new Error('Annotation refresh failed');
             const current = Object.values(data.annotations).flat().find((ann) =>
                 buildApiAnnotationIdentifier({ identifier: ann.stable_id || ann.id, xref: ann.xref }) === annotationId);
-            // Replace just this annotation, including its persisted-content snapshot and ownership.
-            const affectedPages = new Set(Object.keys(annotationsData).map(Number));
-            Object.keys(annotationsData).forEach((pageIdx) => removeAnnotationEntryLocal(Number(pageIdx), annotationId));
-            if (current) {
-                upsertAnnotationEntryLocal(current, current.page_index);
-                affectedPages.add(current.page_index);
-            }
-            refreshMarkupFromAnnotations();
-            renderAnnotationsList();
-            affectedPages.forEach((pageIdx) => renderAnnotationsForPage(pageIdx + 1, true));
-            markLocalAnnotationChange();
+            replaceAnnotationLocally(annotationId, current);
             if (!writes.notified) {
                 writes.notified = true;
                 showToast('error', translatePdfPreviewText('Concurrent annotation changes refreshed; undo history was cleared'));
@@ -1825,9 +1913,17 @@
         const resolved = resolveAnnotationWriteIdentity(annotationId, epoch);
         annotationId = typeof resolved === 'string' ? resolved : await resolved;
         const key = `${epoch}:${annotationWriteIdentity(annotationId)}`;
-        const data = await _requireAnnotationAdapter().deleteAnnotation(currentAssignmentId, currentSubmissionId, annotationId, {
-            offline: _isOfflineMode()
-        });
+        let data;
+        try {
+            data = await _requireAnnotationAdapter().deleteAnnotation(currentAssignmentId, currentSubmissionId, annotationId,
+                annotationWriteOptions(annotationId));
+        } catch (error) {
+            if (isCurrentHistoryEpoch(epoch) && isAnnotationConflict(error)) {
+                showAnnotationConflict(annotationId, error, epoch, null);
+                throw CONCURRENT_ANNOTATION_WRITE;
+            }
+            throw error;
+        }
         if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
         if (data?.success) {
             invalidateDeletedAnnotation(annotationId);
@@ -8719,7 +8815,9 @@
             button.addEventListener('click', () => action.onClick(button));
             toast.appendChild(button);
         }
-        document.body.appendChild(toast);
+        // In native fullscreen only the fullscreen element is painted: a notice on <body>
+        // (and its recovery button) would be invisible.
+        (document.fullscreenElement || document.body).appendChild(toast);
         if (!action) setTimeout(() => {
             toast.remove();
         }, 3000);

@@ -14,3 +14,9 @@ msgstr "Kommentaren har tagits bort. Din text finns kvar. Du kan återskapa den 
 
 msgid "Re-create comment"
 msgstr "Återskapa kommentar"
+
+msgid "Someone else changed this comment after you opened it. Their version is shown; your change was not saved."
+msgstr "Någon annan ändrade kommentaren efter att du öppnade den. Deras version visas; din ändring sparades inte."
+
+msgid "Use my text"
+msgstr "Använd min text"
