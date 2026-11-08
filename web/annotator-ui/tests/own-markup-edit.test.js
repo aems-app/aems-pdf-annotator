@@ -72,7 +72,7 @@ describe('own markup editing with real pointer and click sequences', () => {
     }
     // Expose the existing history action without opening a PDF/network viewer.
     w.eval(source('pdf-preview-modal.js').replace('window.PdfPreviewModal.__test = {',
-      'window.PdfPreviewModal.__test = { performUndo,'));
+      'window.PdfPreviewModal.__test = { performUndo, performRedo,'));
     const factory = w.PdfPreviewModalAnnotationController.createAnnotationController;
     w.PdfPreviewModalAnnotationController.createAnnotationController = (options) => {
       annotations = options.getAnnotationsData;
@@ -398,5 +398,72 @@ describe('own markup editing with real pointer and click sequences', () => {
     expect(d.activeElement).toBe(editor);
     helpers.collapseInlineLabel(label);
     expect(marker.style.zIndex).toBe('10');
+  });
+
+  // Luca 2026-11-08 (item a): a teacher text box is dragged in normal review mode like the
+  // other comments, without reopening the markup tool first.
+  describe('241a: dragging a teacher text box in normal review mode', () => {
+    beforeEach(() => {
+      d.querySelector('.js-toggle-markup').click();
+    });
+
+    function drag(target, toX, toY, fromX = 90, fromY = 110) {
+      pointer(target, 'pointerdown', fromX, fromY);
+      const overlay = d.querySelector('.markup-selection-overlay') || target;
+      for (let step = 1; step <= 4; step++) {
+        pointer(overlay, 'pointermove', fromX + ((toX - fromX) * step) / 4, fromY + ((toY - fromY) * step) / 4);
+      }
+      pointer(overlay, 'pointerup', toX, toY);
+      overlay.dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true, clientX: toX, clientY: toY }));
+    }
+
+    it('moves the box and saves its new position once', async () => {
+      const entry = boxes.getPageTextboxes(0)[0];
+      drag(entry.element, 110, 130);
+      await settle();
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+      expect(adapter.updateAnnotation.mock.calls[0][3].rect.slice(0, 2)).toEqual([100, 120]);
+      expect(annotations()[0][0].rect[0]).toBe(100);
+      expect(boxes.getPageTextboxes(0)[0].element.classList.contains('editing')).toBe(false);
+      expect(d.querySelector('.markup-selection-overlay')).toBeNull();
+    });
+
+    it('a stationary click neither saves nor opens the editor', async () => {
+      const entry = boxes.getPageTextboxes(0)[0];
+      // The browser routes the captured pointer's release to the selection overlay.
+      drag(entry.element, 90, 110);
+      await settle();
+      expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+      expect(entry.element.classList.contains('editing')).toBe(false);
+      expect(d.querySelector('.markup-selection-overlay')).toBeNull();
+    });
+
+    it('a box being edited is not dragged', async () => {
+      const entry = boxes.getPageTextboxes(0)[0];
+      boxes.editTextbox(entry);
+      drag(entry.contentElement, 110, 130);
+      await settle();
+      expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+      expect(d.activeElement).toBe(entry.contentElement);
+    });
+
+    it('undo puts a dragged box back where it was and redo moves it again', async () => {
+      const entry = boxes.getPageTextboxes(0)[0];
+      drag(entry.element, 110, 130);
+      await settle();
+      expect(annotations()[0][0].rect[0]).toBe(100);
+      await helpers.performUndo();
+      await settle();
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect(adapter.updateAnnotation.mock.calls[1][3]).toMatchObject({ page_index: 0, rect: [80, 100, 180, 128] });
+      expect(annotations()[0][0].rect[0]).toBe(80);
+      expect(boxes.getPageTextboxes(0)[0].element.style.left).toBe('80px');
+      expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
+      await helpers.performRedo();
+      await settle();
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(3);
+      expect(adapter.updateAnnotation.mock.calls[2][3]).toEqual(adapter.updateAnnotation.mock.calls[0][3]);
+      expect(annotations()[0][0].rect[0]).toBe(100);
+    });
   });
 });
