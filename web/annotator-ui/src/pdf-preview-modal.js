@@ -1914,9 +1914,12 @@
         annotationId = typeof resolved === 'string' ? resolved : await resolved;
         const key = `${epoch}:${annotationWriteIdentity(annotationId)}`;
         let data;
+        // Same rule as an overlapping update: this page's own in-flight write to the comment
+        // will change its version, so a delete racing it names none (never a self-conflict).
+        const overlapping = (annotationWrites.get(key)?.pending || 0) > 0;
         try {
             data = await _requireAnnotationAdapter().deleteAnnotation(currentAssignmentId, currentSubmissionId, annotationId,
-                annotationWriteOptions(annotationId));
+                annotationWriteOptions(annotationId, !overlapping));
         } catch (error) {
             if (isCurrentHistoryEpoch(epoch) && isAnnotationConflict(error)) {
                 showAnnotationConflict(annotationId, error, epoch, null);
