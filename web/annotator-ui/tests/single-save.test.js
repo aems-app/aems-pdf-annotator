@@ -422,4 +422,101 @@ describe('one save with a 300 ms PUT', () => {
     expect(options.getAnnotationsData()[0].find(a => a.id === ids[0]).content).toBe('Other reviewer');
     expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
   });
+
+  // Per-annotation optimistic concurrency (AEMS review CSRF1108REV1, finding 2): every write
+  // names the version of the comment it was based on, so a stale copy can never silently
+  // replace another reviewer's newer text.
+  describe('If-Match on every comment write', () => {
+    const local = id => options.getAnnotationsData()[0].find(a => a.id === id);
+    const conflict = (current) => Object.assign(new Error('Someone else changed this comment after you opened it.'), {
+      status: 409, code: 'ANNOTATION_CONFLICT', current,
+    });
+    beforeEach(() => {
+      ids.forEach((id, n) => { local(id).etag = `e${n}-1`; stored.get(id).etag = `e${n}-1`; });
+      let next = 2;
+      adapter.updateAnnotation.mockImplementation(async (_a, _s, id, body) => {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const annotation = { ...stored.get(id), ...body, etag: `e-${id}-${next++}` }; stored.set(id, annotation);
+        return { success: true, annotation: { ...annotation } };
+      });
+    });
+
+    it('an editor save sends the etag of the comment it opened', async () => {
+      key(edit()); await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+      expect(adapter.updateAnnotation.mock.calls[0][4]).toMatchObject({ ifMatch: 'e0-1' });
+    });
+
+    it('the next save uses the etag the previous save returned', async () => {
+      key(edit()); await vi.advanceTimersByTimeAsync(800);
+      const returned = stored.get(ids[0]).etag;
+      key(edit(ids[0], 'Second text')); await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect(adapter.updateAnnotation.mock.calls[1][4]).toMatchObject({ ifMatch: returned });
+      expect(toasts).not.toHaveBeenCalled();
+    });
+
+    it('a write overlapping my own in-flight write to the comment names no stale etag', async () => {
+      const request = options.helpers.updateAnnotationRequest;
+      const results = Promise.allSettled([request(ids[0], { color: 'red' }), request(ids[0], { content: 'Other edit' })]);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+      expect(adapter.updateAnnotation.mock.calls[0][4]).toMatchObject({ ifMatch: 'e0-1' });
+      expect(adapter.updateAnnotation.mock.calls[1][4]).toEqual({ offline: false });
+      await vi.advanceTimersByTimeAsync(800);
+      // Reconciled exactly as before this change: refresh from the server, one notice.
+      expect((await results).every(r => r.status === 'rejected')).toBe(true);
+      expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Concurrent annotation changes refreshed'));
+    });
+
+    it('a conflict shows the other reviewer\'s text and keeps mine behind "Use my text"', async () => {
+      const theirs = { ...stored.get(ids[0]), content: 'Theirs', etag: 'e-theirs' };
+      stored.set(ids[0], theirs);
+      adapter.updateAnnotation.mockImplementationOnce(async () => { throw conflict({ ...theirs }); });
+
+      key(edit(ids[0], 'My stale text')); await vi.advanceTimersByTimeAsync(800);
+
+      expect(local(ids[0]).content).toBe('Theirs');
+      expect(label(ids[0]).textContent).toContain('Theirs');
+      const toast = [...document.querySelectorAll('.alert')].find(el => el.textContent.includes('Someone else changed this comment'));
+      expect(toast, 'a visible conflict notice').toBeTruthy();
+      const useMine = [...toast.querySelectorAll('button')].find(b => b.textContent === 'Use my text');
+      expect(useMine, 'my text must be recoverable').toBeTruthy();
+
+      useMine.click(); await vi.advanceTimersByTimeAsync(800);
+      const last = adapter.updateAnnotation.mock.calls.at(-1);
+      expect(last[3]).toEqual({ content: 'My stale text' });
+      expect(last[4]).toMatchObject({ ifMatch: 'e-theirs' });
+      expect(stored.get(ids[0]).content).toBe('My stale text');
+    });
+
+    it('a delete sends the etag and a conflicting delete leaves the newer comment', async () => {
+      const theirs = { ...stored.get(ids[0]), content: 'Kept by the other reviewer', etag: 'e-theirs' };
+      adapter.deleteAnnotation.mockImplementationOnce(async () => { stored.set(ids[0], theirs); throw conflict({ ...theirs }); });
+      const outcome = await options.helpers.deleteAnnotationRequest(ids[0]).then(() => 'ok', () => 'refused');
+      await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.deleteAnnotation.mock.calls[0][3]).toMatchObject({ ifMatch: 'e0-1' });
+      expect(outcome).toBe('refused');
+      expect(local(ids[0])?.content).toBe('Kept by the other reviewer');
+      expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Someone else changed this comment'));
+    });
+
+    it('a comment without an etag (old server) sends no If-Match', async () => {
+      delete local(ids[0]).etag;
+      key(edit()); await vi.advanceTimersByTimeAsync(800);
+      expect(adapter.updateAnnotation.mock.calls[0][4]).toEqual({ offline: false });
+    });
+
+    it('a notice with an action is shown inside the native fullscreen element', async () => {
+      const host = document.getElementById('pdfGradedContainer');
+      Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => host });
+      try {
+        adapter.updateAnnotation.mockImplementationOnce(async () => { throw conflict({ ...stored.get(ids[0]), content: 'Theirs', etag: 'e-x' }); });
+        key(edit(ids[0], 'Mine')); await vi.advanceTimersByTimeAsync(800);
+        const toast = [...document.querySelectorAll('.alert')].find(el => el.textContent.includes('Someone else changed'));
+        expect(toast && host.contains(toast)).toBe(true);
+      } finally {
+        delete document.fullscreenElement;
+      }
+    });
+  });
 });
