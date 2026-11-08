@@ -438,6 +438,22 @@ describe('own markup editing with real pointer and click sequences', () => {
       expect(d.querySelector('.markup-selection-overlay')).toBeNull();
     });
 
+    it('a cancelled drag puts the box back, clears the selection and saves nothing', async () => {
+      const entry = boxes.getPageTextboxes(0)[0];
+      const start = [entry.element.style.left, entry.element.style.top];
+      pointer(entry.element, 'pointerdown');
+      const overlay = d.querySelector('.markup-selection-overlay');
+      pointer(overlay, 'pointermove', 110, 130);
+      pointer(overlay, 'pointermove', 130, 150);
+      expect(entry.element.style.left).not.toBe(start[0]);
+      pointer(overlay, 'pointercancel', 130, 150);
+      await settle();
+      expect([entry.element.style.left, entry.element.style.top]).toEqual(start);
+      expect(d.querySelector('.markup-selection-overlay')).toBeNull();
+      expect(entry.element.classList.contains('selected')).toBe(false);
+      expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+    });
+
     it('a box being edited is not dragged', async () => {
       const entry = boxes.getPageTextboxes(0)[0];
       boxes.editTextbox(entry);
@@ -465,5 +481,31 @@ describe('own markup editing with real pointer and click sequences', () => {
       expect(adapter.updateAnnotation.mock.calls[2][3]).toEqual(adapter.updateAnnotation.mock.calls[0][3]);
       expect(annotations()[0][0].rect[0]).toBe(100);
     });
+  });
+
+  // 241 review: PyMuPDF ignores a Rect on Ink, so a rect-only undo of a moved stroke reported
+  // success and left it moved. Undo restores the stroke's points; redo replays the moved ones.
+  it('undo of a moved ink stroke sends its original points, redo the moved ones', async () => {
+    const stroke = {
+      stable_id: 'ink-1', page_index: 0, type: 'drawing', content: '', drawing_style: 'pen',
+      points: [[10, 20], [40, 60]], rect: [10, 20, 40, 60],
+    };
+    annotations()[0].push(stroke);
+    adapter.updateAnnotation.mockImplementation(async (_a, _s, _id, body) => ({
+      success: true, annotation: { ...stroke, ...(body.points ? { points: body.points } : {}) },
+    }));
+    selection.onMoveCompleted({
+      type: 'stroke', pageIdx: 0, sourcePageIdx: 0, targetPageIdx: 0,
+      entry: { annotationId: 'ink-1', points: [{ x: 50, y: 80 }, { x: 80, y: 120 }] },
+    });
+    await settle();
+    expect(adapter.updateAnnotation.mock.calls[0][3].points).toEqual([[50, 80], [80, 120]]);
+    await helpers.performUndo();
+    await settle();
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+    expect(adapter.updateAnnotation.mock.calls[1][3]).toEqual({ page_index: 0, points: [[10, 20], [40, 60]] });
+    await helpers.performRedo();
+    await settle();
+    expect(adapter.updateAnnotation.mock.calls[2][3].points).toEqual([[50, 80], [80, 120]]);
   });
 });
