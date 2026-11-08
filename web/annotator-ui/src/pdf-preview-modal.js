@@ -4410,6 +4410,9 @@
                 var sourcePageIdx = item.sourcePageIdx !== undefined ? item.sourcePageIdx : item.pageIdx;
                 var targetPageIdx = item.pageIdx;
                 var originalAnnotationId = item.entry.annotationId;
+                // The undo step restores this stored (top-left) rect, as for a moved comment.
+                var originalEntry = findAnnotationEntry(sourcePageIdx, originalAnnotationId);
+                var originalRect = originalEntry && Array.isArray(originalEntry.rect) ? originalEntry.rect.slice() : null;
                 var pageWrapper = null;
                 var wrappers = document.querySelectorAll('#pdfGradedContainer .pdf-page-wrapper');
                 if (wrappers[targetPageIdx]) pageWrapper = wrappers[targetPageIdx];
@@ -4492,6 +4495,25 @@
                         }
                         upsertAnnotationEntryLocal(data.annotation, targetPageIdx);
                         refreshMarkupFromAnnotations();
+                        if (originalRect) {
+                            // Undo/redo of a moved text box or stroke uses the comment move step,
+                            // so Ctrl+Z reverts this move instead of an earlier action.
+                            var movedIdentity = crossPageMoveIdentity(data.annotation, originalEntry.xref ? String(originalEntry.xref) : undefined);
+                            pushUndoOperation({
+                                type: 'move',
+                                identifier: movedIdentity.identifier,
+                                xref: movedIdentity.xref,
+                                requestId: movedIdentity.requestId,
+                                oldPageIdx: sourcePageIdx,
+                                newPageIdx: targetPageIdx,
+                                oldRect: originalRect,
+                                newRect: data.annotation.rect,
+                                oldSource: originalEntry.source || resolveAnnotationSource(originalEntry),
+                                newSource: originalEntry.source || resolveAnnotationSource(originalEntry),
+                                isOwnershipTransfer: false,
+                                redoBody: cloneHistoryBody(body),
+                            }, { epoch: requestEpoch });
+                        }
                     }
                 } catch (err) {
                     if (!isCurrentHistoryEpoch(requestEpoch) || err === CONCURRENT_ANNOTATION_WRITE) return;
@@ -4508,6 +4530,24 @@
     (function () {
         var gradedContainer = document.getElementById('pdfGradedContainer');
         if (!gradedContainer) return;
+
+        // Outside the markup tool a teacher text box is dragged like any other comment
+        // (Luca 2026-11-08). A box being edited keeps its caret; markup mode keeps its
+        // select-then-drag behaviour below.
+        gradedContainer.addEventListener('pointerdown', function (e) {
+            if (markupModeActive || !TextboxModule || !MarkupSelection || e.button !== 0) return;
+            var box = e.target.closest('.markup-textbox');
+            if (!box || box.classList.contains('editing')) return;
+            var pageWrapper = box.closest('.pdf-page-wrapper');
+            if (!pageWrapper) return;
+            var rawPageNum = parseInt(pageWrapper.dataset.pageNum || '1', 10);
+            var pageIdx = Number.isFinite(rawPageNum) ? Math.max(0, rawPageNum - 1) : 0;
+            var entry = (TextboxModule.getPageTextboxes(pageIdx) || []).find(function (candidate) {
+                return candidate.element === box;
+            });
+            if (!entry || !entry.annotationId) return;
+            MarkupSelection.startDrag('textbox', entry, pageIdx, pageWrapper, e);
+        });
 
         gradedContainer.addEventListener('click', function (e) {
             if (!markupModeActive || !DrawingCanvas) return;
@@ -4890,7 +4930,11 @@
 
                 // Position-only steps can preserve the existing marker/list.
                 // Ownership steps must refresh source badges and both buckets.
-                if (isSamePageMove && !operation.isOwnershipTransfer) {
+                if (isMarkupAnnotation(updatedAnn)) {
+                    // Text boxes and strokes have no comment marker; repaint the markup layer.
+                    refreshMarkupFromAnnotations();
+                    renderAnnotationsList();
+                } else if (isSamePageMove && !operation.isOwnershipTransfer) {
                     _suppressSidebarRender = true;
                     const pageNum = toPageIdx + 1;
                     const container = document.getElementById('pdfGradedContainer');

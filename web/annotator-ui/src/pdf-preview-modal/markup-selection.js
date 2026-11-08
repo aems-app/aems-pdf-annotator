@@ -53,6 +53,14 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
     /** @type {string} */
     var dragSourceWrapperOriginalZIndex = '';
 
+    /**
+     * Whether a click without movement opens the selected text box for editing.
+     * Markup mode edits on the second click; a drag begun in normal review mode
+     * (startDrag) only moves, so its click leaves the box as it was.
+     * @type {boolean}
+     */
+    var clickEditsTextbox = true;
+
     // =========================================================================
     // Callbacks
     // =========================================================================
@@ -130,6 +138,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         selectedItem = null;
         selectionOverlay = null;
         isDragging = false;
+        clickEditsTextbox = true;
         dragStart = null;
         cachedPageRects = [];
         dragSourcePageIdx = null;
@@ -175,6 +184,30 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 
         exports.deselect();
         return item;
+    };
+
+    /**
+     * Select a markup item and begin dragging it from this pointer press, for
+     * review mode outside the markup tool. Movement past the click threshold
+     * moves the item and reports onMoveCompleted, like a markup-mode drag; a
+     * press without movement only clears the selection again.
+     *
+     * @param {'stroke'|'textbox'} type - The type of markup item
+     * @param {Object} entry - The data entry for the item
+     * @param {number} pageIdx - The 0-based page index
+     * @param {HTMLElement} pageWrapper - The page wrapper DOM element
+     * @param {PointerEvent} event - The pointerdown that starts the drag
+     * @returns {boolean} True when a drag was started
+     */
+    exports.startDrag = function startDrag(type, entry, pageIdx, pageWrapper, event) {
+        exports.select(type, entry, pageIdx, pageWrapper);
+        if (!selectionOverlay) {
+            exports.deselect();
+            return false;
+        }
+        clickEditsTextbox = false;
+        onOverlayPointerDown(event);
+        return true;
     };
 
     // =========================================================================
@@ -517,8 +550,10 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
             exports.onMoveCompleted(selectedItem);
         }
 
-        var clickedTextbox = !isDragging && selectedItem && selectedItem.type === 'textbox'
+        var clickedTextbox = !isDragging && clickEditsTextbox && selectedItem && selectedItem.type === 'textbox'
             ? selectedItem.entry : null;
+        var reviewModeDrag = !clickEditsTextbox;
+        clickEditsTextbox = true;
         isDragging = false;
         dragStart = null;
         cachedPageRects = [];
@@ -536,6 +571,9 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
             // the caret inside the contenteditable textbox.
             exports.deselect();
             window.PdfPreviewModalTextbox.editTextbox(clickedTextbox);
+        } else if (reviewModeDrag) {
+            // Outside the markup tool a selection has no further use.
+            exports.deselect();
         }
     }
 
