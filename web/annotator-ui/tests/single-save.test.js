@@ -500,6 +500,16 @@ describe('one save with a 300 ms PUT', () => {
       expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Someone else changed this comment'));
     });
 
+    it('a delete overlapping my own in-flight edit of the comment names no stale etag', async () => {
+      const edit = options.helpers.updateAnnotationRequest(ids[0], { color: 'red' });
+      const removal = options.helpers.deleteAnnotationRequest(ids[0]);
+      expect(adapter.deleteAnnotation).toHaveBeenCalledTimes(1);
+      expect(adapter.deleteAnnotation.mock.calls[0][3]).toEqual({ offline: false });
+      await vi.advanceTimersByTimeAsync(800);
+      await Promise.allSettled([edit, removal]);
+      expect(toasts).not.toHaveBeenCalledWith('error', expect.stringContaining('Someone else changed'));
+    });
+
     it('a comment without an etag (old server) sends no If-Match', async () => {
       delete local(ids[0]).etag;
       key(edit()); await vi.advanceTimersByTimeAsync(800);
