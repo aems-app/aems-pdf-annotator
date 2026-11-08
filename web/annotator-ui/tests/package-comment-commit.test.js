@@ -85,7 +85,7 @@ async function openPackage({ pendingCreate = false, createFailure = false } = {}
       if (nextId === 0) await new Promise((resolve) => { finishCreate = resolve; });
       if (createFailure) throw new Error('Create refused');
       const id = `created-${++nextId}`;
-      const annotation = { ...body, type: 'Text', stable_id: id, id, xref: nextId + 40, source: 'HUMAN' };
+      const annotation = { ...body, type: 'Text', stable_id: id, id, xref: nextId + 40, source: 'HUMAN', etag: `fixture-${id}` };
       // The server persists PDF coordinates and lists top-left coordinates.
       annotation.rect = [body.rect[0], 792 - body.rect[3], body.rect[2], 792 - body.rect[1]];
       stored.set(id, annotation);
@@ -129,7 +129,7 @@ async function openPackage({ pendingCreate = false, createFailure = false } = {}
   async function completeCreate({ closing = false } = {}) {
     finishCreate();
     await vi.waitFor(() => {
-      if (closing) expect(hostApi.deleteAnnotation).toHaveBeenCalledWith(10, 1, 'created-1', { offline: false });
+      if (closing) expect(hostApi.deleteAnnotation).toHaveBeenCalledWith(10, 1, 'created-1', { offline: false, ifMatch: 'fixture-created-1' });
       else expect(w.document.querySelector('.annotation-marker')?.dataset.annotationRequestId).toBe('created-1');
     });
     await settle(130);

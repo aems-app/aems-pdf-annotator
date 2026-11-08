@@ -5,6 +5,7 @@ const annotation = {
   type: 'Highlight', content: 'Teacher feedback', source: 'HUMAN',
   original_source: 'AI', can_revert_to_ai: true, color: 'amber',
   rect: [10, 20, 100, 40], quads: [[10, 20, 100, 40]],
+  etag: 'displayed-comment',
 };
 
 describe('real modal sidebar controller lifecycle', () => {
@@ -131,7 +132,7 @@ describe('real modal sidebar controller lifecycle', () => {
     await Promise.resolve();
     expect(handler, 'Restore must dispatch to the current live controller').toHaveBeenCalledExactlyOnceWith(0, 'Q1-04', button);
     expect(current.helpers.revertAnnotationToAiRequest).toHaveBeenCalledExactlyOnceWith('Q1-04');
-    expect(adapter.revertAnnotationToAi).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'Q1-04');
+    expect(adapter.revertAnnotationToAi).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'Q1-04', { offline: false, ifMatch: 'displayed-comment' });
   });
 
   const actions = [

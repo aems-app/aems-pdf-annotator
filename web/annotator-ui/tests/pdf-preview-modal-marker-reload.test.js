@@ -4,6 +4,7 @@ const ai = {
   id: 'Q1-move', stable_id: 'Q1-move', xref: 1046, page_index: 0,
   type: 'Text', content: 'Original feedback', source: 'AI', original_source: 'AI',
   can_revert_to_ai: false, color: 'amber', icon: 'help', rect: [100, 195, 116, 211],
+  etag: 'displayed-comment',
 };
 const markerSelector = '.annotation-marker[data-annotation-stable-id="Q1-move"]';
 
@@ -164,7 +165,7 @@ describe('real modal marker reload after Restore', () => {
     const reloads = adapter.listAnnotations.mock.calls.length;
     document.querySelector('.revert-annotation-to-ai').click();
     await vi.advanceTimersByTimeAsync(600);
-    expect(adapter.revertAnnotationToAi).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'Q1-move');
+    expect(adapter.revertAnnotationToAi).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'Q1-move', { offline: false, ifMatch: 'displayed-comment' });
     expect(adapter.listAnnotations.mock.calls.length).toBe(reloads + 1);
     expect(options.getAnnotationsData()[0][0]).toMatchObject(ai);
     expectRestored();

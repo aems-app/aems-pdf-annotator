@@ -2619,9 +2619,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         canvas_user_name: _canvasUserName || null,
                     });
                     // A real document close can outlive this controller. Keep only
-                    // the server identity needed to delete that explicitly closed draft.
+                    // the server identity and tag needed to delete that explicitly closed draft.
                     if (data && data.success && data.annotation) {
                         optimisticAnnotation._closedDraftIdentifier = _h.resolveAnnotationIdentifierValue(data.annotation);
+                        optimisticAnnotation.etag = data.annotation.etag;
                     }
                     if (!_isCurrentEpoch(requestEpoch)) return;
 
@@ -2951,7 +2952,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     var originalIdx = _h.findAnnotationIndex ? _h.findAnnotationIndex(pageIdx, requestIdentifier || stableIdentifier) : -1;
                     if (originalIdx >= 0) {
                         var retainedAnn = currentAnnotations[pageIdx][originalIdx];
-                        retainedAnn.content = retainedAnn._originalContent ?? originalContent;
+                        // Keep the live draft available through subsequent list renders.
+                        // _originalContent continues to name the persisted undo snapshot.
+                        retainedAnn.content = textarea.value;
                     }
                 }
                 if (_h.showToast) {
@@ -3257,7 +3260,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     if (label && _h.collapseInlineLabel) _h.collapseInlineLabel(label);
                     if (_getEditingAnnotationId() === 'ann-' + pageIdx + '-' + id) _setEditingId(null);
                     if (!_draftDeleteRequests.has(annotation) && _h.captureDraftDeleteRequest) {
-                        _draftDeleteRequests.set(annotation, _h.captureDraftDeleteRequest());
+                        _draftDeleteRequests.set(annotation, _h.captureDraftDeleteRequest(annotation));
                     }
                     pending.push(deleteAnnotationSilently(pageIdx, id));
                 });

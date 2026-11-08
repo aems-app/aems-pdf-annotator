@@ -4,6 +4,7 @@ const ai = {
   id: 'Q1-move', stable_id: 'Q1-move', xref: 1046, page_index: 0,
   type: 'Text', content: 'Original feedback', source: 'AI', original_source: 'AI',
   can_revert_to_ai: false, color: 'amber', icon: 'help', rect: [100, 195, 116, 211],
+  etag: 'fixture-version',
 };
 const markerSelector = '.annotation-marker[data-annotation-stable-id="Q1-move"]';
 
@@ -168,7 +169,7 @@ describe('new comment survives production polling and relayout', () => {
     editor.dispatchEvent(new Event('input', { bubbles: true }));
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
     await vi.advanceTimersByTimeAsync(600);
-    expect(adapter.updateAnnotation).toHaveBeenCalledWith('assignment-1', 'submission-1', 'created-1', expect.objectContaining({ content: 'Check the units' }), { offline: false });
+    expect(adapter.updateAnnotation).toHaveBeenCalledWith('assignment-1', 'submission-1', 'created-1', expect.objectContaining({ content: 'Check the units' }), { offline: false, ifMatch: 'fixture-version' });
     expect(stored.get('created-1')?.content).toBe('Check the units');
   }
 
@@ -372,8 +373,9 @@ describe('new comment survives production polling and relayout', () => {
     const { helpers } = instances.at(-1).options;
     const first = helpers.saveAnnotationContentRequest('created-1', { content: 'First' }).catch(error => error);
     const queued = helpers.saveAnnotationContentRequest('created-1', { content: 'Queued' }).catch(error => error);
-    await deleteCreated();
+    const deletion = deleteCreated();
     finishPut();
+    await deletion;
     await first;
     await vi.advanceTimersByTimeAsync(600);
     await queued;
@@ -392,8 +394,9 @@ describe('new comment survives production polling and relayout', () => {
     }));
     commitDraft('keyboard', editor);
     await vi.advanceTimersByTimeAsync(0);
-    await deleteCreated();
+    const deletion = deleteCreated();
     finishPut();
+    await deletion;
     await vi.advanceTimersByTimeAsync(600);
     expect(document.querySelector('.inline-annotation-editor')).toBeNull();
     expect(instances.at(-1).controller.getUndoStack().map(op => op.type)).not.toContain('edit');
@@ -698,7 +701,7 @@ describe('new comment survives production polling and relayout', () => {
     overlays[page].dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 300, clientY: 250 + page * 850 }));
     await vi.advanceTimersByTimeAsync(1000);
     expect(adapter.createAnnotation).toHaveBeenCalledTimes(2);
-    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false });
+    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false, ifMatch: 'fixture-version' });
     expect([...stored.keys()]).toEqual(['created-2']);
     expect(instances.at(-1).options.getAnnotationsData()[page].map(a => a.id)).toEqual(['created-2']);
     expect(document.querySelector('.inline-annotation-editor')).not.toBeNull();
@@ -773,7 +776,7 @@ describe('new comment survives production polling and relayout', () => {
     const reloads = adapter.listAnnotations.mock.calls.length;
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await vi.advanceTimersByTimeAsync(21000);
-    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false });
+    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false, ifMatch: 'fixture-version' });
     expect(stored.has('created-1')).toBe(false);
     expect(syncState.versionToken).toBe(String(version));
     expect(adapter.listAnnotations).toHaveBeenCalledTimes(reloads);
@@ -809,7 +812,7 @@ describe('new comment survives production polling and relayout', () => {
         pageChanged(1);
       }
       await vi.advanceTimersByTimeAsync(800);
-      expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false });
+      expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false, ifMatch: 'fixture-version' });
       expect(stored.has('created-1')).toBe(false);
     },
   );
@@ -847,7 +850,7 @@ describe('new comment survives production polling and relayout', () => {
       assignmentId: 'assignment-2', submissionId: 'submission-2', modeAdapter: adapter,
     }));
     await vi.advanceTimersByTimeAsync(900);
-    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false });
+    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false, ifMatch: 'fixture-version' });
     expect(stored.has('created-1')).toBe(false);
   });
 
@@ -856,7 +859,7 @@ describe('new comment survives production polling and relayout', () => {
     await create();
     document.querySelector(markerSelector).click();
     await vi.advanceTimersByTimeAsync(600);
-    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false });
+    expect(adapter.deleteAnnotation).toHaveBeenCalledExactlyOnceWith('assignment-1', 'submission-1', 'created-1', { offline: false, ifMatch: 'fixture-version' });
     expect(stored.get(ai.id).content).toBe(ai.content);
   });
 

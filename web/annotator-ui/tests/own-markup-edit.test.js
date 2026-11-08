@@ -24,6 +24,7 @@ describe('own markup editing with real pointer and click sequences', () => {
   let modal;
   const annotation = {
     stable_id: 'own-text', page_index: 0, type: 'textbox',
+    etag: 'fixture-own-text',
     content: 'Check units', rect: [80, 100, 180, 128], color: 'amber',
   };
 
@@ -118,6 +119,32 @@ describe('own markup editing with real pointer and click sequences', () => {
   const settle = () => new Promise((resolve) => w.setTimeout(resolve, 80));
 
   const commentRows = () => Array.from(d.querySelectorAll('#pdfGradedCommentsList .list-group-item'));
+
+  it.each(['save', 'delete'])('a text box %s refusal is visible to the teacher', async action => {
+    const entry = boxes.getPageTextboxes(0)[0];
+    if (action === 'save') {
+      adapter.updateAnnotation.mockRejectedValueOnce(new Error('Host refused text box save'));
+      boxes.onTextboxCommitted(entry);
+    } else {
+      adapter.deleteAnnotation.mockRejectedValueOnce(new Error('Host refused text box delete'));
+      boxes.onTextboxDeleted(entry);
+    }
+    await settle();
+    expect(d.querySelector('.alert-danger')?.textContent).toContain(`Host refused text box ${action}`);
+  });
+  it.each(['save', 'delete'])('an unsuccessful text box %s response is visible', async action => {
+    const entry = boxes.getPageTextboxes(0)[0];
+    if (action === 'save') {
+      adapter.updateAnnotation.mockResolvedValueOnce({ success: false, error: 'Save rejected' });
+      boxes.onTextboxCommitted(entry);
+    } else {
+      adapter.deleteAnnotation.mockResolvedValueOnce({ success: false, error: 'Delete rejected' });
+      boxes.onTextboxDeleted(entry);
+    }
+    await settle();
+    expect(d.querySelector('.alert-danger')?.textContent).toContain(action === 'save' ? 'Save rejected' : 'Delete rejected');
+    expect(annotations()[0]).toHaveLength(1);
+  });
 
   it('140e: a queued comment-column refresh is harmless after the modal is destroyed', async () => {
     await settle();
