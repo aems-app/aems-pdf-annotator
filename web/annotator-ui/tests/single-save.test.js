@@ -340,7 +340,10 @@ describe('one save with a 300 ms PUT', () => {
       expect(stored.get(ids[0]).content).toBe('First edit');
       expectDraft(editor, 'Latest edit');
       expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Trailing save refused'));
-      expect(options.getAnnotationsData()[0][0]).toMatchObject({ content: 'First edit', _originalContent: 'First edit' });
+      expect(options.getAnnotationsData()[0][0]).toMatchObject({
+        content: location === 'standalone sidebar' ? 'Latest edit' : 'First edit',
+        _originalContent: 'First edit',
+      });
       key(editor);
       await vi.advanceTimersByTimeAsync(800);
       expect(adapter.updateAnnotation).toHaveBeenCalledTimes(3);
@@ -414,6 +417,54 @@ describe('one save with a 300 ms PUT', () => {
     expect((await results).every(r => r.status === 'rejected')).toBe(true);
     expect(adapter.listAnnotations).toHaveBeenCalled();
     expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Concurrent annotation changes refreshed'));
+  });
+  it.each(['color', 'rect'])('a trailing text save after an own %s overlap remains recoverable', async field => {
+    const save = options.helpers.saveAnnotationContentRequest;
+    const outcomes = Promise.allSettled([
+      save(ids[0], { content: 'abc' }),
+      options.helpers.updateAnnotationRequest(ids[0], { [field]: field === 'color' ? 'red' : [70, 80, 170, 100] }),
+      save(ids[0], { content: 'abcd' }),
+    ]);
+    await vi.advanceTimersByTimeAsync(1200); await outcomes;
+    if (stored.get(ids[0]).content !== 'abcd') {
+      const useMine = [...document.querySelectorAll('.alert button')].find(b => b.textContent === 'Use my text');
+      expect(useMine, 'the latest own draft must never disappear after an overlap').toBeTruthy();
+      useMine.click(); await vi.advanceTimersByTimeAsync(800);
+    }
+    expect(stored.get(ids[0]).content).toBe('abcd');
+  });
+  it('a failed sidebar save retains its draft through a list render', async () => {
+    options.getAnnotationsData()[0].find(a => a.id === ids[0])._originalContent = 'Original feedback-1';
+    edit(ids[0], 'Draft after refusal');
+    adapter.updateAnnotation.mockRejectedValueOnce(new Error('Reload the page before saving this comment.'));
+    click(button(ids[0])); await vi.advanceTimersByTimeAsync(800);
+    controller.renderList();
+    expect(sidebar(ids[0])?.value).toBe('Draft after refusal');
+    expect(options.getAnnotationsData()[0].find(a => a.id === ids[0]).content).toBe('Draft after refusal');
+    expect(options.getAnnotationsData()[0].find(a => a.id === ids[0])._originalContent).toBe('Original feedback-1');
+  });
+  it('a failed overlap refresh still offers the latest text for recovery', async () => {
+    adapter.listAnnotations.mockRejectedValue(new Error('Cannot refresh'));
+    const save = options.helpers.saveAnnotationContentRequest;
+    const outcomes = Promise.allSettled([
+      save(ids[0], { content: 'abc' }), options.helpers.updateAnnotationRequest(ids[0], { color: 'red' }),
+      save(ids[0], { content: 'abcd' }),
+    ]);
+    await vi.advanceTimersByTimeAsync(1200); await outcomes;
+    const useMine = [...document.querySelectorAll('.alert button')].find(b => b.textContent === 'Use my text');
+    expect(useMine, 'refresh failure must not drop the draft').toBeTruthy();
+    useMine.click(); await vi.advanceTimersByTimeAsync(800);
+    expect(stored.get(ids[0]).content).toBe('abcd');
+  });
+  it('an own overlap keeps text typed after the submitted content', async () => {
+    const editor = edit(ids[0], 'abc'); key(editor);
+    const priority = options.helpers.updateAnnotationRequest(ids[0], { color: 'red' }).catch(() => {});
+    type(editor, 'abcd');
+    await vi.advanceTimersByTimeAsync(1200); await priority;
+    const toast = [...document.querySelectorAll('.alert')].find(el => el.querySelector('.recreate-annotation-btn'));
+    expect(toast?.textContent).toContain('abcd');
+    toast.querySelector('.recreate-annotation-btn').click(); await vi.advanceTimersByTimeAsync(800);
+    expect(stored.get(ids[0]).content).toBe('abcd');
   });
   it('a failed own-overlap still refreshes ambiguous history without sending its queued write', async () => {
     adapter.updateAnnotation.mockRejectedValueOnce(new Error('Connection lost'));
@@ -498,6 +549,40 @@ describe('one save with a 300 ms PUT', () => {
       expect(last[3]).toEqual({ content: 'My stale text' });
       expect(last[4]).toMatchObject({ ifMatch: 'e-theirs' });
       expect(stored.get(ids[0]).content).toBe('My stale text');
+    });
+    it('a conflict keeps text typed after Save and shows it in the notice', async () => {
+      adapter.updateAnnotation.mockImplementationOnce(async () => {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        throw conflict({ ...stored.get(ids[0]), content: 'Theirs', etag: 'theirs' });
+      });
+      const editor = edit(ids[0], 'Submitted draft'); key(editor);
+      type(editor, 'Latest unsaved draft');
+      await vi.advanceTimersByTimeAsync(800);
+      const toast = [...document.querySelectorAll('.alert')].find(el => el.querySelector('.recreate-annotation-btn'));
+      expect(toast?.textContent).toContain('Latest unsaved draft');
+      toast.querySelector('.recreate-annotation-btn').click(); await vi.advanceTimersByTimeAsync(800);
+      expect(stored.get(ids[0]).content).toBe('Latest unsaved draft');
+    });
+    it('an unsuccessful recovery response keeps the recovery text and button', async () => {
+      adapter.updateAnnotation.mockRejectedValueOnce(conflict({ ...stored.get(ids[0]), content: 'Theirs', etag: 'theirs' }));
+      key(edit(ids[0], 'My draft')); await vi.advanceTimersByTimeAsync(800);
+      const toast = [...document.querySelectorAll('.alert')].find(el => el.querySelector('.recreate-annotation-btn'));
+      adapter.updateAnnotation.mockResolvedValueOnce({ success: false, error: 'Recovery refused' });
+      toast.querySelector('.recreate-annotation-btn').click(); await vi.advanceTimersByTimeAsync(800);
+      expect(toast.isConnected, 'refusal must not dismiss the only draft recovery').toBe(true);
+      expect(toast.textContent).toContain('My draft');
+      expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('Recovery refused'));
+    });
+    it('a recovery save keeps text typed while that request is pending', async () => {
+      adapter.updateAnnotation.mockRejectedValueOnce(conflict({ ...stored.get(ids[0]), content: 'Theirs', etag: 'theirs' }));
+      key(edit(ids[0], 'My draft')); await vi.advanceTimersByTimeAsync(800);
+      document.querySelector('.recreate-annotation-btn').click();
+      edit(ids[0], 'New while recovering');
+      await vi.advanceTimersByTimeAsync(800);
+      const toast = [...document.querySelectorAll('.alert')].find(el => el.textContent.includes('New while recovering'));
+      expect(toast, 'recovery must keep the latest live text').toBeTruthy();
+      toast.querySelector('.recreate-annotation-btn').click(); await vi.advanceTimersByTimeAsync(800);
+      expect(stored.get(ids[0]).content).toBe('New while recovering');
     });
 
     it('a delete sends the etag and a conflicting delete leaves the newer comment', async () => {
@@ -694,11 +779,21 @@ describe('one save with a 300 ms PUT', () => {
       expect(adapter.listAnnotations).not.toHaveBeenCalled();
     });
 
-    it('a comment without an etag refuses the write and asks for a reload', async () => {
+    it.each(['update', 'delete', 'revert'])('an untagged local-mode %s reaches the adapter without If-Match', async (action) => {
       delete local(ids[0]).etag;
-      key(edit()); await vi.advanceTimersByTimeAsync(800);
-      expect(adapter.updateAnnotation).not.toHaveBeenCalled();
-      expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('reload the document'));
+      delete stored.get(ids[0]).etag;
+      adapter.revertAnnotationToAi = vi.fn(async () => ({ success: true }));
+      const result = action === 'update'
+        ? options.helpers.updateAnnotationRequest(ids[0], { content: 'Local draft' })
+        : action === 'delete' ? options.helpers.deleteAnnotationRequest(ids[0])
+          : options.helpers.revertAnnotationToAiRequest(ids[0]);
+      const outcome = result.catch(error => error);
+      await vi.advanceTimersByTimeAsync(800);
+      expect(await outcome).toMatchObject({ success: true });
+      const method = action === 'update' ? 'updateAnnotation' : action === 'delete' ? 'deleteAnnotation' : 'revertAnnotationToAi';
+      expect(adapter[method]).toHaveBeenCalledOnce();
+      expect(adapter[method].mock.calls[0].at(-1)).not.toHaveProperty('ifMatch');
+      expect(toasts).not.toHaveBeenCalled();
     });
 
     it('a queued write is refused if its predecessor returns no comment tag', async () => {

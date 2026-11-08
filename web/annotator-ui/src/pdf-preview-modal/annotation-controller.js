@@ -2952,7 +2952,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     var originalIdx = _h.findAnnotationIndex ? _h.findAnnotationIndex(pageIdx, requestIdentifier || stableIdentifier) : -1;
                     if (originalIdx >= 0) {
                         var retainedAnn = currentAnnotations[pageIdx][originalIdx];
-                        retainedAnn.content = retainedAnn._originalContent ?? originalContent;
+                        // Keep the live draft available through subsequent list renders.
+                        // _originalContent continues to name the persisted undo snapshot.
+                        retainedAnn.content = textarea.value;
                     }
                 }
                 if (_h.showToast) {

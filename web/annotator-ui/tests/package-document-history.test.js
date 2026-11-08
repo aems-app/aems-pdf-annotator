@@ -39,7 +39,7 @@ async function hostHarness() {
   w.URL.revokeObjectURL = () => {};
   // PDF rendering is the only package component replaced; keep the real shell,
   // state, document and annotation controllers, and the public factory/open path.
-  w.eval(bundle);
+  w.eval(bundle.replace('window.PdfPreviewModal.__test = {', 'window.PdfPreviewModal.__test = { updateAnnotationPriority,'));
   w.PdfPreviewModalViewer.resolvePdfjsLib = () => ({});
   w.PdfPreviewModalViewer.PDFViewer = class {
     onAnnotationsPageChange() {}
@@ -103,6 +103,25 @@ async function hostHarness() {
 }
 
 describe('document history through the AEMS package entry', () => {
+  it.each(['undo', 'redo'].flatMap(action => ['edit', 'priority'].map(type => [action, type])))('a polled reviewer edit cannot be overwritten by %s of %s', async (action, type) => {
+    const h = await hostHarness();
+    const modal = await h.open(1);
+    if (type === 'edit') await h.edit('My saved edit');
+    else {
+      await h.w.PdfPreviewModal.__test.updateAnnotationPriority(0, 'same-comment', 'red');
+      await vi.waitFor(() => expect(h.adapters[0].updateAnnotation).toHaveBeenCalledOnce());
+    }
+    if (action === 'redo') await h.key('z');
+    h.stored.set(1, { ...h.stored.get(1), content: 'Other reviewer after poll', etag: 'polled-version' });
+    await modal.refresh();
+    expect(modal.getAnnotations()[0][0].content).toBe('Other reviewer after poll');
+    const count = h.adapters[0].updateAnnotation.mock.calls.length;
+    await h.key(action === 'redo' ? 'y' : 'z');
+    expect(h.adapters[0].updateAnnotation).toHaveBeenCalledTimes(count);
+    expect(h.stored.get(1).content).toBe('Other reviewer after poll');
+    expect(h.w.document.querySelector('.alert-danger')?.textContent).toContain('Someone else changed this comment');
+    expect(modal.getAnnotations()[0][0].content).toBe('Other reviewer after poll');
+  });
   it.each(['directly', 'after Escape'])('discards undo and redo when opening another modal %s', async (path) => {
     const h = await hostHarness();
     const first = await h.open(1);

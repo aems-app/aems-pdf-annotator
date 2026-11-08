@@ -1762,7 +1762,10 @@ describe('pdf-preview-modal placement helpers', () => {
       return h;
     }
 
-    const errorToasts = () => [...document.querySelectorAll('.alert-danger')].map((toast) => toast.textContent.trim());
+    // Assert the refusal message separately from the retained draft and recovery buttons.
+    const errorToasts = () => [...document.querySelectorAll('.alert-danger')].map((toast) =>
+      [...toast.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent).join('').trim().split(/\n\s*\n/)[0]);
 
     // Stateful AEMS ownership fake, including automatic AI -> HUMAN transfer.
     // echo: false models a successful update whose annotation cannot be read back.
@@ -2378,8 +2381,8 @@ describe('pdf-preview-modal placement helpers', () => {
       const h = await undoHarness({
         controllerUndoStack, updateAnnotation, visibilityController: {},
         annotations: { 0: Array.from({ length: 50 }, (_value, i) => [
-          { stable_id: `controller-${i}`, page_index: 0, etag: `fixture-controller-${i}` },
-          { stable_id: `local-${i}`, page_index: 0, etag: `fixture-local-${i}` },
+          { stable_id: `controller-${i}`, content: 'new', page_index: 0, etag: `fixture-controller-${i}` },
+          { stable_id: `local-${i}`, content: 'new', page_index: 0, etag: `fixture-local-${i}` },
         ]).flat() },
       });
       for (let i = 0; i < 50; i += 1) {
@@ -2648,7 +2651,11 @@ describe('pdf-preview-modal placement helpers', () => {
       });
       async function editB(text) {
         const oldContent = stored.get('42').content;
-        await h.options.helpers.updateAnnotationRequest('id:42', { content: text });
+        const data = await h.options.helpers.updateAnnotationRequest('id:42', { content: text });
+        // The controller normally applies the helper's acknowledgement before recording history.
+        Object.assign(entries(h).find((entry) => entry.stable_id === '42'), data.annotation, {
+          _originalContent: data.annotation.content,
+        });
         // Bare numeric stable identifiers are a supported history representation.
         h.controller.pushUndoOperation({
           type: 'edit', identifier: '42', requestId: 'id:42', xref: '99', pageIdx: 0,
@@ -2792,9 +2799,16 @@ describe('pdf-preview-modal placement helpers', () => {
         const current = entries(h).find((annotation) => annotation.stable_id === id);
         return { success: true, annotation: { ...current, ...body } };
       });
-      const edit = (identifier, suffix) => ({
-        type: 'edit', identifier, pageIdx: 0, oldContent: `old ${suffix}`, newContent: `new ${suffix}`,
-      });
+      const edit = (identifier, suffix) => {
+        const current = entries(h).find((annotation) => annotation.stable_id === identifier);
+        const operation = {
+          type: 'edit', identifier, pageIdx: 0, oldContent: current.content, newContent: `new ${suffix}`,
+        };
+        // These synthetic steps represent sequential acknowledged edits of the displayed comment.
+        current.content = operation.newContent;
+        current._originalContent = operation.newContent;
+        return operation;
+      };
       // Ordinary, nested deletion, and markup operation identities all refer to A.
       h.controller.pushUndoOperation({ type: 'delete', pageIdx: 0, annotation: { stable_id: 'owned-comment', xref: 42 } });
       h.controller.pushUndoOperation(edit('B', 'first'));
@@ -3142,12 +3156,39 @@ describe('pdf-preview-modal placement helpers', () => {
 
     // Review finding 4: a step whose annotation the server no longer has is dropped, not re-queued, so it cannot
     // block the history behind it.
+    function independentEdit(h) {
+      let stored = {
+        ...h.annotation, id: 'other-comment', stable_id: 'other-comment', xref: 43,
+        content: 'Other original', etag: 'fixture-other-comment',
+      };
+      h.options.getAnnotationsData()[0].push({ ...stored });
+      const updateOwned = h.updateAnnotation.getMockImplementation();
+      h.updateAnnotation.mockImplementation(async (...args) => {
+        if (args[2] !== 'other-comment') return updateOwned(...args);
+        stored = applyAnnotationPut(stored, args[3]);
+        return { success: true, annotation: { ...stored } };
+      });
+      return async () => {
+        const data = await h.options.helpers.updateAnnotationRequest('other-comment', { content: 'Other edit' });
+        Object.assign(entries(h).find((entry) => entry.stable_id === 'other-comment'), data.annotation, {
+          _originalContent: data.annotation.content,
+        });
+        h.controller.pushUndoOperation({
+          type: 'edit', identifier: 'other-comment', pageIdx: 0,
+          oldContent: 'Other original', newContent: 'Other edit', oldSource: 'AI', newSource: 'HUMAN',
+          isOwnershipTransfer: true,
+        });
+        await settle();
+      };
+    }
+
     it('drops an edit redo whose annotation the server no longer has, and redoes the next one', async () => {
       vi.spyOn(console, 'error').mockImplementation(() => {});
       const h = await splitHarness();
       serveAnnotation(h);
+      const saveOtherEdit = independentEdit(h);
       await saveSidebarEdit(h, 'First edit');
-      await saveSidebarEdit(h, 'Second edit');
+      await saveOtherEdit();
       for (let undone = 1; undone <= 2; undone += 1) {
         h.dispatchUndo();
         await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(2 + undone));
@@ -3162,7 +3203,7 @@ describe('pdf-preview-modal placement helpers', () => {
       h.dispatchRedo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(6));
 
-      // The next Ctrl+Y redid the second edit, not the dropped first one.
+      // The next Ctrl+Y redoes the independent comment, without replaying stale history on the deleted one.
       expect(h.updateAnnotation.mock.calls[5]).toEqual(h.updateAnnotation.mock.calls[1]);
     });
 
@@ -3170,7 +3211,8 @@ describe('pdf-preview-modal placement helpers', () => {
       vi.spyOn(console, 'error').mockImplementation(() => {});
       const h = await splitHarness();
       serveAnnotation(h);
-      await saveSidebarEdit(h, 'First edit');
+      const saveOtherEdit = independentEdit(h);
+      await saveOtherEdit();
       await saveSidebarEdit(h, 'Second edit');
       await settle();
       notFound(h.updateAnnotation);
@@ -3182,8 +3224,9 @@ describe('pdf-preview-modal placement helpers', () => {
       h.dispatchUndo();
       await vi.waitFor(() => expect(h.updateAnnotation).toHaveBeenCalledTimes(4));
 
-      // The next Ctrl+Z undid the first edit, back to the original text.
-      expect(h.updateAnnotation.mock.calls[3][3]).toEqual({ content: 'Teacher feedback', source: 'AI' });
+      // The next Ctrl+Z restores the independent comment's text and original AI ownership.
+      expect(h.updateAnnotation.mock.calls[3][2]).toBe('other-comment');
+      expect(h.updateAnnotation.mock.calls[3][3]).toEqual({ content: 'Other original', source: 'AI' });
     });
 
     it('drops a pen-stroke delete redo whose markup the server no longer has', async () => {

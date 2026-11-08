@@ -1803,11 +1803,12 @@
 
     // The version of a comment this page last received from the host. Sent as If-Match so a
     // write based on an older copy is refused instead of replacing a colleague's newer text.
-    function annotationWriteOptions(etag, offline = _isOfflineMode()) {
-        if (!etag) {
+    function annotationWriteOptions(etag, offline = _isOfflineMode(), requireTag = false) {
+        if (!etag && requireTag) {
             throw new Error(t('This comment could not be saved safely. Copy your text and reload the document.'));
         }
-        return { offline, ifMatch: etag };
+        // Desktop agents do not issue tags. Preserve their existing write protocol.
+        return etag ? { offline, ifMatch: etag } : { offline };
     }
 
     function chainAnnotationWrite(writes, annotationId, epoch, send) {
@@ -1817,7 +1818,8 @@
             const dataBefore = previous ? await previous : null; // A refusal cancels queued writes.
             if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
             if (deletedAnnotationIdentities.has(String(annotationId))) throw CANCELED_ANNOTATION_WRITE;
-            const options = annotationWriteOptions(previous ? dataBefore?.annotation?.etag : displayedEtag);
+            const options = annotationWriteOptions(previous ? dataBefore?.annotation?.etag : displayedEtag,
+                _isOfflineMode(), Boolean(previous && displayedEtag));
             const data = await send(options);
             if (isCurrentHistoryEpoch(epoch)) rememberAnnotationEtag(annotationId, data);
             return data;
@@ -1871,6 +1873,11 @@
     }
 
     function showAnnotationConflict(annotationId, error, epoch, mine) {
+        // A teacher may have kept typing after pressing Save. Capture before a
+        // refresh replaces the editors, and keep this exact draft in the notice.
+        if (mine && typeof mine.content === 'string') {
+            mine = { ...mine, content: annotationDraftContent(annotationId, mine.content) };
+        }
         dropAnnotationHistory(annotationId);
         if (error.current) {
             replaceAnnotationLocally(annotationId, error.current);
@@ -1883,14 +1890,21 @@
             showToast('error', message);
             return;
         }
-        const toast = showToast('error', message, {
+        const toast = showToast('error', `${message}\n\n${t('Your unsaved text:')} ${mine.content}`, {
             label: t('Use my text'),
             onClick: async (button) => {
                 if (!isCurrentHistoryEpoch(epoch)) return;
                 button.disabled = true;
                 try {
                     const data = await updateAnnotationRequest(annotationId, mine);
-                    if (data?.annotation) replaceAnnotationLocally(annotationId, data.annotation);
+                    if (!data?.success) throw new Error(data?.error || t('Failed to save annotation. Please try again.'));
+                    const draft = annotationDraftContent(annotationId, mine.content);
+                    if (data.annotation && draft !== data.annotation.content) {
+                        showAnnotationConflict(annotationId, { current: data.annotation, message }, epoch,
+                            { ...mine, content: draft });
+                    } else if (data.annotation) {
+                        replaceAnnotationLocally(annotationId, data.annotation);
+                    }
                     toast.remove();
                 } catch (failure) {
                     if (failure !== CONCURRENT_ANNOTATION_WRITE && isCurrentHistoryEpoch(epoch)) {
@@ -1941,14 +1955,24 @@
             if (!data?.success || !data.annotations) throw new Error('Annotation refresh failed');
             const current = Object.values(data.annotations).flat().find((ann) =>
                 buildApiAnnotationIdentifier({ identifier: ann.stable_id || ann.id, xref: ann.xref }) === annotationId);
-            replaceAnnotationLocally(annotationId, current);
             if (!writes.notified) {
                 writes.notified = true;
-                showToast('error', translatePdfPreviewText('Concurrent annotation changes refreshed; undo history was cleared'));
+                const latestSave = annotationContentSaves.get(`${epoch}:${annotationId}`);
+                const submitted = latestSave?.body || writes.contentBody;
+                const mine = submitted && {
+                    ...submitted, content: annotationDraftContent(annotationId, submitted.content),
+                };
+                showAnnotationConflict(annotationId, {
+                    current,
+                    message: translatePdfPreviewText('Concurrent annotation changes refreshed; undo history was cleared'),
+                }, epoch, mine && mine.content !== current?.content ? mine : null);
             }
         } catch (_error) {
             if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
-            showToast('error', translatePdfPreviewText('Could not refresh concurrent annotation changes; undo history was cleared. Reload the document.'));
+            const latestSave = annotationContentSaves.get(`${epoch}:${annotationId}`);
+            showAnnotationConflict(annotationId, {
+                message: translatePdfPreviewText('Could not refresh concurrent annotation changes; undo history was cleared. Reload the document.'),
+            }, epoch, latestSave?.body || writes.contentBody || null);
         }
     }
 
@@ -2023,7 +2047,7 @@
         const epoch = currentHistoryEpoch();
         return async (id) => {
             const data = await adapter.deleteAnnotation(assignmentId, submissionId, id,
-                annotationWriteOptions(annotation?.etag, offline));
+                annotationWriteOptions(annotation?.etag, offline, !annotation));
             if (data?.success && isCurrentHistoryEpoch(epoch)) invalidateDeletedAnnotation(id);
             return data;
         };
@@ -4457,6 +4481,7 @@
                 )
                 .then(function (data) {
                 if (!isCurrentHistoryEpoch(requestEpoch)) return;
+                    if (!data?.success) throw new Error(data?.error || t('Failed to save text box.'));
                     if (data.success && data.annotation) {
                         entry.annotationId = data.annotation.stable_id || data.annotation.xref;
                         upsertAnnotationEntryLocal(data.annotation, entry.pageIdx);
@@ -4473,6 +4498,7 @@
                 .catch(function (err) {
                     if (!isCurrentHistoryEpoch(requestEpoch) || err === CONCURRENT_ANNOTATION_WRITE) return;
                     console.error('Failed to save text box:', err);
+                    showToast('error', err.message || t('Failed to save text box.'));
                 });
             };
 
@@ -4480,13 +4506,15 @@
                 var requestEpoch = currentHistoryEpoch();
                 if (entry.annotationId) {
                     deleteAnnotationRequest(buildApiAnnotationIdentifier({ identifier: entry.annotationId }) || entry.annotationId)
-                    .then(function () {
+                    .then(function (data) {
                         if (!isCurrentHistoryEpoch(requestEpoch)) return;
+                        if (!data?.success) throw new Error(data?.error || t('Failed to delete text box.'));
                         removeAnnotationEntryLocal(entry.pageIdx, entry.annotationId);
                         refreshMarkupFromAnnotations();
                     }).catch(function (err) {
                         if (!isCurrentHistoryEpoch(requestEpoch) || err === CONCURRENT_ANNOTATION_WRITE) return;
                         console.error('Failed to delete empty text box:', err);
+                        showToast('error', err.message || t('Failed to delete text box.'));
                     });
                 }
             };
@@ -5138,6 +5166,16 @@
         }
 
         const updateData = { [spec.field]: operation[isRedo ? spec.newKey : spec.oldKey] };
+        const current = findLocalAnnotation(apiIdentifier);
+        const recorded = operation[isRedo ? spec.oldKey : spec.newKey];
+        const displayed = operation.type === 'edit'
+            ? current?.content : current && deriveAnnotationPriority(current);
+        const recordedContent = operation[isRedo ? 'oldContent' : 'newContent'];
+        if (current && (displayed !== recorded
+            || recordedContent !== undefined && current.content !== recordedContent)) {
+            showAnnotationConflict(apiIdentifier, { current }, currentHistoryEpoch(), null);
+            return HISTORY_DROPPED;
+        }
         // Revert source if this was an ownership transfer
         if (!isRedo && operation.isOwnershipTransfer && operation.oldSource) {
             updateData.source = operation.oldSource;
@@ -7873,6 +7911,7 @@
         const originalPriority = deriveAnnotationPriority(originalAnn);
         const originalColor = originalPriority;
         const originalSource = resolveAnnotationSource(originalAnn || {});
+        const originalContent = originalAnn?._originalContent ?? originalAnn?.content ?? '';
         const priorityIdentifierCandidates = [
             lookupIdentifier,
             stableIdentifier,
@@ -8032,6 +8071,8 @@
                                 pageIdx: pageIdx,
                                 oldColor: originalColor,
                                 newColor: priority,
+                                oldContent: originalContent,
+                                newContent: data.annotation.content ?? originalContent,
                                 oldSource: originalSource,
                                 newSource: newSource,
                                 isOwnershipTransfer: isOwnershipTransfer,
@@ -8066,6 +8107,8 @@
                                 pageIdx: pageIdx,
                                 oldColor: originalColor,
                                 newColor: priority,
+                                oldContent: originalContent,
+                                newContent: originalContent,
                                 oldSource: originalSource,
                                 newSource: newSource,
                                 isOwnershipTransfer: originalSource === 'AI' && newSource === 'HUMAN',
