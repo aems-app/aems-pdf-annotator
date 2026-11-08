@@ -1875,8 +1875,9 @@
     function showAnnotationConflict(annotationId, error, epoch, mine) {
         // A teacher may have kept typing after pressing Save. Capture before a
         // refresh replaces the editors, and keep this exact draft in the notice.
-        if (mine && typeof mine.content === 'string') {
-            mine = { ...mine, content: annotationDraftContent(annotationId, mine.content) };
+        const draft = annotationDraftContent(annotationId, mine?.content);
+        if (typeof draft === 'string') {
+            mine = { ...mine, content: draft };
         }
         dropAnnotationHistory(annotationId);
         if (error.current) {

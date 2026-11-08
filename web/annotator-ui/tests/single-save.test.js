@@ -584,6 +584,21 @@ describe('one save with a 300 ms PUT', () => {
       toast.querySelector('.recreate-annotation-btn').click(); await vi.advanceTimersByTimeAsync(800);
       expect(stored.get(ids[0]).content).toBe('New while recovering');
     });
+    it.each(['priority', 'move', 'delete'])('a %s conflict keeps an unsaved editor draft without a content request', async action => {
+      edit(ids[0], 'Unsaved editor draft');
+      const theirs = { ...stored.get(ids[0]), content: 'Theirs', etag: 'theirs' };
+      stored.set(ids[0], theirs);
+      adapter[action === 'delete' ? 'deleteAnnotation' : 'updateAnnotation'].mockRejectedValueOnce(conflict(theirs));
+      const request = action === 'delete' ? options.helpers.deleteAnnotationRequest(ids[0])
+        : options.helpers.updateAnnotationRequest(ids[0], action === 'priority' ? { color: 'red' } : { rect: [1, 2, 3, 4] });
+      await request.catch(() => {}); await vi.advanceTimersByTimeAsync(800);
+      const toast = [...document.querySelectorAll('.alert')].find(el => el.textContent.includes('Unsaved editor draft'));
+      expect(toast, 'a non-text conflict must preserve the open draft').toBeTruthy();
+      expect(stored.get(ids[0]).content).toBe('Theirs');
+      toast.querySelector('.recreate-annotation-btn').click(); await vi.advanceTimersByTimeAsync(800);
+      expect(stored.get(ids[0]).content).toBe('Unsaved editor draft');
+      expect(adapter.updateAnnotation.mock.calls.at(-1)[4].ifMatch).toBe('theirs');
+    });
 
     it('a delete sends the etag and a conflicting delete leaves the newer comment', async () => {
       const theirs = { ...stored.get(ids[0]), content: 'Kept by the other reviewer', etag: 'e-theirs' };
