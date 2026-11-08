@@ -61,6 +61,9 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
      */
     var clickEditsTextbox = true;
 
+    /** Displacement applied to the selected item since the press, for a cancelled drag. */
+    var appliedDrag = { dx: 0, dy: 0 };
+
     // =========================================================================
     // Callbacks
     // =========================================================================
@@ -389,10 +392,13 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
             dragPageWrapper.style.zIndex = '1000';
         }
 
+        appliedDrag = { dx: 0, dy: 0 };
+
         // Capture pointer for move/up events
         selectionOverlay.setPointerCapture(e.pointerId);
         selectionOverlay.addEventListener('pointermove', onOverlayPointerMove);
         selectionOverlay.addEventListener('pointerup', onOverlayPointerUp);
+        selectionOverlay.addEventListener('pointercancel', onOverlayPointerCancel);
 
     }
 
@@ -463,12 +469,17 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         var appliedDy = newTop - currentTop;
         selectionOverlay.style.left = newLeft + 'px';
         selectionOverlay.style.top = newTop + 'px';
+        appliedDrag.dx += appliedDx;
+        appliedDrag.dy += appliedDy;
+        moveSelectedItem(appliedDx, appliedDy);
+    }
 
-        // Move the underlying item
+    /** Move the underlying text box or stroke by a CSS-pixel displacement. */
+    function moveSelectedItem(dx, dy) {
         if (selectedItem.type === 'textbox') {
             var Textbox = window.PdfPreviewModalTextbox;
             if (Textbox && typeof Textbox.moveTextbox === 'function') {
-                Textbox.moveTextbox(selectedItem.entry, appliedDx, appliedDy);
+                Textbox.moveTextbox(selectedItem.entry, dx, dy);
             }
         } else if (selectedItem.type === 'stroke') {
             var DrawingCanvas = window.PdfPreviewModalDrawingCanvas;
@@ -476,9 +487,30 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
                 var pdfCanvas = dragPageWrapper ? dragPageWrapper.querySelector('canvas') : null;
                 var scaleX = pdfCanvas && pdfCanvas.offsetWidth ? (pdfCanvas.width / pdfCanvas.offsetWidth) : 1;
                 var scaleY = pdfCanvas && pdfCanvas.offsetHeight ? (pdfCanvas.height / pdfCanvas.offsetHeight) : 1;
-                DrawingCanvas.moveStroke(selectedItem.entry, appliedDx * scaleX, appliedDy * scaleY);
+                DrawingCanvas.moveStroke(selectedItem.entry, dx * scaleX, dy * scaleY);
             }
         }
+    }
+
+    /**
+     * The browser took the pointer away (touch scroll, system gesture, lost capture): put
+     * the item back where the press found it, drop the selection and save nothing.
+     *
+     * @param {PointerEvent} e
+     */
+    function onOverlayPointerCancel(e) {
+        if (!selectionOverlay) return;
+        if (typeof selectionOverlay.hasPointerCapture !== 'function' || selectionOverlay.hasPointerCapture(e.pointerId)) {
+            selectionOverlay.releasePointerCapture(e.pointerId);
+        }
+        selectionOverlay.removeEventListener('pointermove', onOverlayPointerMove);
+        selectionOverlay.removeEventListener('pointerup', onOverlayPointerUp);
+        selectionOverlay.removeEventListener('pointercancel', onOverlayPointerCancel);
+        if (selectedItem && (appliedDrag.dx || appliedDrag.dy)) {
+            moveSelectedItem(-appliedDrag.dx, -appliedDrag.dy);
+        }
+        appliedDrag = { dx: 0, dy: 0 };
+        exports.deselect();
     }
 
     /**
@@ -492,6 +524,8 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         selectionOverlay.releasePointerCapture(e.pointerId);
         selectionOverlay.removeEventListener('pointermove', onOverlayPointerMove);
         selectionOverlay.removeEventListener('pointerup', onOverlayPointerUp);
+        selectionOverlay.removeEventListener('pointercancel', onOverlayPointerCancel);
+        appliedDrag = { dx: 0, dy: 0 };
 
         if (isDragging && typeof exports.onMoveCompleted === 'function' && selectedItem) {
             var sourcePageIdx = dragSourcePageIdx !== null ? dragSourcePageIdx : selectedItem.pageIdx;

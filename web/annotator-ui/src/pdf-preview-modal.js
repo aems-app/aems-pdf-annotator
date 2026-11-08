@@ -4413,6 +4413,9 @@
                 // The undo step restores this stored (top-left) rect, as for a moved comment.
                 var originalEntry = findAnnotationEntry(sourcePageIdx, originalAnnotationId);
                 var originalRect = originalEntry && Array.isArray(originalEntry.rect) ? originalEntry.rect.slice() : null;
+                // Ink has no Rect in PyMuPDF: a moved stroke is put back by its points.
+                var originalPoints = item.type === 'stroke' && originalEntry && Array.isArray(originalEntry.points)
+                    ? originalEntry.points.map(function (pt) { return pt.slice(); }) : null;
                 var pageWrapper = null;
                 var wrappers = document.querySelectorAll('#pdfGradedContainer .pdf-page-wrapper');
                 if (wrappers[targetPageIdx]) pageWrapper = wrappers[targetPageIdx];
@@ -4495,7 +4498,7 @@
                         }
                         upsertAnnotationEntryLocal(data.annotation, targetPageIdx);
                         refreshMarkupFromAnnotations();
-                        if (originalRect) {
+                        if (originalRect && (item.type !== 'stroke' || originalPoints)) {
                             // Undo/redo of a moved text box or stroke uses the comment move step,
                             // so Ctrl+Z reverts this move instead of an earlier action.
                             var movedIdentity = crossPageMoveIdentity(data.annotation, originalEntry.xref ? String(originalEntry.xref) : undefined);
@@ -4507,6 +4510,7 @@
                                 oldPageIdx: sourcePageIdx,
                                 newPageIdx: targetPageIdx,
                                 oldRect: originalRect,
+                                oldPoints: originalPoints,
                                 newRect: data.annotation.rect,
                                 oldSource: originalEntry.source || resolveAnnotationSource(originalEntry),
                                 newSource: originalEntry.source || resolveAnnotationSource(originalEntry),
@@ -4877,10 +4881,10 @@
                 } catch (_e) { /* fallback to raw rect */ }
             }
 
-            updateData = {
-                page_index: operation.oldPageIdx,
-                rect: apiRect,
-            };
+            // A moved ink stroke is restored by its points: PyMuPDF ignores a Rect on Ink.
+            updateData = Array.isArray(operation.oldPoints)
+                ? { page_index: operation.oldPageIdx, points: cloneHighlightQuads(operation.oldPoints) }
+                : { page_index: operation.oldPageIdx, rect: apiRect };
 
             // Revert source if this was an ownership transfer
             if (operation.isOwnershipTransfer && operation.oldSource) {

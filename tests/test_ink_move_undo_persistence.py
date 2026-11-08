@@ -71,3 +71,36 @@ def test_a_rect_only_undo_leaves_the_stroke_moved(ink_pdf: Path) -> None:
     _update(ink_pdf, new_points=MOVED)
     _update(ink_pdf, new_rect=(50.0, 442.0, 200.0, 492.0))
     assert _points(_ink(ink_pdf)) == MOVED
+
+
+@pytest.mark.parametrize("kind", [AnnotationType.TEXTBOX, AnnotationType.TEXT])
+def test_rect_annotations_the_drag_can_move_restore_by_rect(tmp_path: Path, kind: AnnotationType) -> None:
+    """Text boxes and notes keep their position in Rect, so a rect undo restores them.
+
+    The annotator creates no shape annotations (CIRCLE is refused as unknown); pen and
+    highlighter strokes are Ink, covered above.
+    """
+    pdf_path = tmp_path / f"{kind.value}.pdf"
+    doc = fitz.open()
+    doc.new_page(width=612, height=792)
+    doc.save(str(pdf_path))
+    doc.close()
+    with PDFAnnotator(pdf_path) as annotator:
+        assert annotator.add_annotation(PDFAnnotation(
+            id=f"move-{kind.value}", page_index=0, bbox=BBox(x0=50, y0=50, x1=200, y1=80), kind=kind,
+            color=AnnotationColor.GREEN, comment="Move me", grader_name="Synthetic Teacher",
+            stroke_color_rgb=[0, 0, 0] if kind == AnnotationType.TEXTBOX else None,
+        ))
+        annotator.save()
+
+    def stored_rect() -> list[float]:
+        with PDFAnnotator(pdf_path) as annotator:
+            (ann,) = annotator.get_annotations_on_page(0)
+            return [round(float(value), 1) for value in ann["rect"]]
+
+    original = stored_rect()
+    for rect in [(150.0, 250.0, 300.0, 280.0), tuple(original)]:
+        with PDFAnnotator(pdf_path) as annotator:
+            assert annotator.update_annotation(f"move-{kind.value}", new_rect=rect)
+            annotator.save()
+    assert stored_rect() == original
