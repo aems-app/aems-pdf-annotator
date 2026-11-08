@@ -24,6 +24,7 @@ describe('own markup editing with real pointer and click sequences', () => {
   let modal;
   const annotation = {
     stable_id: 'own-text', page_index: 0, type: 'textbox',
+    etag: 'fixture-own-text',
     content: 'Check units', rect: [80, 100, 180, 128], color: 'amber',
   };
 

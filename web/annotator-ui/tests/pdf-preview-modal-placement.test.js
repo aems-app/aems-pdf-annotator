@@ -185,6 +185,7 @@ async function createSplitOwnershipHarness({
   const factory = window.PdfPreviewModalAnnotationController.createAnnotationController;
   const annotation = {
     id: 'owned-comment', stable_id: 'owned-comment', xref: 42, page_index: 0,
+    etag: 'fixture-owned-comment',
     type: 'Highlight', content: 'Teacher feedback', source, original_source: 'AI',
     color: 'amber', grader_name: 'Artem Kulachenko', rect: [50, 50, 150, 70],
     quads: [[50, 50, 150, 70]], anchor_text: 'answer text',
@@ -1572,7 +1573,10 @@ describe('pdf-preview-modal placement helpers', () => {
   it('discards a dead move undo so an older operation can run', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const updateAnnotation = vi.fn().mockResolvedValue({ success: true });
-    const harness = await createUndoHarness({ updateAnnotation });
+    const harness = await createUndoHarness({
+      updateAnnotation,
+      annotations: { 0: [{ stable_id: 'older-annotation', page_index: 0, etag: 'fixture-older' }] },
+    });
     harness.pushLocalUndo({
       type: 'edit',
       identifier: 'older-annotation',
@@ -1615,7 +1619,13 @@ describe('pdf-preview-modal placement helpers', () => {
         rejectFirstRequest = reject;
       }))
       .mockResolvedValue({ success: true });
-    const harness = await createUndoHarness({ updateAnnotation });
+    const harness = await createUndoHarness({
+      updateAnnotation,
+      annotations: { 0: [
+        { stable_id: 'older-annotation', page_index: 0, etag: 'fixture-older' },
+        { stable_id: 'newer-annotation', page_index: 0, etag: 'fixture-newer' },
+      ] },
+    });
     harness.pushLocalUndo({
       type: 'edit',
       identifier: 'older-annotation',
@@ -1989,6 +1999,7 @@ describe('pdf-preview-modal placement helpers', () => {
     async function fallbackHighlightReady() {
       const highlight = {
         stable_id: 'hl-1', xref: 70, page_index: 0, type: 'Highlight', content: 'Check the sign',
+        etag: 'fixture-highlight',
         quads: [[50, 50, 150, 70]], anchor_text: 'answer text', rect: [50, 50, 150, 70], source: 'AI',
       };
       let state = { ...highlight };
@@ -2055,7 +2066,7 @@ describe('pdf-preview-modal placement helpers', () => {
       const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
       window.PdfPreviewModalMarkupSelection = selection;
       const createAnnotation = vi.fn(async (_assignment, _submission, body) => ({
-        success: true, annotation: { ...body, stable_id: 'stroke-2', xref: 61 },
+        success: true, annotation: { ...body, stable_id: 'stroke-2', xref: 61, etag: 'fixture-stroke-2' },
       }));
       const deleteAnnotation = vi.fn().mockResolvedValue({ success: true });
       const h = await undoHarness({
@@ -2063,7 +2074,7 @@ describe('pdf-preview-modal placement helpers', () => {
         deleteAnnotation,
         visibilityController: {}, // the undo and the redo re-render the page overlay
         annotations: {
-          0: [{ stable_id: 'stroke-1', xref: 60, page_index: 0, type: 'drawing', content: '', source: 'HUMAN' }],
+          0: [{ stable_id: 'stroke-1', xref: 60, page_index: 0, type: 'drawing', content: '', source: 'HUMAN', etag: 'fixture-stroke-1' }],
         },
       });
       selection.deleteSelected.mockReturnValue({
@@ -2133,7 +2144,9 @@ describe('pdf-preview-modal placement helpers', () => {
       await vi.waitFor(() => expect(deleteAnnotation).toHaveBeenCalledTimes(2));
 
       const [assignment, submission, , options] = deleteAnnotation.mock.calls[0];
-      expect(deleteAnnotation.mock.calls[1]).toEqual([assignment, submission, 'stroke-2', options]);
+      expect(deleteAnnotation.mock.calls[1]).toEqual([
+        assignment, submission, 'stroke-2', { ...options, ifMatch: 'fixture-stroke-2' },
+      ]);
       await vi.waitFor(() => expect(h.handle.getAnnotations()).toEqual({}));
       expect(h.getUndoStacks().local).toEqual([expect.objectContaining({ type: 'delete-markup' })]);
       h.handle.destroy();
@@ -2362,7 +2375,13 @@ describe('pdf-preview-modal placement helpers', () => {
       const controllerUndoStack = Array.from({ length: 50 }, (_value, i) => edit(`controller-${i}`, i + 1));
       const updateAnnotation = vi.fn().mockResolvedValue({ success: true });
       // An overlay renderer, because each undo and redo re-renders the page overlay.
-      const h = await undoHarness({ controllerUndoStack, updateAnnotation, visibilityController: {} });
+      const h = await undoHarness({
+        controllerUndoStack, updateAnnotation, visibilityController: {},
+        annotations: { 0: Array.from({ length: 50 }, (_value, i) => [
+          { stable_id: `controller-${i}`, page_index: 0, etag: `fixture-controller-${i}` },
+          { stable_id: `local-${i}`, page_index: 0, etag: `fixture-local-${i}` },
+        ]).flat() },
+      });
       for (let i = 0; i < 50; i += 1) {
         h.pushLocalUndo(edit(`local-${i}`, 1000 + i));
       }
@@ -2597,10 +2616,12 @@ describe('pdf-preview-modal placement helpers', () => {
       const h = await splitHarness();
       const a = {
         stable_id: 'A', id: 'A', identifier: 'A', requestIdentifier: 'A', xref: 42,
+        etag: 'fixture-A',
         page_index: 0, type: 'drawing', source: 'HUMAN', content: 'A content',
       };
       const b = {
         stable_id: '42', id: '42', identifier: '42', requestIdentifier: 'id:42', xref: 99,
+        etag: 'fixture-42',
         page_index: 0, type: 'Text', source: 'HUMAN', content: 'B original', rect: [50, 50, 150, 70],
       };
       h.options.setAnnotationsData({ 0: [b, a] });
@@ -2619,7 +2640,7 @@ describe('pdf-preview-modal placement helpers', () => {
         return { success: true };
       });
       h.adapter.createAnnotation.mockImplementation(async (_a, _s, body) => ({
-        success: true, annotation: { ...body, stable_id: 'A-restored', xref: 100 },
+        success: true, annotation: { ...body, stable_id: 'A-restored', xref: 100, etag: 'fixture-A-restored' },
       }));
       selection.deleteSelected.mockReturnValue({
         type: 'stroke', pageIdx: 0,
@@ -2651,7 +2672,7 @@ describe('pdf-preview-modal placement helpers', () => {
       const finish = pending(h.updateAnnotation);
       const first = h.options.helpers.updateAnnotationRequest('A', { content: 'overlap one' }).catch(() => {});
       const second = h.options.helpers.updateAnnotationRequest('A', { content: 'overlap two' }).catch(() => {});
-      finish({ success: true });
+      finish({ success: true, annotation: { ...h.a } });
       await Promise.all([first, second]);
 
       expect.soft(h.getUndoStacks()).toEqual({
@@ -2688,6 +2709,7 @@ describe('pdf-preview-modal placement helpers', () => {
         const unrelated = { type: 'edit', identifier: 'unrelated-comment', snapshot: { xref: 99 }, pageIdx: 0 };
         const restored = {
           stable_id: 'restored-comment', id: 'restored-comment', xref: 42, page_index: 0,
+          etag: 'fixture-restored-comment',
           type: 'Text', content: 'Deleted text', rect: [10, 20, 30, 40],
         };
         const h = await undoHarness({
@@ -2761,6 +2783,15 @@ describe('pdf-preview-modal placement helpers', () => {
     it('conflict recovery keeps unrelated undo and redo history in order on all three stacks', async () => {
       const h = await splitHarness();
       serveAnnotation(h);
+      h.options.getAnnotationsData()[0].push(...['B', 'C'].map((id) => ({
+        stable_id: id, page_index: 0, type: 'Text', content: `Existing ${id}`, etag: `fixture-${id}`,
+      })));
+      const updateOwned = h.updateAnnotation.getMockImplementation();
+      h.updateAnnotation.mockImplementation(async (assignment, submission, id, body) => {
+        if (id === 'owned-comment') return updateOwned(assignment, submission, id, body);
+        const current = entries(h).find((annotation) => annotation.stable_id === id);
+        return { success: true, annotation: { ...current, ...body } };
+      });
       const edit = (identifier, suffix) => ({
         type: 'edit', identifier, pageIdx: 0, oldContent: `old ${suffix}`, newContent: `new ${suffix}`,
       });
@@ -2781,7 +2812,7 @@ describe('pdf-preview-modal placement helpers', () => {
       const finish = pending(h.updateAnnotation);
       const first = h.options.helpers.updateAnnotationRequest('owned-comment', { content: 'overlap one' }).catch(() => {});
       const second = h.options.helpers.updateAnnotationRequest('owned-comment', { content: 'overlap two' }).catch(() => {});
-      finish({ success: true });
+      finish({ success: true, annotation: { ...h.annotation } });
       await Promise.all([first, second]);
       expect(h.getUndoStacks()).toEqual({
         local: before.local.filter((op) => op.identifier === 'B'),
@@ -3346,6 +3377,7 @@ describe('pdf-preview-modal placement helpers', () => {
           ...(body.rect ? { rect: topLeftRect(body.rect) } : {}),
           source: body.source ?? 'HUMAN',
           stable_id: id,
+          etag: `fixture-${id}`,
           xref: 600 + nextId,
         });
       });
@@ -3416,6 +3448,7 @@ describe('pdf-preview-modal placement helpers', () => {
     // What the page shows of a markup, apart from its identifiers.
     const markupState = (annotation) => {
       const { stable_id: _stableId, xref: _xref, id: _id, identifier: _identifier, requestIdentifier: _request,
+        etag: _etag,
         ...rest } = annotation;
       return rest;
     };

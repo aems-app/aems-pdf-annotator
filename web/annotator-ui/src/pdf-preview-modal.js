@@ -1796,28 +1796,28 @@
     // Read the server's current annotation instead of applying either response, and discard ambiguous history.
     function findLocalAnnotation(annotationId) {
         return Object.keys(annotationsData)
-            .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
+            .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean)
+            || Object.values(annotationsData).flat().find((annotation) =>
+                historyIdentityMatches(annotation, { identifier: annotationId }));
     }
 
     // The version of a comment this page last received from the host. Sent as If-Match so a
     // write based on an older copy is refused instead of replacing a colleague's newer text.
-    function annotationWriteOptions(annotationId) {
-        const options = { offline: _isOfflineMode() };
-        const etag = findLocalAnnotation(annotationId)?.etag;
-        if (etag) options.ifMatch = etag;
-        return options;
+    function annotationWriteOptions(etag, offline = _isOfflineMode()) {
+        if (!etag) {
+            throw new Error(t('This comment could not be saved safely. Copy your text and reload the document.'));
+        }
+        return { offline, ifMatch: etag };
     }
 
     function chainAnnotationWrite(writes, annotationId, epoch, send) {
         const previous = writes.tail;
-        const options = annotationWriteOptions(annotationId);
+        const displayedEtag = findLocalAnnotation(annotationId)?.etag;
         const request = (async () => {
-            if (previous) {
-                const data = await previous; // A refusal cancels all queued writes.
-                if (data?.annotation?.etag) options.ifMatch = data.annotation.etag;
-            }
+            const dataBefore = previous ? await previous : null; // A refusal cancels queued writes.
             if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
             if (deletedAnnotationIdentities.has(String(annotationId))) throw CANCELED_ANNOTATION_WRITE;
+            const options = annotationWriteOptions(previous ? dataBefore?.annotation?.etag : displayedEtag);
             const data = await send(options);
             if (isCurrentHistoryEpoch(epoch)) rememberAnnotationEtag(annotationId, data);
             return data;
@@ -2013,7 +2013,7 @@
         });
     }
 
-    function captureDraftDeleteRequest() {
+    function captureDraftDeleteRequest(annotation) {
         // Explicit close cleanup belongs to the document being left, including
         // when its create POST completes after the next booklet has opened.
         const adapter = _requireAnnotationAdapter();
@@ -2022,7 +2022,8 @@
         const offline = _isOfflineMode();
         const epoch = currentHistoryEpoch();
         return async (id) => {
-            const data = await adapter.deleteAnnotation(assignmentId, submissionId, id, { offline });
+            const data = await adapter.deleteAnnotation(assignmentId, submissionId, id,
+                annotationWriteOptions(annotation?.etag, offline));
             if (data?.success && isCurrentHistoryEpoch(epoch)) invalidateDeletedAnnotation(id);
             return data;
         };

@@ -58,6 +58,7 @@ describe('inline editor focus with a focusable sidebar item', () => {
     window.PdfPreviewModalAnnotationController.createAnnotationController = (options) => {
       options.setAnnotationsData({ 0: [{
         id: 'feedback-1', stable_id: 'feedback-1', page_index: 0,
+        etag: 'fixture-feedback-1',
         type: 'Text', content: 'Existing feedback', color: 'amber', source: 'AI',
         rect: [50, 50, 150, 70],
       }] });
@@ -66,7 +67,9 @@ describe('inline editor focus with a focusable sidebar item', () => {
       return controller;
     };
     adapter = {
-      updateAnnotation: vi.fn().mockResolvedValue({ success: true }),
+      updateAnnotation: vi.fn(async (_assignment, _submission, _id, body) => ({
+        success: true, annotation: { ...body, etag: 'fixture-feedback-1' },
+      })),
       createAnnotation: vi.fn().mockResolvedValue({ success: true }),
       deleteAnnotation: vi.fn().mockResolvedValue({ success: true }),
     };

@@ -53,6 +53,7 @@ async function hostHarness() {
   w.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} };
   const stored = new Map([1, 2].map((id) => [id, {
     stable_id: 'same-comment', xref: 42, page_index: 0, type: 'Text',
+    etag: `fixture-submission-${id}`,
     content: `Submission ${id}`, color: 'amber', source: 'AI', rect: [50, 50, 150, 70],
   }]));
   const adapters = [];

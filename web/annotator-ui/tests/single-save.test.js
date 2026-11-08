@@ -20,7 +20,7 @@ describe('one save with a 300 ms PUT', () => {
       resolvePdfjsLib: () => ({}),
     };
     window.PdfPreviewModalOverlayRenderer = { createOverlayRenderer: () => ({ onMarkerClicked() {}, onMarkerDblClicked() {}, onOverlayDblClicked() {}, onOverlayReady() {}, renderPage() {}, renderAnnotations() {}, destroy() {} }) };
-    stored = new Map(ids.map(id => [id, { id, stable_id: id, check_id: id, page_index: 0, type: 'Text', content: `Original ${id}`, color: 'amber', source: 'HUMAN', rect: [50, 50, 150, 70] }]));
+    stored = new Map(ids.map(id => [id, { id, stable_id: id, check_id: id, etag: `initial-${id}`, page_index: 0, type: 'Text', content: `Original ${id}`, color: 'amber', source: 'HUMAN', rect: [50, 50, 150, 70] }]));
     version = 'v1';
     adapter = {
       updateAnnotation: vi.fn(async (_a, _s, id, body) => {
@@ -198,7 +198,7 @@ describe('one save with a 300 ms PUT', () => {
       editor.setSelectionRange(2, 5);
       await vi.advanceTimersByTimeAsync(800);
       expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
-      expect(adapter.updateAnnotation.mock.calls[0][4]).toEqual({ offline: mode === 'offline' });
+      expect(adapter.updateAnnotation.mock.calls[0][4]).toEqual({ offline: mode === 'offline', ifMatch: 'initial-feedback-1' });
       expect(stored.get(ids[0]).content).toBe('First edit');
       expectDraft(editor, 'Latest edit');
       expect(options.getAnnotationsData()[0][0]._originalContent).toBe('First edit');
@@ -694,10 +694,29 @@ describe('one save with a 300 ms PUT', () => {
       expect(adapter.listAnnotations).not.toHaveBeenCalled();
     });
 
-    it('a comment without an etag (old server) sends no If-Match', async () => {
+    it('a comment without an etag refuses the write and asks for a reload', async () => {
       delete local(ids[0]).etag;
       key(edit()); await vi.advanceTimersByTimeAsync(800);
-      expect(adapter.updateAnnotation.mock.calls[0][4]).toEqual({ offline: false });
+      expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+      expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('reload the document'));
+    });
+
+    it('a queued write is refused if its predecessor returns no comment tag', async () => {
+      adapter.updateAnnotation.mockImplementationOnce(async () => {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        return { success: true };
+      });
+      const request = options.helpers.updateAnnotationRequest;
+      const outcomes = Promise.allSettled([request(ids[0], { color: 'red' }), request(ids[0], { content: 'Queued' })]);
+      await vi.advanceTimersByTimeAsync(800);
+      expect((await outcomes).every(r => r.status === 'rejected')).toBe(true);
+      expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    });
+
+    it('a captured draft cleanup without its creation tag sends no DELETE', async () => {
+      const cleanup = options.helpers.captureDraftDeleteRequest();
+      await expect(cleanup(ids[0])).rejects.toThrow('reload the document');
+      expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
     });
 
     it('a notice with an action is shown inside the native fullscreen element', async () => {
