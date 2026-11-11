@@ -1471,6 +1471,27 @@ describe('pdf-preview-modal placement helpers', () => {
     harness.handle.destroy();
   });
 
+  it('restores the original author when another reviewer undoes a deletion', async () => {
+    const createAnnotation = vi.fn().mockResolvedValue({ success: true });
+    const harness = await createUndoHarness({
+      createAnnotation,
+      visibilityController: {},
+      controllerUndoStack: [{
+        type: 'delete', pageIdx: 0, undoTimestamp: 100,
+        annotation: { ...cloneLossyDeleteHighlight(), source: 'HUMAN', author_name: 'Original Teacher' },
+      }],
+    });
+    window.__pdfGradedViewer = {
+      pdf: { getPage: vi.fn().mockResolvedValue({ view: [0, 0, 612, DELETE_UNDO_PAGE_HEIGHT] }) },
+    };
+    harness.dispatchUndo();
+    await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledOnce());
+    expect(createAnnotation.mock.calls[0][2]).toMatchObject({
+      author_name: 'Original Teacher', source: 'HUMAN',
+    });
+    harness.handle.destroy();
+  });
+
   it('still converts deleted highlight quads when the snapshot rect is malformed', async () => {
     // The conversion used to run inside a guard on the rect's shape, so a
     // missing or malformed rect left otherwise-valid quads in top-left space
