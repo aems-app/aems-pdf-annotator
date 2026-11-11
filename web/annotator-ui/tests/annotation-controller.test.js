@@ -119,6 +119,29 @@ describe('annotation-controller state ownership', () => {
     expect(controller.peekUndoOperation().annotation.quads).not.toBe(annotation.quads);
   });
 
+  it.each([
+    { grader_name: 'Original Teacher' },
+    { author_name: 'Original Teacher' },
+  ])('retains another author in a deleted HUMAN comment snapshot: %j', async (author) => {
+    const mod = await loadAnnotationControllerModule();
+    const annotation = { ...cloneLossyDeleteHighlight(), ...author, source: 'HUMAN' };
+    const annotationsData = { 0: [annotation] };
+    const controller = mod.createAnnotationController({
+      annotationsState: { undoStack: [] },
+      getAnnotationsData: () => annotationsData,
+      helpers: {
+        normalizeAnnotationIdentifierValue: String,
+        buildApiAnnotationIdentifier: ({ identifier }) => identifier,
+        deleteAnnotationRequest: vi.fn().mockResolvedValue({ success: true }),
+        findAnnotationEntry: () => annotation,
+        findAnnotationIndex: () => 0,
+        resolveAnnotationSource: (ann) => ann.source,
+      },
+    });
+    await controller.deleteAnnotation(0, annotation.stable_id);
+    expect(controller.peekUndoOperation().annotation.author_name).toBe('Original Teacher');
+  });
+
   it('captures a full undo operation after completing a highlight extend', async () => {
     document.body.innerHTML = `
       <div

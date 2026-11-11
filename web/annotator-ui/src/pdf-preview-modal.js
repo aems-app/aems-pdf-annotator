@@ -4540,6 +4540,7 @@
                 var snapshot = item && item.entry ? {
                     xref: deletedAnnotation?.xref,
                     stable_id: deletedAnnotation?.stable_id,
+                    author_name: deletedAnnotation?.grader_name || deletedAnnotation?.author_name || undefined,
                     content: item.entry.content,
                     color: item.entry.color && item.entry.color.name ? item.entry.color.name : (typeof item.entry.color === 'string' ? item.entry.color : 'amber'),
                     stroke_color_rgb: item.entry.color && item.entry.color.rgb ? item.entry.color.rgb : null,
@@ -4971,6 +4972,9 @@
             source: operation.annotation.source || 'HUMAN',  // Preserve original source
         };
 
+        if (operation.annotation.author_name) {
+            annotationData.author_name = operation.annotation.author_name;
+        }
         if (isQuadHighlight) {
             annotationData.quads = apiQuads;
             annotationData.anchor_text = operation.annotation.anchor_text;
@@ -5297,6 +5301,7 @@
             color: snap.color || 'amber',
             source: 'HUMAN',
         };
+        if (snap.author_name) body.author_name = snap.author_name;
         if (snap.stroke_color_rgb) body.stroke_color_rgb = snap.stroke_color_rgb;
         if (snap.rect) body.rect = snap.rect;
         if (snap.points) {
@@ -5384,6 +5389,8 @@
             color: deriveAnnotationPriority(annotation) || 'amber',
             source: resolveAnnotationSource(annotation),
         };
+        const authorName = annotation.grader_name || annotation.author_name;
+        if (authorName) body.author_name = authorName;
         if (annotation.stroke_color_rgb) body.stroke_color_rgb = annotation.stroke_color_rgb;
         if (annotation.type === 'drawing') {
             body.drawing_style = annotation.drawing_style;

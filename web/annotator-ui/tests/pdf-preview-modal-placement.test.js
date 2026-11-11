@@ -1471,6 +1471,27 @@ describe('pdf-preview-modal placement helpers', () => {
     harness.handle.destroy();
   });
 
+  it('restores the original author when another reviewer undoes a deletion', async () => {
+    const createAnnotation = vi.fn().mockResolvedValue({ success: true });
+    const harness = await createUndoHarness({
+      createAnnotation,
+      visibilityController: {},
+      controllerUndoStack: [{
+        type: 'delete', pageIdx: 0, undoTimestamp: 100,
+        annotation: { ...cloneLossyDeleteHighlight(), source: 'HUMAN', author_name: 'Original Teacher' },
+      }],
+    });
+    window.__pdfGradedViewer = {
+      pdf: { getPage: vi.fn().mockResolvedValue({ view: [0, 0, 612, DELETE_UNDO_PAGE_HEIGHT] }) },
+    };
+    harness.dispatchUndo();
+    await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledOnce());
+    expect(createAnnotation.mock.calls[0][2]).toMatchObject({
+      author_name: 'Original Teacher', source: 'HUMAN',
+    });
+    harness.handle.destroy();
+  });
+
   it('still converts deleted highlight quads when the snapshot rect is malformed', async () => {
     // The conversion used to run inside a guard on the rect's shape, so a
     // missing or malformed rect left otherwise-valid quads in top-left space
@@ -3522,6 +3543,31 @@ describe('pdf-preview-modal placement helpers', () => {
         await settle();
         expect(m.server.deleteAnnotation.mock.calls.at(-1)[2]).toBe('markup-3');
         expect(pageMarkup(m)).toEqual([]);
+      },
+    );
+
+    it.each([['stroke', drawStroke], ['textbox', typeTextbox]])(
+      'retains another author through %s delete undo and creation redo', async (type, create) => {
+        const m = await markupHarness();
+        await create(m);
+        const [created] = Object.values(m.h.getAnnotationsData()).flat();
+        created.grader_name = 'Original Teacher';
+        m.selection.deleteSelected.mockReturnValue({ type, pageIdx: 0, entry: {
+          annotationId: 'markup-1', content: 'Check units', color: { name: 'amber', rgb: [0, 0, 1] },
+          points: [{ x: 10, y: 92 }, { x: 20, y: 102 }],
+        } });
+        m.selection.onDeleteRequested();
+        await settle();
+        m.h.dispatchUndo();
+        await vi.waitFor(() => expect(m.server.createAnnotation).toHaveBeenCalledTimes(2));
+        await settle();
+        expect(m.server.createAnnotation.mock.calls[1][2].author_name).toBe('Original Teacher');
+        Object.values(m.h.getAnnotationsData()).flat()[0].grader_name = 'Original Teacher';
+        m.h.dispatchUndo();
+        await settle();
+        m.h.dispatchRedo();
+        await vi.waitFor(() => expect(m.server.createAnnotation).toHaveBeenCalledTimes(3));
+        expect(m.server.createAnnotation.mock.calls[2][2].author_name).toBe('Original Teacher');
       },
     );
 
