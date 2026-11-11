@@ -3546,6 +3546,31 @@ describe('pdf-preview-modal placement helpers', () => {
       },
     );
 
+    it.each([['stroke', drawStroke], ['textbox', typeTextbox]])(
+      'retains another author through %s delete undo and creation redo', async (type, create) => {
+        const m = await markupHarness();
+        await create(m);
+        const [created] = Object.values(m.h.getAnnotationsData()).flat();
+        created.grader_name = 'Original Teacher';
+        m.selection.deleteSelected.mockReturnValue({ type, pageIdx: 0, entry: {
+          annotationId: 'markup-1', content: 'Check units', color: { name: 'amber', rgb: [0, 0, 1] },
+          points: [{ x: 10, y: 92 }, { x: 20, y: 102 }],
+        } });
+        m.selection.onDeleteRequested();
+        await settle();
+        m.h.dispatchUndo();
+        await vi.waitFor(() => expect(m.server.createAnnotation).toHaveBeenCalledTimes(2));
+        await settle();
+        expect(m.server.createAnnotation.mock.calls[1][2].author_name).toBe('Original Teacher');
+        Object.values(m.h.getAnnotationsData()).flat()[0].grader_name = 'Original Teacher';
+        m.h.dispatchUndo();
+        await settle();
+        m.h.dispatchRedo();
+        await vi.waitFor(() => expect(m.server.createAnnotation).toHaveBeenCalledTimes(3));
+        expect(m.server.createAnnotation.mock.calls[2][2].author_name).toBe('Original Teacher');
+      },
+    );
+
     it('keeps persisted text current after a content undo without an echoed annotation', async () => {
       const h = await splitHarness();
       serveAnnotation(h);

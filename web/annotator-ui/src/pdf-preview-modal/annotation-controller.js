@@ -3173,6 +3173,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     pageIdx: pageIdx,
                     annotation: {
                         content: originalAnn.content,
+                        author_name: originalAnn.grader_name || originalAnn.author_name || undefined,
                         type: originalAnn.type,
                         rect: _cloneRect(originalAnn && originalAnn.rect),
                         color: originalAnn.color,
