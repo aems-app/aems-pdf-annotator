@@ -130,16 +130,24 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
     }
 
     function resolveColorData(color) {
-        if (color && Array.isArray(color.rgb)) {
-            return {
-                css: 'rgb(' + color.rgb.join(',') + ')',
-                value: { name: color.name || '', rgb: color.rgb.slice() }
-            };
-        }
+        var rgb = Array.isArray(color) ? color : color && color.rgb;
         if (typeof color === 'string' && color) {
+            var probe = document.createElement('span');
+            probe.style.color = color;
+            if (probe.style.color) {
+                document.body.appendChild(probe);
+                var computed = window.getComputedStyle(probe).color;
+                probe.remove();
+                var components = computed.match(/^rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)/);
+                if (components) rgb = components.slice(1, 4).map(Number);
+            }
+        }
+        if (Array.isArray(rgb) && rgb.length === 3 && rgb.every(function (value) {
+            return Number.isFinite(value) && value >= 0 && value <= 255;
+        })) {
             return {
-                css: color,
-                value: color
+                css: 'rgb(' + rgb.join(',') + ')',
+                value: { name: color.name || '', rgb: rgb.slice() }
             };
         }
         return {
@@ -147,6 +155,10 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
             value: { name: 'black', rgb: [0, 0, 0] }
         };
     }
+
+    exports.resolveColorRgb = function resolveColorRgb(color) {
+        return resolveColorData(color).value.rgb;
+    };
 
     /**
      * Best-effort element removal for textbox refresh/blur races.
@@ -604,11 +616,26 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
     exports.moveTextboxToPage = function moveTextboxToPage(entry, targetPageIdx, targetPageWrapper, cssLeft, cssTop) {
         if (!entry || !entry.element || !targetPageWrapper) return;
 
+        var sourceWrapper = getPageWrapperForEntry(entry);
+        var sourceScale = getCanvasScale(sourceWrapper);
+        var targetScale = getCanvasScale(targetPageWrapper);
+        var viewer = window.__pdfGradedViewer;
+        var sourceViewport = viewer && viewer.getViewportForPage(entry.pageIdx + 1);
+        var targetViewport = viewer && viewer.getViewportForPage(targetPageIdx + 1);
+        var ratio = (targetViewport ? targetViewport.scale : 1) / (sourceViewport ? sourceViewport.scale : 1);
+        var sourceRect = getTextboxVisualCssRect(entry);
+        var width = (sourceRect[2] - sourceRect[0]) * ratio * targetScale.scaleX / sourceScale.scaleX;
+        var height = (sourceRect[3] - sourceRect[1]) * ratio * targetScale.scaleY / sourceScale.scaleY;
+        var quarterTurn = entry.displayRotation === 90 || entry.displayRotation === 270;
+        entry.element.style.width = (quarterTurn ? height : width) + 'px';
+        entry.element.style.height = (quarterTurn ? width : height) + 'px';
         removeEntryFromPageMap(entry.pageIdx, entry);
 
         var targetLayer = getOrCreateTextboxLayer(targetPageWrapper);
         targetLayer.appendChild(entry.element);
         var visualRect = getTextboxVisualCssRect(entry);
+        cssLeft = Math.max(0, Math.min(cssLeft, Math.max(0, targetLayer.offsetWidth - width)));
+        cssTop = Math.max(0, Math.min(cssTop, Math.max(0, targetLayer.offsetHeight - height)));
         exports.moveTextbox(entry, cssLeft - visualRect[0], cssTop - visualRect[1]);
         entry.pageIdx = targetPageIdx;
 

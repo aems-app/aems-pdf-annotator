@@ -158,6 +158,103 @@ describe('Luca F1 scoped native identity through actual textbox callbacks', () =
 
   const geometryCases=glyphFixtures.flatMap(fixture=>[...new Set([0,fixture.rotation])]
     .map(nativeRotation=>({fixture,nativeRotation})));
+  it.each(['rgb(0, 0, 255)',[0,0,255],{name:'blue',rgb:[0,0,255]}].map(color=>({color})))(
+    'existing blue textbox content-only callback omits native style and geometry $color',async({color})=> {
+      annotations()[0][0].stroke_color_rgb=[0,0,255];annotations()[0][0].color='blue';
+      helpers.refreshMarkupFromAnnotations();
+      const entry=boxes.getPageTextboxes(0)[0];entry.color=color;
+      boxes.editTextbox(entry);entry.contentElement.textContent='Blue native content edited FULL_TAIL';
+      entry.contentElement.dispatchEvent(new w.Event('input'));entry.contentElement.dispatchEvent(new w.Event('blur'));
+      await settle();
+      expect(adapter.updateAnnotation).toHaveBeenCalledOnce();
+      expect(adapter.updateAnnotation.mock.calls[0][3]).toEqual({content:'Blue native content edited FULL_TAIL'});
+    },
+  );
+
+  const fitScales=[
+    {sourceCss:0.5,targetCss:1.5,sourceRender:1,targetRender:2},
+    {sourceCss:1.5,targetCss:0.5,sourceRender:2,targetRender:1},
+    {sourceCss:0.8,targetCss:1.2,sourceRender:1.5,targetRender:2},
+    {sourceCss:1,targetCss:1,sourceRender:1,targetRender:2},
+    {sourceCss:0.5,targetCss:1.5,sourceRender:1,targetRender:2,pointerDrop:true},
+    {sourceCss:1.5,targetCss:0.5,sourceRender:2,targetRender:1,pointerDrop:true},
+  ];
+  it.each(['rgb(0, 0, 255)',[0,0,255],{name:'blue',rgb:[0,0,255]}].map(color=>({color})))(
+    'new textbox callback retains selected blue palette color $color',async({color})=> {
+      const entry=boxes.getPageTextboxes(0)[0];entry.annotationId=null;entry.color=color;
+      entry.content='New blue synthetic FULL_TAIL';boxes.onTextboxCommitted(entry);await settle();
+      expect(adapter.createAnnotation).toHaveBeenCalledOnce();
+      expect(adapter.createAnnotation.mock.calls[0][2].stroke_color_rgb).toEqual([0,0,255]);
+    },
+  );
+  it.each(glyphFixtures.flatMap(fixture=>fitScales.map(scales=>({fixture,...scales}))))(
+    'actual cross-page move keeps PDF size at rotation $fixture.rotation CSS $sourceCss/$targetCss render $sourceRender/$targetRender pointer $pointerDrop',
+    async({fixture,sourceCss,targetCss,sourceRender,targetRender,pointerDrop})=> {
+      delete annotations()[1];
+      const target={...annotation,rect:[40,65,190,115],rotation:0};annotations()[0]=[target];
+      const hosts=[...d.querySelectorAll('.pdf-page-wrapper')];
+      const viewport=(render)=> {
+        const m=fixture.transform.map(value=>value*render),det=m[0]*m[3]-m[1]*m[2];
+        const point=(x,y)=>[m[0]*x+m[2]*y+m[4],m[1]*x+m[3]*y+m[5]];
+        return {rotation:fixture.rotation,scale:render,viewBox:fixture.viewBox,
+          width:fixture.page[0]*render,height:fixture.page[1]*render,
+          convertToViewportPoint:point,convertToViewportRectangle:([x0,y0,x1,y1])=>[...point(x0,y0),...point(x1,y1)],
+          convertToPdfPoint:(x,y)=>[(m[3]*(x-m[4])-m[2]*(y-m[5]))/det,(-m[1]*(x-m[4])+m[0]*(y-m[5]))/det]};
+      };
+      const viewports=[viewport(sourceRender),viewport(targetRender)];
+      for(let index=0;index<2;index++) {
+        const css=index===0?sourceCss:targetCss,render=index===0?sourceRender:targetRender;
+        const canvas=hosts[index].querySelector('canvas');
+        canvas.width=fixture.page[0]*render;canvas.height=fixture.page[1]*render;
+        canvas.style.width=`${fixture.page[0]*css}px`;canvas.style.height=`${fixture.page[1]*css}px`;
+        hosts[index].style.width=canvas.style.width;hosts[index].style.height=canvas.style.height;
+      }
+      w.__pdfGradedViewer={getViewportForPage:page=>viewports[page-1]};
+      helpers.refreshMarkupFromAnnotations();
+      const entry=boxes.getPageTextboxes(0)[0];
+      const beforeAngle=entry.element.style.transform;
+      adapter.updateAnnotation.mockImplementation(async(_a,_s,_wire,body)=>({success:true,annotation:{...target,...body,xref:84}}));
+      if(pointerDrop) {
+        for(const host of hosts) {
+          let layer=host.querySelector('.textbox-layer');
+          if(!layer){layer=d.createElement('div');layer.className='textbox-layer';host.append(layer);}
+          layer.style.width=host.style.width;layer.style.height=host.style.height;
+        }
+        const originalRect=HTMLElement.prototype.getBoundingClientRect;
+        vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockImplementation(function(){
+          const rect=originalRect.call(this),offset=this.closest('.pdf-page-wrapper')?.dataset.pageNum==='2'?1000:0;
+          return {...rect,left:rect.left+offset,right:rect.right+offset,x:rect.left+offset};
+        });
+        let moved;
+        const callback=selection.onMoveCompleted;
+        selection.onMoveCompleted=async item=>{moved=item.entry.element.getBoundingClientRect();return callback(item);};
+        const before=entry.element.getBoundingClientRect();
+        const event=(type,x,y)=>{const result=new w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientX:x,clientY:y});Object.defineProperty(result,'pointerId',{value:1});return result;};
+        const down=event('pointerdown',before.left+before.width/2,before.top+before.height/2);
+        Object.defineProperty(down,'target',{value:entry.element});selection.startDrag('textbox',entry,0,hosts[0],down);
+        const overlay=d.querySelector('.markup-selection-overlay, .markup-selection');
+        const bounds=hosts[1].getBoundingClientRect();
+        overlay.dispatchEvent(event('pointermove',bounds.right-1,bounds.bottom-1));
+        overlay.dispatchEvent(event('pointerup',bounds.right-1,bounds.bottom-1));
+        await settle();
+        // Browser canvas offsetWidth is integer-valued; retain the existing
+        // component-oracle one-pixel containment tolerance at fractional zoom.
+        expect.soft(moved.left).toBeGreaterThanOrEqual(bounds.left-1);
+        expect.soft(moved.top).toBeGreaterThanOrEqual(bounds.top-1);
+        expect.soft(moved.right).toBeLessThanOrEqual(bounds.right+1);
+        expect.soft(moved.bottom).toBeLessThanOrEqual(bounds.bottom+1);
+      } else {
+        boxes.moveTextboxToPage(entry,1,hosts[1],25,35);
+        await selection.onMoveCompleted({type:'textbox',pageIdx:1,sourcePageIdx:0,entry});
+      }
+      expect(entry.element.style.transform).toBe(beforeAngle);
+      expect(adapter.updateAnnotation).toHaveBeenCalledOnce();
+      const rect=adapter.updateAnnotation.mock.calls[0][3].rect;
+      expect.soft(rect[2]-rect[0]).toBeCloseTo(150,0);
+      expect.soft(rect[3]-rect[1]).toBeCloseTo(50,0);
+    },
+  );
+
   it.each(geometryCases)('content-only actual save retains PDF rect at page $fixture.rotation/native $nativeRotation',async({fixture,nativeRotation})=> {
     const entry=loadGeometry(fixture,nativeRotation);
     boxes.editTextbox(entry);
@@ -166,9 +263,10 @@ describe('Luca F1 scoped native identity through actual textbox callbacks', () =
     entry.contentElement.dispatchEvent(new w.Event('blur'));
     await settle();
     expect(adapter.updateAnnotation).toHaveBeenCalledOnce();
-    const raw=adapter.updateAnnotation.mock.calls[0][3].rect;
-    const expected=[40,727,260,777];
-    raw.forEach((value,index)=>expect(value).toBeCloseTo(expected[index],5));
+    const body=adapter.updateAnnotation.mock.calls[0][3];
+    expect(body).not.toHaveProperty('rect');expect(body).not.toHaveProperty('stroke_color_rgb');
+    expect(body).not.toHaveProperty('color');
+    expect(annotations()[0][0].rect).toEqual([40,65,260,115]);
   });
 
   it.each([0.5,1,1.5])('fractional content-only save retains exact declared native geometry at scale %s',async scale=> {
@@ -179,8 +277,10 @@ describe('Luca F1 scoped native identity through actual textbox callbacks', () =
     entry.contentElement.dispatchEvent(new w.Event('blur'));
     await settle();
     expect(adapter.updateAnnotation).toHaveBeenCalledOnce();
-    const raw=adapter.updateAnnotation.mock.calls[0][3].rect,expected=[40.5,726.5,260.75,776.75];
-    raw.forEach((value,index)=>expect(value).toBeCloseTo(expected[index],5));
+    const body=adapter.updateAnnotation.mock.calls[0][3];
+    expect(body).not.toHaveProperty('rect');expect(body).not.toHaveProperty('stroke_color_rgb');
+    expect(body).not.toHaveProperty('color');
+    expect(annotations()[0][0].rect).toEqual([40.5,65.25,260.75,115.5]);
   });
 
   it('legacy public textbox entries without declared CSS geometry use their browser offsets',()=> {
@@ -526,7 +626,7 @@ describe('Luca F1 scoped native identity through actual textbox callbacks', () =
     await settle();
     expect(adapter.updateAnnotation).toHaveBeenCalled();
     expect(adapter.updateAnnotation.mock.calls[0][2]).toBe('xref:42|id:native-duplicate');
-    expect(adapter.updateAnnotation.mock.calls[0][3].page_index).toBe(1);
+    expect(adapter.updateAnnotation.mock.calls[0][3]).toEqual({content:'Second annotation edited'});
   });
 
   it.each(['helper', 'fallback'])('actual %s callback preserves a composite carried by entry.id alone', async mode => {
@@ -566,8 +666,7 @@ describe('Luca F1 scoped native identity through actual textbox callbacks', () =
   it('a page move retains source scoped identity in the actual write request', async () => {
     const entry = boxes.getPageTextboxes(1)[0];
     boxes.moveTextboxToPage(entry, 0, d.querySelector('.pdf-page-wrapper'), 33, 44);
-    boxes.onTextboxCommitted(entry);
-    await settle();
+    await selection.onMoveCompleted({type:'textbox',pageIdx:0,sourcePageIdx:1,entry});
     expect(adapter.updateAnnotation.mock.calls[0][2]).toBe('xref:42|id:native-duplicate');
     expect(adapter.updateAnnotation.mock.calls[0][3].page_index).toBe(0);
   });

@@ -4524,12 +4524,12 @@
                 ];
 
                 var isUpdate = !!entry.annotationId;
-                var textboxBody = {
+                var textboxBody = isUpdate ? { content: entry.content } : {
                     page_index: entry.pageIdx,
                     content: entry.content,
                     type: 'textbox',
                     rect: pdfRect,
-                    stroke_color_rgb: entry.color && entry.color.rgb ? entry.color.rgb : [0, 0, 0],
+                    stroke_color_rgb: TextboxModule.resolveColorRgb(entry.color),
                     color: 'amber'
                 };
                 (isUpdate
@@ -4599,7 +4599,7 @@
                     author_name: deletedAnnotation?.grader_name || deletedAnnotation?.author_name || undefined,
                     content: item.entry.content,
                     color: item.entry.color && item.entry.color.name ? item.entry.color.name : (typeof item.entry.color === 'string' ? item.entry.color : 'amber'),
-                    stroke_color_rgb: item.entry.color && item.entry.color.rgb ? item.entry.color.rgb : null,
+                    stroke_color_rgb: item.type === 'textbox' && TextboxModule ? TextboxModule.resolveColorRgb(item.entry.color) : (item.entry.color && item.entry.color.rgb ? item.entry.color.rgb : null),
                     type: item.type === 'textbox' ? 'textbox' : 'stroke',
                     rect: (function () {
                         if (item.type !== 'textbox' || !TextboxModule || typeof TextboxModule.getTextboxCanvasRect !== 'function') return null;

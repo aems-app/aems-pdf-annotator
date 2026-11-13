@@ -87,15 +87,23 @@ def _add_fitted_textbox(
     rotation: int = 0,
     *,
     font_name: str = "helv",
+    font_size: Optional[float] = None,
 ) -> Any:
     """Fit the saved appearance, including edits and moves, inside the page."""
     fitted = _textbox_rect_on_page(page, rect)
-    size, _ = _textbox_font_size(page, fitted, text, font_name, 11.0, rotation)
+    size, original_fits = _textbox_font_size(
+        page,
+        fitted,
+        text,
+        font_name,
+        font_size if font_size is not None else 11.0,
+        rotation,
+    )
     options = {"rotate": rotation} if rotation else {}
     return page.add_freetext_annot(
         fitted,
         text,
-        fontsize=size * 0.95,
+        fontsize=size if font_size is not None and original_fits else size * 0.95,
         fontname=font_name,
         text_color=text_color,
         fill_color=(1.0, 1.0, 1.0),
@@ -272,7 +280,6 @@ def _scale_note_icons(doc: Any) -> None:
                 "Rect",
                 f"[{pdf_rect.x0:.4f} {pdf_rect.y0:.4f} {pdf_rect.x1:.4f} {pdf_rect.y1:.4f}]",
             )
-
 
 
 def _keep_note_icon_centre_on_page(page: Any, annot: Any) -> None:
@@ -475,7 +482,6 @@ def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
     return metadata
 
 
-
 def _annotation_stable_id(
     info: Dict[str, Any], subject_metadata: Dict[str, Any]
 ) -> Optional[str]:
@@ -603,7 +609,6 @@ def _legacy_subject_id(metadata: Dict[str, Any]) -> Optional[str]:
     if "|" in value:
         raise ValueError("Legacy subject identity contains a reserved delimiter")
     return str(value)
-
 
 
 def _encode_replacement_subject(
@@ -1314,7 +1319,7 @@ class PDFAnnotator:
         new_source: Optional[str],
         new_is_verdict: Optional[bool],
     ) -> Union[bool, Tuple[bool, Optional[int], Optional[int]]]:
-        """Replace a free-text annotation when properties require recreation."""
+        """Fit FreeText while preserving the existing object when possible."""
         if self.doc is None:
             return False
 
@@ -1324,15 +1329,27 @@ class PDFAnnotator:
         rect = fitz.Rect(new_rect) if new_rect is not None else annot.rect
 
         textbox_rgb = new_stroke_color_rgb or metadata.get("textbox_color_rgb")
-        font_name, _, native_color = _native_textbox_style(annot)
+        font_name, font_size, native_color = _native_textbox_style(annot)
         text_color = _rgb_ints_to_floats(textbox_rgb) or native_color
         content = info.get("content", "") if new_content is None else new_content
+        in_place = new_stroke_color_rgb is None
 
         try:
-            new_annot = _add_fitted_textbox(
-                page, rect, content, text_color, _textbox_rotation(annot), font_name=font_name
-            )
-            new_annot.set_opacity(0.9)
+            if in_place:
+                new_annot = annot
+                if new_rect is not None:
+                    new_annot.set_rect(_textbox_rect_on_page(page, rect))
+            else:
+                new_annot = _add_fitted_textbox(
+                    page,
+                    rect,
+                    content,
+                    text_color,
+                    _textbox_rotation(annot),
+                    font_name=font_name,
+                    font_size=font_size,
+                )
+                new_annot.set_opacity(0.9)
 
             effective_grader_name = grader_name or info.get("title")
             if effective_grader_name:
@@ -1366,19 +1383,24 @@ class PDFAnnotator:
             if creation_date:
                 _safe_set_info(new_annot, "creationDate", str(creation_date))
             _safe_set_info(new_annot, "modDate", _format_pdf_datetime())
-            if content:
+            if content or in_place:
                 _safe_set_info(new_annot, "content", str(content))
 
-            new_annot.update()
+            if in_place:
+                fitz.mupdf.pdf_dirty_annot(new_annot.this)
+                fitz.mupdf.pdf_update_annot(new_annot.this)
+                fit_existing_textboxes(self.doc)
+            else:
+                new_annot.update()
             new_xref = new_annot.xref if hasattr(new_annot, "xref") else None
-            page.delete_annot(annot)
+            if not in_place:
+                page.delete_annot(annot)
             return (True, page_index, new_xref)
         except Exception as e:
             logger.error(
                 "Failed to replace textbox annotation %s: %s", annotation_identifier, e
             )
             return False
-
 
     def _find_annotation(
         self,
@@ -2197,16 +2219,28 @@ class PDFAnnotator:
                 textbox_rgb = new_stroke_color_rgb or subject_metadata.get(
                     "textbox_color_rgb"
                 )
-                font_name, _, native_color = _native_textbox_style(annot)
+                font_name, font_size, native_color = _native_textbox_style(annot)
                 text_color = _rgb_ints_to_floats(textbox_rgb) or native_color
-                new_rotation = (_textbox_rotation(annot) + target_page.rotation - self.doc[old_page_index].rotation) % 360
+                new_rotation = (
+                    _textbox_rotation(annot)
+                    + target_page.rotation
+                    - self.doc[old_page_index].rotation
+                ) % 360
                 new_annot = _add_fitted_textbox(
-                    target_page, rect, content, text_color, new_rotation, font_name=font_name
+                    target_page,
+                    rect,
+                    content,
+                    text_color,
+                    new_rotation,
+                    font_name=font_name,
+                    font_size=font_size,
                 )
                 new_annot.set_opacity(0.9)
             elif is_ink:
                 source_page = self.doc[old_page_index]
-                points_to_store = new_points or self._extract_ink_points_pdf(annot, source_page)
+                points_to_store = new_points or self._extract_ink_points_pdf(
+                    annot, source_page
+                )
                 if len(points_to_store) < 2:
                     annot_ref = preserved_id or (
                         str(annot.xref)
