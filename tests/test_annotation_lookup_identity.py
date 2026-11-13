@@ -83,9 +83,10 @@ def test_composite_xref_disambiguates_duplicate_implicit_identity(
         else:
             assert writer.delete_annotation(identifier)
         for index in range(3):
+            entries = writer.get_annotations_on_page(index)
+            assert len(entries) == 1, "scoped mutation removed a different annotation"
             assert (
-                writer.get_annotations_on_page(index)[0]["content"]
-                == f"ORIGINAL-{index}"
+                entries[0]["content"] == f"ORIGINAL-{index}"
             ), "scoped mutation changed a different annotation"
         if action == "update":
             assert writer.get_annotations_on_page(3)[0]["content"] == "EDITED-TARGET"
@@ -118,3 +119,64 @@ def test_xref_only_lookup_remains_precise(tmp_path: Path) -> None:
     with PDFAnnotator(path) as writer:
         located = writer.find_annotation_by_xref(xrefs[3])
         assert located is not None and located[0] == 3
+
+
+@pytest.mark.parametrize("implicit_form", ["native", "subject"])
+def test_matching_implicit_xref_wins_over_a_different_explicit_annotation_with_same_id(
+    tmp_path: Path,
+    implicit_form: str,
+) -> None:
+    path = tmp_path / "explicit-implicit-collision.pdf"
+    with fitz.open() as document:
+        document.new_page(width=300, height=400)
+        document.new_page(width=300, height=400)
+        for index in range(2):
+            page = document[index]
+            annotation = page.add_freetext_annot(
+                fitz.Rect(50, 50, 220, 100),
+                f"ORIGINAL-{index}",
+                fontsize=11,
+            )
+            if index == 0:
+                annotation.set_info(
+                    subject=_encode_subject_metadata("same-id", "HUMAN")
+                )
+            elif implicit_form == "subject":
+                annotation.set_info(subject="same-id|HUMAN")
+            document.xref_set_key(annotation.xref, "NM", fitz.get_pdf_str("same-id"))
+            if index == 1:
+                target_xref = annotation.xref
+        document.save(path)
+    with PDFAnnotator(path) as writer:
+        located = writer._find_annotation(annotation_id="same-id", xref=target_xref)
+        assert (
+            located is not None and located[0] == 1
+        ), "unique explicit sibling overrode a matching implicit xref scope"
+
+
+def test_matching_xref_disambiguates_duplicate_explicit_identity_for_lookup(
+    tmp_path: Path,
+) -> None:
+    """Lookup preserves scope even when a separate save guard will refuse duplicate explicit IDs."""
+    path = tmp_path / "explicit-duplicate-lookup.pdf"
+    with fitz.open() as document:
+        for _ in range(2):
+            document.new_page(width=300, height=400)
+        for index in range(2):
+            page = document[index]
+            annotation = page.add_freetext_annot(
+                fitz.Rect(50, 50, 220, 100), "Synthetic", fontsize=11
+            )
+            annotation.set_info(
+                subject=_encode_subject_metadata("duplicate-explicit", "HUMAN")
+            )
+            if index == 1:
+                target_xref = annotation.xref
+        document.save(path)
+    with PDFAnnotator(path) as writer:
+        located = writer._find_annotation(
+            annotation_id="duplicate-explicit", xref=target_xref
+        )
+        assert (
+            located is not None and located[0] == 1
+        ), "duplicate explicit lookup ignored its matching xref"
