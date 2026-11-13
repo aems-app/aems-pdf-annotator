@@ -22,6 +22,8 @@ it.each([
     [{ identifier: 'xref:123', xref: 12, has_explicit_stable_id: false }, 'xref:12|id:xref:123'],
     [{ identifier: 'xref:12|id:id:foo' }, 'xref:12|id:id:foo'],
     [{ identifier: 'xref:12|id:xref:123' }, 'xref:12|id:xref:123'],
+    [{ identifier: 'id:id:foo' }, 'id:id:foo'],
+    [{ identifier: 'id:xref:123' }, 'id:xref:123'],
     [{ identifier: 'Note', xref: 12, has_explicit_stable_id: false }, 'xref:12|id:Note'],
     [{ identifier: 'Text', xref: 12, has_explicit_stable_id: false }, 'xref:12|id:Text'],
     [{ identifier: 'explicit-stable-id' }, 'explicit-stable-id'],

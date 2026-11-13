@@ -159,6 +159,35 @@ describe('Luca F1 scoped native identity through actual textbox callbacks', () =
     });
   });
 
+  it('real modal highlight extend and undo preserve native id:foo beside explicit foo', async () => {
+    const native = { ...annotation, stable_id: 'id:foo', type: 'Highlight', source: 'AI',
+      content: 'Native highlight', quads: [[10,20,50,30]], rect: [10,20,50,30], anchor_text: 'initial phrase' };
+    const other = { ...native, stable_id: 'foo', xref: 99, has_explicit_stable_id: true,
+      content: 'Unrelated explicit highlight' };
+    delete annotations()[1];
+    annotations()[0] = [other, native];
+    let nextXref = 84;
+    adapter.updateAnnotation.mockImplementation(async (_a, _s, wire, body) => {
+      const expectedXref = nextXref === 84 ? 12 : nextXref - 1;
+      if (wire !== `xref:${expectedXref}|id:id:foo`) throw new Error('Unexpected native highlight target');
+      return { success: true, annotation: { ...native, ...body, xref: nextXref++ } };
+    });
+    const marker = d.createElement('div');
+    marker.className = 'annotation-marker source-ai';
+    marker.dataset.annotationPage = '0'; marker.dataset.annotationXref = '12';
+    marker.dataset.annotationRequestId = 'xref:12|id:id:foo';
+    d.body.append(marker);
+    await controller.persistHighlightExtend(marker, native, { pageIdx: 0,
+      quadsPdf: [[10,20,90,30]], anchorText: 'extended phrase' });
+    expect.soft(annotations()[0]).toHaveLength(2);
+    expect.soft(annotations()[0].find(item => item.xref === 99)).toMatchObject(other);
+    await controller.performHighlightExtendUndo(controller.popUndoOperation());
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(2);
+    expect(adapter.updateAnnotation.mock.calls[1][2]).toBe('xref:84|id:id:foo');
+    expect(annotations()[0]).toHaveLength(2);
+    expect(annotations()[0].find(item => item.xref === 99)).toMatchObject(other);
+  });
+
   it.each(['helper', 'fallback'])('actual %s save targets the second native annotation, with xref retained', async mode => {
     if (mode === 'fallback') delete w.PdfPreviewModalAnnotationHelpers.buildApiAnnotationIdentifier;
     const entry = boxes.getPageTextboxes(1)[0];
