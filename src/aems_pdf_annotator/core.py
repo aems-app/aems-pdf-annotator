@@ -554,8 +554,6 @@ def fit_existing_textboxes(doc: Any) -> int:
             size, original_fits = _textbox_font_size(
                 page, rect, text, font_name, maximum, _textbox_rotation(annot)
             )
-            if not painted and original_fits and not moved:
-                continue
             target_size = maximum if original_fits else size * 0.95
             original_da = doc.xref_get_key(annot.xref, "DA")
             if moved:
