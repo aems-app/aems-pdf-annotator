@@ -218,3 +218,55 @@ def test_recreating_repeated_legacy_ids_does_not_promote_them_to_explicit_ids(
         assert [row["content"] for row in rows] == [
             "Updated synthetic page 0", "Updated synthetic page 1",
         ]
+
+
+def test_anonymous_textbox_recreation_assigns_an_editable_stable_identity(tmp_path: Path) -> None:
+    """An annotation with no existing identity needs a new one during recreation."""
+    source = tmp_path / "anonymous.pdf"
+    with fitz.open() as document:
+        page = document.new_page(width=300, height=400)
+        annotation = page.add_freetext_annot(
+            fitz.Rect(50, 50, 180, 100), "Anonymous synthetic text", fontsize=11,
+        )
+        document.xref_set_key(annotation.xref, "NM", "null")
+        document.xref_set_key(annotation.xref, "Name", "null")
+        assert not annotation.info.get("id")
+        assert not annotation.info.get("name")
+        assert not annotation.info.get("subject")
+        document.save(source)
+    with PDFAnnotator(source) as writer:
+        before = writer.get_annotations_on_page(0)[0]
+        assert not before["stable_id"]
+        result = writer.update_annotation(str(before["xref"]), new_content="Updated synthetic text")
+        assert isinstance(result, tuple) and result[0] is True
+        after = writer.get_annotations_on_page(0)[0]
+        stable_id = after["stable_id"]
+        assert stable_id, "anonymous recreation must assign a usable identity"
+        followup = writer.update_annotation(stable_id, new_content="Follow-up synthetic text")
+        assert followup[0] if isinstance(followup, tuple) else followup
+        assert writer.delete_annotation(stable_id)
+        assert writer.get_annotations_on_page(0) == []
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_precomputed_inpage_box_keeps_its_rectangle_for_caller_font_layout(
+    tmp_path: Path, rotation: int,
+) -> None:
+    """Managed writers precompute geometry and may set their own font after creation."""
+    source = tmp_path / "managed-layout.pdf"
+    saved = tmp_path / "managed-saved.pdf"
+    requested = fitz.Rect(24, 24, 571, 818)
+    text = "\n".join(f"Line {index}: Keep the complete feedback." for index in range(80))
+    with fitz.open() as document:
+        document.new_page(width=595, height=842).set_rotation(rotation)
+        document.save(source)
+    with PDFAnnotator(source) as writer:
+        assert writer.add_annotation(_model(list(requested), text))
+        page = writer.doc[0]
+        annotation = next(page.annots())
+        assert tuple(annotation.rect) == pytest.approx(tuple(requested), abs=0.01), (
+            "shared writer moved a precomputed in-page feedback rectangle"
+        )
+        annotation.update(fontsize=6.5)
+        writer.save(saved)
+    _assert_visible(saved, text)
