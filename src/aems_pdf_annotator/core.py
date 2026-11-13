@@ -1409,7 +1409,6 @@ class PDFAnnotator:
         matches: List[Tuple[int, int, Optional[int], bool]] = []
         aliases: List[Tuple[int, int, Optional[int], bool]] = []
         xref_match: Optional[Tuple[int, int, Optional[int], bool]] = None
-        xref_alias: Optional[Tuple[int, int, Optional[int], bool]] = None
         for page_idx in range(self.doc.page_count):
             page = self.doc[page_idx]
             for ordinal, annot in enumerate(page.annots()):
@@ -1444,22 +1443,19 @@ class PDFAnnotator:
                 if xref is not None and actual_xref == xref:
                     if not search_id or exact:
                         xref_match = entry
-                    elif legacy_alias:
-                        xref_alias = entry
-        if not matches:
+        if xref is None and not matches:
             matches = aliases
-            if search_id:
-                xref_match = xref_alias
 
         explicit = [entry for entry in matches if entry[3]]
-        if xref_match is not None:
+        # A wire pair identifies one object. A stale implicit pair must never
+        # fall through to an unrelated explicit object sharing its native ID.
+        # Unique explicit IDs can survive recreation through an unscoped ID.
+        if xref is not None:
             chosen = xref_match
         elif len(explicit) == 1:
             chosen = explicit[0]
         elif explicit:
             return None
-        elif xref is not None:
-            chosen = xref_match
         elif len(matches) == 1:
             chosen = matches[0]
         else:
