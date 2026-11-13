@@ -14,12 +14,13 @@ beforeEach(async()=> {
     await import('../src/pdf-preview-modal/annotation-controller.js');
 });
 
-it('undo targets the recreated native id:foo highlight and preserves explicit foo',async()=> {
+it.each(['stable_id','stableId'])('undo targets native id:foo through typed %s and preserves explicit foo',async field=> {
     const helpers=window.PdfPreviewModalAnnotationHelpers;
     const native={stable_id:'id:foo',has_explicit_stable_id:false,xref:42,page_index:0,type:'Highlight',
         content:'Native highlight',source:'AI',original_source:'AI',rect:[10,20,50,30],
         quads:[[10,20,50,30]],anchor_text:'initial synthetic phrase'};
-    const other={...native,stable_id:'foo',has_explicit_stable_id:true,xref:99,content:'Unrelated explicit highlight'};
+    if(field==='stableId'){native.stableId=native.stable_id;delete native.stable_id;}
+    const other={...native,stable_id:'foo',stableId:undefined,has_explicit_stable_id:true,xref:99,content:'Unrelated explicit highlight'};
     let stored={...native}, data={0:[{...other},{...native}]};
     const requests=[];
     const update=vi.fn(async(wire,body)=> {
@@ -50,5 +51,5 @@ it('undo targets the recreated native id:foo highlight and preserves explicit fo
     expect(requests).toEqual(['xref:42|id:id:foo','xref:43|id:id:foo']);
     expect(stored.quads).toEqual(native.quads);
     expect(data[0].find(entry=>entry.xref===99)).toMatchObject(other);
-    expect(stored.stable_id).toBe('id:foo');
+    expect(stored[field]).toBe('id:foo');
 });

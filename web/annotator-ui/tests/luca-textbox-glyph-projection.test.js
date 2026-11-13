@@ -2,19 +2,19 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { JSDOM } from 'jsdom';
 import { afterEach, expect, it, vi } from 'vitest';
 import fixtures from './fixtures/luca-textbox-glyph-truth.json';
 
 const sourceRoot=join(dirname(fileURLToPath(import.meta.url)),'../src');
 const read = name => {
     const path=join(sourceRoot,name),contents=readFileSync(path,'utf8');
-    return name.endsWith('.js') ? `${contents}\n//# sourceURL=${pathToFileURL(path).href}` : contents;
+    return contents;
 };
-const opened = [];
+const load=name=>import(pathToFileURL(join(sourceRoot,name)).href);
+let modalHandle;
 const text = 'AB complete synthetic explanation FULL_TAIL';
 afterEach(() => {
-    opened.splice(0).forEach(dom => dom.window.close());
+    modalHandle?.destroy();modalHandle=null;
     window.PdfPreviewModalTextbox?.destroy();
     document.head.querySelectorAll('[data-glyph-style]').forEach(style=>style.remove());
 });
@@ -22,14 +22,12 @@ afterEach(() => {
 async function harness(fixture, scale = 1, modal = false, nativeRotation = 0) {
     const markup='<div id="pdfPreviewModal"><div id="pdfGradedCommentsList"></div>'
         + '<div id="pdfGradedContainer"><div class="pdf-page-wrapper"><canvas></canvas></div></div></div>';
-    const dom=modal ? new JSDOM(markup,{url:'http://localhost',runScripts:'outside-only',pretendToBeVisual:true}) : null;
-    if (dom) opened.push(dom);
-    const w=dom ? dom.window : window, d=w.document;
-    if (!modal) {
-        vi.resetModules();
-        d.body.innerHTML=markup;
-        delete w.PdfPreviewModalTextbox;
+    const w=window,d=document;
+    vi.resetModules();
+    for(const key of Object.keys(w)) {
+        if(key.startsWith('PdfPreviewModal')||key.startsWith('__pdf')) delete w[key];
     }
+    d.body.innerHTML=markup;
     const style=d.createElement('style'); style.dataset.glyphStyle='';
     style.textContent=read('annotator-ui.css'); d.head.append(style);
     const wrapper=d.querySelector('.pdf-page-wrapper'), canvas=wrapper.querySelector('canvas');
@@ -46,14 +44,14 @@ async function harness(fixture, scale = 1, modal = false, nativeRotation = 0) {
             setMarkupMode(){},loadStrokesFromAnnotations(){},ensureCanvasForPage(){},redrawPage(){},
             hitTestStroke:()=>null,isDrawingActive:()=>false};
         for (const name of ['utils','annotation-helpers','rendering','modal-state','annotation-controller','textbox','markup-selection']) {
-            w.eval(read(`pdf-preview-modal/${name}.js`));
+            await load(`pdf-preview-modal/${name}.js`);
         }
-        w.eval(read('pdf-preview-modal.js'));
+        await load('pdf-preview-modal.js');
         const factory=w.PdfPreviewModalAnnotationController.createAnnotationController;
         w.PdfPreviewModalAnnotationController.createAnnotationController=options=> {
             options.setAnnotationsData({0:[annotation]}); return factory(options);
         };
-        w.PdfPreviewModal.createPdfPreviewModal({assignmentId:'fixture-a',submissionId:'fixture-s',modeAdapter:{}});
+        modalHandle=w.PdfPreviewModal.createPdfPreviewModal({assignmentId:'fixture-a',submissionId:'fixture-s',modeAdapter:{}});
         const matrix=fixture.transform;
         const viewport={scale:1,rotation:fixture.rotation,viewBox:fixture.viewBox,width:fixture.page[0],height:fixture.page[1],
             convertToViewportPoint:(x,y)=>[matrix[0]*x+matrix[2]*y+matrix[4],matrix[1]*x+matrix[3]*y+matrix[5]],
