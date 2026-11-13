@@ -3457,6 +3457,9 @@ describe('pdf-preview-modal placement helpers', () => {
     }
 
     async function markupHarness() {
+      // Keep the fake DOM surface, but use the real shared color contract.
+      await import('../src/pdf-preview-modal/textbox.js');
+      const resolveColorRgb = window.PdfPreviewModalTextbox.resolveColorRgb;
       const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
       window.PdfPreviewModalMarkupSelection = selection;
       const canvas = {
@@ -3466,6 +3469,7 @@ describe('pdf-preview-modal placement helpers', () => {
         removeStroke: vi.fn(), setActiveColor: vi.fn(), setActiveTool: vi.fn(), setMarkupMode: vi.fn(),
       };
       const textboxes = {
+        resolveColorRgb,
         createTextbox: vi.fn(), destroy: vi.fn(), editTextbox: vi.fn(), getPageTextboxes: vi.fn(() => []),
         getTextboxCanvasRect: vi.fn(() => [100, 100, 220, 140]), hitTestTextbox: vi.fn(),
         loadTextboxesFromAnnotations: vi.fn(), removeTextbox: vi.fn(),
@@ -3486,14 +3490,14 @@ describe('pdf-preview-modal placement helpers', () => {
       return { h, canvas, textboxes, server, selection };
     }
 
-    async function drawStroke(m) {
+    async function drawStroke(m, color = { rgb: [1, 0, 0] }) {
       m.canvas.onStrokeComplete(0, {
         pageIdx: 0,
         points: [{ x: 10, y: 92 }, { x: 20, y: 102 }],
         style: 'pen',
         strokeWidth: 2,
         opacity: 0.8,
-        color: { rgb: [1, 0, 0] },
+        color,
       });
       await vi.waitFor(() => expect(m.h.getUndoStacks().local).toEqual([
         expect.objectContaining({ type: 'create-drawing', annotationId: 'markup-1' }),
@@ -3501,8 +3505,8 @@ describe('pdf-preview-modal placement helpers', () => {
       await settle();
     }
 
-    async function typeTextbox(m) {
-      m.textboxes.onTextboxCommitted({ pageIdx: 0, content: 'Check units', color: { rgb: [0, 0, 1] } });
+    async function typeTextbox(m, color = { rgb: [0, 0, 1] }) {
+      m.textboxes.onTextboxCommitted({ pageIdx: 0, content: 'Check units', color });
       await vi.waitFor(() => expect(m.h.getUndoStacks().local).toEqual([
         expect.objectContaining({ type: 'create-textbox', annotationId: 'markup-1' }),
       ]));
@@ -3517,6 +3521,24 @@ describe('pdf-preview-modal placement helpers', () => {
       return rest;
     };
     const pageMarkup = (m) => Object.values(m.h.handle.getAnnotations()).flat();
+
+    it.each([
+      ['stroke', drawStroke, { name: 'blue', rgb: [0, 0, 255] }],
+      ['textbox', typeTextbox, 'rgb(0, 0, 255)'],
+    ])('delete-selected %s preserves original RGB in history and undo recreation', async (type, create, color) => {
+      const m = await markupHarness();
+      await create(m, color);
+      m.selection.deleteSelected.mockReturnValue({ type, pageIdx: 0, entry: {
+        annotationId: 'markup-1', content: 'Check units', color,
+        points: [{ x: 10, y: 92 }, { x: 20, y: 102 }],
+      } });
+      m.selection.onDeleteRequested();
+      await settle();
+      expect(m.h.getUndoStacks().local.at(-1).snapshot.stroke_color_rgb).toEqual([0, 0, 255]);
+      m.h.dispatchUndo();
+      await vi.waitFor(() => expect(m.server.createAnnotation).toHaveBeenCalledTimes(2));
+      expect(m.server.createAnnotation.mock.calls[1][2].stroke_color_rgb).toEqual([0, 0, 255]);
+    });
 
     it.each([['stroke', drawStroke], ['textbox', typeTextbox]])(
       'remaps every history reference when undoing deletion of a created %s', async (type, create) => {
@@ -3672,6 +3694,7 @@ describe('pdf-preview-modal placement helpers', () => {
     it('redoes a created text box with the text it had when undone', async () => {
       const m = await markupHarness();
       await typeTextbox(m);
+      const creationRequest = m.server.createAnnotation.mock.calls[0][2];
       // Editing the text commits the text box again, as an update with no operation of its own.
       m.textboxes.onTextboxCommitted({
         pageIdx: 0, annotationId: 'markup-1', content: 'Check the units', color: { rgb: [0, 0, 1] },
@@ -3679,6 +3702,7 @@ describe('pdf-preview-modal placement helpers', () => {
       await vi.waitFor(() => expect(m.server.updateAnnotation).toHaveBeenCalledTimes(1));
       await settle();
       const updateRequest = m.server.updateAnnotation.mock.calls[0][3];
+      expect(updateRequest).toEqual({ content: 'Check the units' });
 
       m.h.dispatchUndo();
       await vi.waitFor(() => expect(m.server.deleteAnnotation).toHaveBeenCalledTimes(1));
@@ -3687,7 +3711,7 @@ describe('pdf-preview-modal placement helpers', () => {
       await vi.waitFor(() => expect(m.server.createAnnotation).toHaveBeenCalledTimes(2));
       await settle();
 
-      expect(m.server.createAnnotation.mock.calls[1][2]).toEqual({ ...updateRequest, source: 'HUMAN' });
+      expect(m.server.createAnnotation.mock.calls[1][2]).toEqual({ ...creationRequest, ...updateRequest, source: 'HUMAN' });
       expect(pageMarkup(m)).toEqual([expect.objectContaining({ content: 'Check the units', source: 'HUMAN' })]);
     });
 

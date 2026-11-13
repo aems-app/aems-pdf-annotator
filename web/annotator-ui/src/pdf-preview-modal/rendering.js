@@ -328,6 +328,18 @@ window.PdfPreviewModalRendering = window.PdfPreviewModalRendering || {};
      * @returns {number[]} Viewport rectangle [x0, y0, x1, y1]
      */
     exports.convertTopLeftRectToViewport = function convertTopLeftRectToViewport(rect, viewport) {
+        var crop = viewport && viewport.viewBox;
+        if (Array.isArray(crop) && crop.length === 4 &&
+            typeof viewport.convertToViewportRectangle === 'function') {
+            var projected = viewport.convertToViewportRectangle([
+                Number(rect[0]) + crop[0], crop[3] - Number(rect[1]),
+                Number(rect[2]) + crop[0], crop[3] - Number(rect[3])
+            ]);
+            return [
+                Math.min(projected[0], projected[2]), Math.min(projected[1], projected[3]),
+                Math.max(projected[0], projected[2]), Math.max(projected[1], projected[3])
+            ];
+        }
         var scale = Number(viewport && viewport.scale);
         if (!Number.isFinite(scale) || scale <= 0) {
             scale = 1;

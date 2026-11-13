@@ -555,7 +555,7 @@
    Refined: Better typography and smoother expand transition
    ========================================================================== */
 
-/* Truncate long comments in display mode (non-editing) */
+/* Full comments remain readable without pointer hover. */
 .annotation-content:not(.editing) {
     display: block;
     overflow: visible;
@@ -586,25 +586,6 @@
     max-height: none;
     overflow: visible;
     background: none;
-}
-
-/* In fullscreen mode keep compact cards with hover expansion. */
-#pdfPreviewModal.preview-fullscreen .annotation-content:not(.editing) {
-    display: -webkit-box;
-    -webkit-line-clamp: 7;
-    line-clamp: 7;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    max-height: 10.5em;
-    cursor: pointer;
-}
-
-#pdfPreviewModal.preview-fullscreen .annotation-content:not(.editing):hover {
-    -webkit-line-clamp: unset;
-    line-clamp: unset;
-    max-height: 20em;
-    overflow-y: auto;
-    background: linear-gradient(180deg, transparent 85%, rgba(0, 0, 0, 0.02) 100%);
 }
 
 /* Ensure textarea (edit mode) shows full content */
@@ -940,16 +921,6 @@
 
 #pdfPreviewModal.preview-fullscreen .list-group-item {
     overflow: visible;
-}
-
-/* Annotation content hover expansion in fullscreen */
-#pdfPreviewModal.preview-fullscreen .annotation-content:not(.editing):hover {
-    -webkit-line-clamp: unset;
-    line-clamp: unset;
-    max-height: 20em;
-    overflow-y: auto;
-    position: relative;
-    z-index: 1;
 }
 
 /* ==========================================================================

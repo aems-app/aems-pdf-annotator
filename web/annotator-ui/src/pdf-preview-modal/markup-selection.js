@@ -276,11 +276,13 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 
         if (type === 'textbox' && entry.element) {
             var el = entry.element;
+            var visualRect = el.getBoundingClientRect();
+            var parentRect = (el.parentElement || pageWrapper).getBoundingClientRect();
             return {
-                left: el.offsetLeft - padding,
-                top: el.offsetTop - padding,
-                width: el.offsetWidth + padding * 2,
-                height: el.offsetHeight + padding * 2
+                left: visualRect.left - parentRect.left - padding,
+                top: visualRect.top - parentRect.top - padding,
+                width: visualRect.width + padding * 2,
+                height: visualRect.height + padding * 2
             };
         }
 
@@ -539,29 +541,10 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
                 if (targetWrapper && Textbox && typeof Textbox.moveTextboxToPage === 'function') {
                     var targetLayer = getOrCreateTextboxLayer(targetWrapper);
                     var textboxRect = selectedItem.entry.element.getBoundingClientRect();
-                    var overlayRect = selectionOverlay.getBoundingClientRect();
                     var targetLayerRect = targetLayer.getBoundingClientRect();
 
-                    var newTextboxLeft = clampValue(
-                        textboxRect.left - targetLayerRect.left,
-                        0,
-                        Math.max(0, targetLayer.offsetWidth - selectedItem.entry.element.offsetWidth)
-                    );
-                    var newTextboxTop = clampValue(
-                        textboxRect.top - targetLayerRect.top,
-                        0,
-                        Math.max(0, targetLayer.offsetHeight - selectedItem.entry.element.offsetHeight)
-                    );
-                    var newOverlayLeft = clampValue(
-                        overlayRect.left - targetLayerRect.left,
-                        0,
-                        Math.max(0, targetLayer.offsetWidth - selectionOverlay.offsetWidth)
-                    );
-                    var newOverlayTop = clampValue(
-                        overlayRect.top - targetLayerRect.top,
-                        0,
-                        Math.max(0, targetLayer.offsetHeight - selectionOverlay.offsetHeight)
-                    );
+                    var newTextboxLeft = textboxRect.left - targetLayerRect.left;
+                    var newTextboxTop = textboxRect.top - targetLayerRect.top;
 
                     Textbox.moveTextboxToPage(
                         selectedItem.entry,
@@ -572,8 +555,11 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
                     );
 
                     targetLayer.appendChild(selectionOverlay);
-                    selectionOverlay.style.left = newOverlayLeft + 'px';
-                    selectionOverlay.style.top = newOverlayTop + 'px';
+                    var targetBounds = getItemBounds('textbox', selectedItem.entry, targetWrapper);
+                    selectionOverlay.style.left = targetBounds.left + 'px';
+                    selectionOverlay.style.top = targetBounds.top + 'px';
+                    selectionOverlay.style.width = targetBounds.width + 'px';
+                    selectionOverlay.style.height = targetBounds.height + 'px';
                     selectedItem.pageIdx = dragTargetPageIdx;
                     dragPageWrapper = targetWrapper;
                 }

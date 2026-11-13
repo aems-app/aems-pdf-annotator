@@ -20,6 +20,8 @@ except ImportError:
         "PyMuPDF is required for PDF annotation. " "Install with: pip install pymupdf"
     )
 
+from aems_pdf_annotator.geometry import native_point_to_pdf, pdf_point_to_native
+
 from aems_pdf_annotator.models import (
     PDFAnnotation,
     AnnotationType,
@@ -30,12 +32,94 @@ from aems_pdf_annotator.models import (
 logger = logging.getLogger(__name__)
 
 
+def _textbox_rect_on_page(page: Any, rect: Any) -> Any:
+    """Keep valid geometry; clamp only rectangles already outside the page."""
+    bounds = page.rect * page.derotation_matrix
+    requested = fitz.Rect(rect)
+    if not bounds.contains(requested):
+        bounds = fitz.Rect(bounds.x0 + 4, bounds.y0 + 4, bounds.x1 - 4, bounds.y1 - 4)
+    width = min(requested.width, bounds.width)
+    height = min(requested.height, bounds.height)
+    left = max(bounds.x0, min(requested.x0, bounds.x1 - width))
+    top = max(bounds.y0, min(requested.y0, bounds.y1 - height))
+    return fitz.Rect(left, top, left + width, top + height)
+
+
+def _textbox_font_size(
+    page: Any, rect: Any, text: str, font_name: str, maximum: float, rotation: int = 0
+) -> Tuple[float, bool]:
+    """Measure wrapping with native font metrics, including unsplittable words."""
+    longest = max(
+        (
+            fitz.get_text_length(word, fontname=font_name, fontsize=1)
+            # Native FreeText does not wrap at TAB.
+            # Shape.insert_textbox expands TAB, so its fit check alone lies.
+            for word in re.split(r"[^\S\t]+", text)
+        ),
+        default=0,
+    )
+
+    def fits(size: float) -> bool:
+        options = {"rotate": rotation} if rotation else {}
+        spare = page.new_shape().insert_textbox(
+            rect, text, fontsize=size, fontname=font_name, **options
+        )
+        width = rect.height if rotation % 180 else rect.width
+        return spare >= 0 and longest * size <= width - min(1.0, width * 0.05)
+
+    if fits(maximum):
+        return maximum, True
+    low, high = 0.0, maximum
+    for _ in range(24):
+        size = (low + high) / 2
+        if fits(size):
+            low = size
+        else:
+            high = size
+    if low <= 0:
+        raise ValueError("The text cannot fit inside this textbox.")
+    return low, False
+
+
+def _add_fitted_textbox(
+    page: Any,
+    rect: Any,
+    text: str,
+    text_color: Tuple[float, float, float],
+    rotation: int = 0,
+    *,
+    font_name: str = "helv",
+    font_size: Optional[float] = None,
+) -> Any:
+    """Fit the saved appearance, including edits and moves, inside the page."""
+    fitted = _textbox_rect_on_page(page, rect)
+    size, original_fits = _textbox_font_size(
+        page,
+        fitted,
+        text,
+        font_name,
+        font_size if font_size is not None else 11.0,
+        rotation,
+    )
+    options = {"rotate": rotation} if rotation else {}
+    return page.add_freetext_annot(
+        fitted,
+        text,
+        fontsize=size if font_size is not None and original_fits else size * 0.95,
+        fontname=font_name,
+        text_color=text_color,
+        fill_color=(1.0, 1.0, 1.0),
+        **options,
+    )
+
+
 class DuplicateAnnotationIdError(RuntimeError):
     """Refuse to save ambiguous annotation identities without discarding comments."""
 
     def __init__(self, stable_id: str) -> None:
         self.stable_id = stable_id
         super().__init__(f"Duplicate annotation stable ID: {stable_id!r}")
+
 
 
 # PDF annotation type names that should not be used as stable IDs
@@ -72,12 +156,14 @@ def is_annotation_type_name(value: Optional[str]) -> bool:
     return str(value).strip() in ANNOTATION_TYPE_NAMES
 
 
+
 def _looks_like_check_id(value: Optional[str]) -> bool:
     """Return True when a stable identifier looks like a rubric check ID."""
     candidate = str(value or "").strip()
     if not candidate or is_annotation_type_name(candidate):
         return False
     return bool(_CHECK_ID_FULL_RE.fullmatch(candidate))
+
 
 
 def _infer_check_id(stable_id: Optional[str], content: Optional[str]) -> Optional[str]:
@@ -94,6 +180,7 @@ def _infer_check_id(stable_id: Optional[str], content: Optional[str]) -> Optiona
     return None
 
 
+
 def _derive_task_id_from_check_id(check_id: Optional[str]) -> Optional[str]:
     """Derive the owning task identifier from a check ID."""
     candidate = str(check_id or "").strip()
@@ -106,12 +193,14 @@ def _derive_task_id_from_check_id(check_id: Optional[str]) -> Optional[str]:
     return head or None
 
 
+
 def _safe_set_info(annot: Any, key: str, value: str) -> None:
     """PyMuPDF set_info expects a dict in newer versions; handle both."""
     try:
         annot.set_info({key: value})
     except TypeError:
         annot.set_info(**{key: value})
+
 
 
 def _normalize_pdf_author_name(grader_name: str) -> str:
@@ -122,6 +211,7 @@ def _normalize_pdf_author_name(grader_name: str) -> str:
     # Strip role suffixes like "(Teacher)" / "(Lid)" so author is stable and concise in PDF popups.
     normalized = re.sub(r"\s+\([^)]*\)\s*$", "", raw_name).strip()
     return normalized or raw_name
+
 
 
 def _format_pdf_datetime(value: Optional[datetime] = None) -> str:
@@ -139,11 +229,13 @@ def _format_pdf_datetime(value: Optional[datetime] = None) -> str:
     return f"D:{dt:%Y%m%d%H%M%S}{sign}{offset_hours:02d}'{offset_minutes:02d}'"
 
 
+
 def _pymupdf_rect_to_pdf(
     rect: "fitz.Rect", page_height: float
 ) -> Tuple[float, float, float, float]:
     """Convert a PyMuPDF rect (top-left origin) to PDF rect (bottom-left origin)."""
     return (rect.x0, page_height - rect.y1, rect.x1, page_height - rect.y0)
+
 
 
 # A note icon's CENTRE stays within this fraction of the page width from either edge.
@@ -234,6 +326,7 @@ def _keep_note_icon_centre_on_page(page: Any, annot: Any) -> None:
     annot.set_rect(fitz.Rect(rect.x0 + shift, rect.y0, rect.x1 + shift, rect.y1))
 
 
+
 def _pdf_rect_to_pymupdf(
     rect: Sequence[float],
     page_height: float,
@@ -243,6 +336,7 @@ def _pdf_rect_to_pymupdf(
     return (x0, page_height - y1, x1, page_height - y0)
 
 
+
 def _rgb_ints_to_floats(
     rgb: Optional[Sequence[int]],
 ) -> Optional[Tuple[float, float, float]]:
@@ -250,6 +344,7 @@ def _rgb_ints_to_floats(
     if rgb is None or len(rgb) != 3:
         return None
     return (rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)
+
 
 
 def _color_name_from_rgb(stroke: Any) -> str:
@@ -268,6 +363,7 @@ def _color_name_from_rgb(stroke: Any) -> str:
     return "amber"
 
 
+
 def _parse_rgb_token(token: str) -> Optional[List[int]]:
     """Parse an r,g,b metadata token into integer RGB values."""
     parts = [part.strip() for part in token.split(",")]
@@ -282,6 +378,7 @@ def _parse_rgb_token(token: str) -> Optional[List[int]]:
     return rgb
 
 
+
 def _looks_like_pdf_file(path: Path) -> bool:
     """Return True when the file header looks like a PDF."""
     try:
@@ -290,6 +387,7 @@ def _looks_like_pdf_file(path: Path) -> bool:
     except OSError:
         return False
     return b"%PDF-" in header
+
 
 
 def _decode_subject_metadata(subject_value: Any) -> Dict[str, Any]:
@@ -396,6 +494,146 @@ def _annotation_stable_id(
     return stable_id
 
 
+
+def _native_textbox_style(annot: Any) -> Tuple[str, float, Tuple[float, float, float]]:
+    """Read native FreeText color, including empty legacy comments, through MuPDF."""
+    native = fitz.mupdf
+    color = native.new_floats(4)
+    try:
+        font_name, font_size, count = native.pdf_annot_default_appearance(
+            annot.this, color
+        )
+        font_name = str(font_name or "helv")
+        font_size = float(font_size) if font_size > 0 else 11.0
+        spaces = {
+            1: native.fz_device_gray(),
+            3: native.fz_device_rgb(),
+            4: native.fz_device_cmyk(),
+        }
+        if count not in spaces:
+            return font_name, font_size, (0.0, 0.0, 0.0)
+        rgb = native.fz_convert_color(
+            spaces[count],
+            color,
+            native.fz_device_rgb(),
+            native.FzColorspace(),
+            native.FzColorParams(native.fz_default_color_params),
+        )
+        return font_name, font_size, (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+    finally:
+        native.delete_floats(color)
+
+
+def _native_textbox_color(annot: Any) -> Tuple[float, float, float]:
+    """Read FreeText ink, including legacy gray and CMYK default appearances."""
+    return _native_textbox_style(annot)[2]
+
+
+def _textbox_rotation(annot: Any) -> int:
+    """MuPDF reports absent FreeText rotation as -1; that means zero degrees."""
+    value = int(getattr(annot, "rotation", 0) or 0)
+    return value if value in (90, 180, 270) else 0
+
+
+def fit_existing_textboxes(doc: Any) -> int:
+    """Repair legacy plain FreeText appearances without changing review evidence.
+
+    Existing valid rectangles, native font/color, identity and audit fields stay
+    intact. Native font metrics also handle old blank or clipped appearances.
+    Unsupported external font metrics are left intact rather than replaced
+    with a different font.
+    """
+    repaired = 0
+    for page in doc:
+        for annot in page.annots():
+            if annot.type[0] != fitz.PDF_ANNOT_FREE_TEXT:
+                continue
+            info = annot.info or {}
+            text = str(info.get("content") or "")
+            if not text.strip():
+                continue
+            rect = _textbox_rect_on_page(page, annot.rect)
+            moved = tuple(rect) != tuple(annot.rect)
+            painted = "".join(annot.get_text().split())
+            if not moved and painted == "".join(text.split()):
+                continue
+            font_name, maximum, _ = _native_textbox_style(annot)
+            try:
+                fitz.get_text_length("M", fontname=font_name, fontsize=1)
+            except ValueError:
+                logger.warning(
+                    "Existing textbox font metrics unsupported; appearance retained"
+                )
+                continue
+            size, original_fits = _textbox_font_size(
+                page, rect, text, font_name, maximum, _textbox_rotation(annot)
+            )
+            target_size = maximum if original_fits else size * 0.95
+            original_da = doc.xref_get_key(annot.xref, "DA")
+            if moved:
+                annot.set_rect(rect)
+            da = original_da[1] if original_da[0] == "string" else ""
+            if original_da[0] == "string":
+                # Keep authored operators, replacing only the font size.
+                matches = list(
+                    re.finditer(
+                        r"/[^\s]+\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?)\s+Tf",
+                        original_da[1],
+                    )
+                )
+                if matches:
+                    match = matches[-1]
+                    da = (
+                        original_da[1][: match.start(1)]
+                        + format(target_size, ".9g")
+                        + original_da[1][match.end(1) :]
+                    )
+                else:
+                    da += f" /{font_name} {target_size:.9g} Tf"
+            else:
+                da = f"/{font_name} {target_size:.9g} Tf"
+            doc.xref_set_key(annot.xref, "DA", fitz.get_pdf_str(da))
+            # PyMuPDF 1.25's high-level update rewrites an absolute native
+            # Form stream into local coordinates without matching its BBox.
+            # MuPDF regenerates the whole appearance consistently, including
+            # the authored rotation, font, color and existing annotation xref.
+            fitz.mupdf.pdf_dirty_annot(annot.this)
+            fitz.mupdf.pdf_update_annot(annot.this)
+            repaired += 1
+    return repaired
+
+
+def _legacy_subject_id(metadata: Dict[str, Any]) -> Optional[str]:
+    """Return an implicit subject ID that older readers can still understand."""
+    value = metadata.get("stable_id")
+    if metadata.get("has_explicit_stable_id") or not value or is_annotation_type_name(value):
+        return None
+    if "|" in value:
+        raise ValueError("Legacy subject identity contains a reserved delimiter")
+    return str(value)
+
+
+def _encode_replacement_subject(
+    original: Any, replacement: Any, info: Dict[str, Any],
+    metadata: Dict[str, Any], source: str, **fields: Any,
+) -> str:
+    """Preserve native identities and the legacy implicit subject namespace."""
+    legacy_id = _legacy_subject_id(metadata)
+    stable_id = _annotation_stable_id(info, metadata)
+    if original is not replacement:
+        native = fitz.mupdf
+        old_object = native.pdf_annot_obj(original.this)
+        new_object = native.pdf_annot_obj(replacement.this)
+        for key in ("NM", "Name"):
+            native.pdf_dict_puts(new_object, key, native.pdf_dict_gets(old_object, key))
+    if legacy_id and stable_id:
+        return _encode_subject_metadata(stable_id, source, legacy_subject=True, **fields)
+    if metadata.get("has_explicit_stable_id") or not stable_id:
+        return _encode_subject_metadata(stable_id or str(uuid.uuid4()), source, **fields)
+    return _encode_subject_metadata("", source, **fields)
+
+
+
 def _validate_unique_annotation_ids(doc: Any) -> None:
     """Walk the open document once; never parse a second PDF or drop a comment.
 
@@ -418,6 +656,7 @@ def _validate_unique_annotation_ids(doc: Any) -> None:
             seen.add(stable_id)
 
 
+
 def _encode_subject_metadata(
     stable_id: str,
     source: str,
@@ -432,6 +671,7 @@ def _encode_subject_metadata(
     stroke_color_rgb: Optional[Sequence[int]] = None,
     textbox_color_rgb: Optional[Sequence[int]] = None,
     anchor_text: Optional[str] = None,
+    legacy_subject: bool = False,
 ) -> str:
     """Encode stable ID and metadata into the PDF annotation subject field."""
     tokens = [source]
@@ -464,8 +704,11 @@ def _encode_subject_metadata(
         tokens.append(original_source or "")
     tokens.extend(metadata_tokens)
 
+    if legacy_subject:
+        return f"{stable_id}|" + "|".join(tokens)
     encoded_payload = base64.b64encode("|".join(tokens).encode("utf-8")).decode("ascii")
     return f"{stable_id}#{encoded_payload}"
+
 
 
 def _flatten_points(obj: Any) -> Iterator[Tuple[float, float]]:
@@ -490,6 +733,7 @@ def _flatten_points(obj: Any) -> Iterator[Tuple[float, float]]:
             yield from _flatten_points(sub)
 
 
+
 def _extract_markup_quads(annot: Any) -> List[List[float]]:
     """Extract per-line quad rects from a text-markup annotation.
 
@@ -510,6 +754,7 @@ def _extract_markup_quads(annot: Any) -> List[List[float]]:
         ys = [p[1] for p in group]
         quads.append([min(xs), min(ys), max(xs), max(ys)])
     return quads
+
 
 
 class PDFAnnotator:
@@ -535,6 +780,7 @@ class PDFAnnotator:
         self.doc: Optional[fitz.Document] = None
         self._open()
 
+
     def _open(self) -> None:
         """Open the PDF document."""
         try:
@@ -546,15 +792,18 @@ class PDFAnnotator:
             logger.error(f"Failed to open PDF {self.pdf_path}: {e}")
             raise
 
+
     def close(self) -> None:
         """Close the PDF document."""
         if self.doc:
             self.doc.close()
             self.doc = None
 
+
     def __enter__(self) -> "PDFAnnotator":
         """Context manager entry."""
         return self
+
 
     def __exit__(
         self,
@@ -565,7 +814,8 @@ class PDFAnnotator:
         """Context manager exit."""
         self.close()
 
-    def add_annotation(self, annotation: PDFAnnotation) -> bool:
+
+    def add_annotation(self, annotation: PDFAnnotation, *, textbox_rotation: int = 0) -> bool:
         """
         Add a single annotation to the PDF.
 
@@ -647,11 +897,7 @@ class PDFAnnotator:
                     return False
 
                 # Convert points from PDF coords (bottom-left) to PyMuPDF coords (top-left)
-                page_height = page.rect.height
-                converted_points: list[tuple[float, float]] = []
-                for pt in annotation.points:
-                    pymupdf_y = page_height - pt[1]
-                    converted_points.append((float(pt[0]), float(pymupdf_y)))
+                converted_points = [tuple(pdf_point_to_native(pt, page)) for pt in annotation.points]
 
                 # Determine stroke properties
                 width = annotation.stroke_width or (
@@ -688,14 +934,7 @@ class PDFAnnotator:
                 else:
                     text_color = (0.0, 0.0, 0.0)
 
-                annot = page.add_freetext_annot(
-                    pymupdf_rect,
-                    text,
-                    fontsize=11,
-                    fontname="helv",
-                    text_color=text_color,
-                    fill_color=(1.0, 1.0, 1.0),
-                )
+                annot = _add_fitted_textbox(page, pymupdf_rect, text, text_color, textbox_rotation)
                 annot.set_opacity(0.9)
                 annot.update()
 
@@ -813,8 +1052,9 @@ class PDFAnnotator:
             logger.error(f"Failed to add annotation: {e}")
             return False
 
+
     def _extract_ink_points_pdf(
-        self, annot: Any, page_height: float
+        self, annot: Any, page: Any
     ) -> List[List[float]]:
         """Extract ink annotation points in PDF-space coordinates."""
         paths = getattr(annot, "vertices", None)
@@ -838,8 +1078,9 @@ class PDFAnnotator:
             except (IndexError, TypeError, ValueError):
                 logger.debug("Skipping malformed ink point: %r", point)
                 continue
-            points.append([x_value, page_height - y_value])
+            points.append(native_point_to_pdf([x_value, y_value], page))
         return points
+
 
     def _replace_drawing_annotation(
         self,
@@ -859,8 +1100,7 @@ class PDFAnnotator:
         page = self.doc[page_index]
         info = annot.info or {}
         metadata = _decode_subject_metadata(info.get("subject", ""))
-        page_height = page.rect.height
-        current_points = self._extract_ink_points_pdf(annot, page_height)
+        current_points = self._extract_ink_points_pdf(annot, page)
         points_to_store = new_points or current_points
         if len(points_to_store) < 2:
             logger.error(
@@ -880,10 +1120,7 @@ class PDFAnnotator:
         if stroke_opacity is None:
             stroke_opacity = 0.35 if drawing_style == "highlighter" else 1.0
 
-        converted_points = [
-            (float(point[0]), float(page_height - point[1]))
-            for point in points_to_store
-        ]
+        converted_points = [tuple(pdf_point_to_native(point, page)) for point in points_to_store]
 
         try:
             new_annot = page.add_ink_annot([converted_points])
@@ -905,8 +1142,8 @@ class PDFAnnotator:
             if effective_source == "HUMAN" and not original_source_to_store:
                 original_source_to_store = metadata.get("source") or "AI"
 
-            subject_value = _encode_subject_metadata(
-                metadata.get("stable_id") or str(uuid.uuid4()),
+            subject_value = _encode_replacement_subject(
+                annot, new_annot, info, metadata,
                 effective_source,
                 check_id=metadata.get("check_id"),
                 original_source=original_source_to_store,
@@ -941,6 +1178,7 @@ class PDFAnnotator:
                 "Failed to replace drawing annotation %s: %s", annotation_identifier, e
             )
             return False
+
 
     def _replace_highlight_annotation(
         self,
@@ -1034,8 +1272,8 @@ class PDFAnnotator:
                 else metadata.get("anchor_text")
             )
 
-            subject_value = _encode_subject_metadata(
-                metadata.get("stable_id") or str(uuid.uuid4()),
+            subject_value = _encode_replacement_subject(
+                annot, new_annot, info, metadata,
                 effective_source,
                 check_id=metadata.get("check_id"),
                 original_source=original_source_to_store,
@@ -1070,6 +1308,7 @@ class PDFAnnotator:
             )
             return False
 
+
     def _replace_textbox_annotation(
         self,
         page_index: int,
@@ -1082,7 +1321,7 @@ class PDFAnnotator:
         new_source: Optional[str],
         new_is_verdict: Optional[bool],
     ) -> Union[bool, Tuple[bool, Optional[int], Optional[int]]]:
-        """Replace a free-text annotation when properties require recreation."""
+        """Fit FreeText while preserving the existing object when possible."""
         if self.doc is None:
             return False
 
@@ -1092,19 +1331,27 @@ class PDFAnnotator:
         rect = fitz.Rect(new_rect) if new_rect is not None else annot.rect
 
         textbox_rgb = new_stroke_color_rgb or metadata.get("textbox_color_rgb")
-        text_color = _rgb_ints_to_floats(textbox_rgb) or (0.0, 0.0, 0.0)
+        font_name, font_size, native_color = _native_textbox_style(annot)
+        text_color = _rgb_ints_to_floats(textbox_rgb) or native_color
         content = info.get("content", "") if new_content is None else new_content
+        in_place = new_stroke_color_rgb is None
 
         try:
-            new_annot = page.add_freetext_annot(
-                rect,
-                content,
-                fontsize=11,
-                fontname="helv",
-                text_color=text_color,
-                fill_color=(1.0, 1.0, 1.0),
-            )
-            new_annot.set_opacity(0.9)
+            if in_place:
+                new_annot = annot
+                if new_rect is not None:
+                    new_annot.set_rect(_textbox_rect_on_page(page, rect))
+            else:
+                new_annot = _add_fitted_textbox(
+                    page,
+                    rect,
+                    content,
+                    text_color,
+                    _textbox_rotation(annot),
+                    font_name=font_name,
+                    font_size=font_size,
+                )
+                new_annot.set_opacity(0.9)
 
             effective_grader_name = grader_name or info.get("title")
             if effective_grader_name:
@@ -1119,8 +1366,8 @@ class PDFAnnotator:
             if effective_source == "HUMAN" and not original_source_to_store:
                 original_source_to_store = metadata.get("source") or "AI"
 
-            subject_value = _encode_subject_metadata(
-                metadata.get("stable_id") or str(uuid.uuid4()),
+            subject_value = _encode_replacement_subject(
+                annot, new_annot, info, metadata,
                 effective_source,
                 check_id=metadata.get("check_id"),
                 original_source=original_source_to_store,
@@ -1138,12 +1385,18 @@ class PDFAnnotator:
             if creation_date:
                 _safe_set_info(new_annot, "creationDate", str(creation_date))
             _safe_set_info(new_annot, "modDate", _format_pdf_datetime())
-            if content:
+            if content or in_place:
                 _safe_set_info(new_annot, "content", str(content))
 
-            new_annot.update()
+            if in_place:
+                fitz.mupdf.pdf_dirty_annot(new_annot.this)
+                fitz.mupdf.pdf_update_annot(new_annot.this)
+                fit_existing_textboxes(self.doc)
+            else:
+                new_annot.update()
             new_xref = new_annot.xref if hasattr(new_annot, "xref") else None
-            page.delete_annot(annot)
+            if not in_place:
+                page.delete_annot(annot)
             return (True, page_index, new_xref)
         except Exception as e:
             logger.error(
@@ -1156,9 +1409,13 @@ class PDFAnnotator:
         *,
         annotation_id: Optional[str] = None,
         xref: Optional[int] = None,
+        canonical: bool = False,
     ) -> Optional[Tuple[int, Any]]:
         """
         Locate an annotation either by its stable ID or legacy xref.
+
+        ``canonical`` marks already-decoded metadata: reserved wire prefixes in
+        that value are literal data and must not be parsed a second time.
 
         Handles various identifier formats:
         - UUID strings (e.g., "49cf44f5-4b1d-4699-b8c3-f9eb8f7710f0")
@@ -1169,108 +1426,94 @@ class PDFAnnotator:
             logger.debug("Document not opened, cannot find annotation")
             return None
 
-        # Normalize search identifier - handle "Note:1" format by extracting the ID part
-        # Also handle composite formats like "xref:138|id:fitz-A3" - prefer xref
-        search_id = None
-        if annotation_id:
-            search_id = str(annotation_id).strip()
+        search_id = str(annotation_id).strip() if annotation_id else None
+        if not canonical and search_id and search_id.startswith(("xref:", "id:")):
+            parsed_xref, search_id = self._parse_annotation_identifier(search_id)
+            if parsed_xref is not None:
+                xref = parsed_xref
+        search_alias = (
+            search_id.split(":", 1)[1].strip()
+            if search_id and search_id.startswith(("Note:", "Text:"))
+            else None
+        )
 
-            # Handle composite format "xref:138|id:fitz-A3" - prefer explicit IDs before xref
-            if "|" in search_id:
-                parts = search_id.split("|")
-                xref_part = None
-                id_part = None
-                for part in parts:
-                    part = part.strip()
-                    if part.startswith("xref:"):
-                        try:
-                            xref_part = int(part.split(":", 1)[1])
-                        except (ValueError, TypeError):
-                            pass
-                    elif part.startswith("id:"):
-                        temp_id = part.split(":", 1)[1]
-                        # Only use ID if it's not a PyMuPDF internal ID
-                        if temp_id and not temp_id.startswith("fitz-"):
-                            id_part = temp_id
-                if id_part:
-                    search_id = id_part
-                if xref_part is not None:
-                    xref = xref_part
-
-            # Handle "Note:1" or "Text:1" format - extract the numeric/ID part after colon
-            if (
-                search_id
-                and ":" in search_id
-                and not search_id.startswith(("xref:", "id:"))
-            ):
-                parts = search_id.split(":", 1)
-                if len(parts) == 2:
-                    search_id = parts[1].strip()
-
+        # Store positions, not native annotation wrappers whose page may expire
+        # during the traversal. Reload the chosen page only after resolving it.
+        matches: List[Tuple[int, int, Optional[int], bool]] = []
+        aliases: List[Tuple[int, int, Optional[int], bool]] = []
+        xref_match: Optional[Tuple[int, int, Optional[int], bool]] = None
         for page_idx in range(self.doc.page_count):
             page = self.doc[page_idx]
-            for annot in page.annots():
-                actual_xref = getattr(annot, "xref", None)
-
-                # Skip annotations that are no longer bound to a page
+            for ordinal, annot in enumerate(page.annots()):
                 try:
-                    if hasattr(annot, "parent"):
-                        parent = getattr(annot, "parent", None)
-                        if parent is None:
-                            continue
-                except Exception as e:
-                    logger.debug("Could not check annotation parent: %s", e)
-
+                    if hasattr(annot, "parent") and annot.parent is None:
+                        continue
+                except Exception:
+                    logger.debug("Could not check annotation parent")
                 info = annot.info or {}
-
-                # Collect all possible ID candidates from annotation metadata.
-                # The "subject" field stores UUIDs (may contain UUID#base64 or UUID|source format).
-                subject_value = info.get("subject")
-                subject_uuid = None
-                if subject_value:
-                    subject_str = str(subject_value).strip()
-                    # Handle UUID#base64 format (new)
-                    if "#" in subject_str:
-                        subject_uuid = subject_str.split("#", 1)[0]
-                    # Handle UUID|source|original format (legacy)
-                    elif "|" in subject_str:
-                        subject_uuid = subject_str.split("|", 1)[0]
-                    else:
-                        subject_uuid = subject_str
-
-                candidates = [
-                    subject_uuid,  # UUID extracted from subject field (highest priority)
-                    info.get("id"),
-                    info.get("name"),
-                    info.get("title"),
-                ]
-                # Remove None values
-                candidates = [c for c in candidates if c is not None]
-
-                # Try matching by stable ID first
-                if search_id:
-                    for candidate in candidates:
-                        candidate_str = str(candidate).strip()
-                        # Exact match
-                        if candidate_str == search_id:
-                            return (page_idx, annot)
-                        if ":" in candidate_str:
-                            prefix, suffix = candidate_str.split(":", 1)
-                            if prefix in {"Note", "Text"} and suffix.strip() == search_id:
-                                return (page_idx, annot)
-
-                # Fallback: try matching by xref
+                metadata = _decode_subject_metadata(info.get("subject", ""))
+                stable_id = _annotation_stable_id(info, metadata)
+                actual_xref = getattr(annot, "xref", None)
+                exact = bool(search_id and stable_id == search_id)
+                legacy_alias = bool(
+                    search_id
+                    and stable_id
+                    and (
+                        (search_alias and stable_id == search_alias)
+                        or (
+                            not metadata.get("has_explicit_stable_id")
+                            and str(stable_id).startswith(("Note:", "Text:"))
+                            and str(stable_id).split(":", 1)[1].strip()
+                            in {search_id, search_alias}
+                        )
+                    )
+                )
+                entry = (
+                    page_idx,
+                    ordinal,
+                    actual_xref,
+                    bool(metadata.get("has_explicit_stable_id")),
+                )
+                if exact:
+                    matches.append(entry)
+                elif legacy_alias:
+                    aliases.append(entry)
                 if xref is not None and actual_xref == xref:
-                    return (page_idx, annot)
+                    if not search_id or exact:
+                        xref_match = entry
+        if xref is None and not matches:
+            matches = aliases
 
-        logger.debug("Annotation not found: id=%s, xref=%s", annotation_id, xref)
+        explicit = [entry for entry in matches if entry[3]]
+        # A wire pair identifies one object. A stale implicit pair must never
+        # fall through to an unrelated explicit object sharing its native ID.
+        # Unique explicit IDs can survive recreation through an unscoped ID.
+        if xref is not None:
+            chosen = xref_match
+        elif len(explicit) == 1:
+            chosen = explicit[0]
+        elif explicit:
+            return None
+        elif len(matches) == 1:
+            chosen = matches[0]
+        else:
+            return None
+        if chosen is None:
+            return None
+        page_idx, ordinal, _, _ = chosen
+        page = self.doc[page_idx]
+        for index, annot in enumerate(page.annots()):
+            if index == ordinal:
+                return page_idx, annot
         return None
 
     def find_annotation_by_id(self, annotation_id: str) -> Optional[Tuple[int, object]]:
         return self._find_annotation(annotation_id=annotation_id)
 
+
     def find_annotation_by_xref(self, xref: int) -> Optional[Tuple[int, object]]:
         return self._find_annotation(xref=xref)
+
 
     def update_annotation_by_xref(
         self,
@@ -1288,6 +1531,7 @@ class PDFAnnotator:
             new_page_index=new_page_index,
         )
 
+
     @staticmethod
     def _parse_annotation_identifier(
         identifier: Optional[str],
@@ -1298,7 +1542,7 @@ class PDFAnnotator:
         Handles formats:
         - "xref:123" -> (123, None)
         - "id:uuid-here" -> (None, "uuid-here")
-        - "Note:1" -> (None, "1")  # Extract ID part after colon
+        - "Note:1" -> (None, "Note:1")  # Exact ID before legacy prefix fallback
         - "123" -> (123, None)  # Pure numeric treated as xref
         - "uuid-string" -> (None, "uuid-string")  # Non-numeric treated as ID
         """
@@ -1348,12 +1592,8 @@ class PDFAnnotator:
 
             return xref, annotation_id
 
-        # Handle "Note:1" or "Text:1" format - extract the ID part after colon
-        if ":" in identifier_str and not identifier_str.startswith(("xref:", "id:")):
-            parts = identifier_str.split(":", 1)
-            if len(parts) == 2:
-                annotation_id = parts[1].strip()
-                return None, annotation_id
+        # A literal stable ID may itself start with Note:/Text:. The finder
+        # tries that exact identity before considering a legacy type prefix.
 
         # Try pure numeric as xref
         try:
@@ -1395,15 +1635,15 @@ class PDFAnnotator:
             new_stroke_color_rgb: Optional updated markup RGB color
 
         Returns:
-            bool: True/False for same-page updates
-            Tuple[bool, int, int]: (success, new_page_index, new_xref) for cross-page moves
+            bool: True/False for in-place updates
+            Tuple[bool, int, int]: (success, page_index, new_xref) for recreated or moved annotations
 
         Note (PDF-5 FIX): Cross-page moves return a tuple to provide the new xref
         after PyMuPDF reassigns it. Callers must check isinstance(result, tuple).
         """
         xref, annotation_id = self._parse_annotation_identifier(annotation_identifier)
 
-        result = self._find_annotation(annotation_id=annotation_id, xref=xref)
+        result = self._find_annotation(annotation_id=annotation_id, xref=xref, canonical=True)
         if not result:
             logger.error(
                 "Annotation not found: identifier='%s' (xref=%s, id=%s)",
@@ -1442,6 +1682,12 @@ class PDFAnnotator:
                 annot = fresh_annot
             else:
                 logger.error("Failed to refresh annotation xref=%s", annot_xref)
+
+        try:
+            _legacy_subject_id(_decode_subject_metadata((annot.info or {}).get("subject", "")))
+        except ValueError:
+            logger.error("Refusing annotation update with an unencodable legacy identity")
+            return False
 
         # Auto-transfer ownership from AI to HUMAN if any field ACTUALLY changes
         # This ensures any human modification takes ownership
@@ -1484,7 +1730,7 @@ class PDFAnnotator:
                     try:
                         old_points = self._extract_ink_points_pdf(
                             annot,
-                            page.rect.height if page else 792.0,
+                            page,
                         )
                     except Exception:
                         old_points = None
@@ -1613,9 +1859,10 @@ class PDFAnnotator:
                     new_is_verdict,
                 )
 
-            if (
-                annot_type_code == fitz.PDF_ANNOT_FREE_TEXT
-                and new_stroke_color_rgb is not None
+            if annot_type_code == fitz.PDF_ANNOT_FREE_TEXT and (
+                new_stroke_color_rgb is not None
+                or new_content is not None
+                or new_rect is not None
             ):
                 return self._replace_textbox_annotation(
                     page_index,
@@ -1744,10 +1991,8 @@ class PDFAnnotator:
                         else bool(new_is_verdict)
                     )
 
-                    new_subject = _encode_subject_metadata(
-                        subject_metadata.get("stable_id")
-                        or annotation_id
-                        or str(uuid.uuid4()),
+                    new_subject = _encode_replacement_subject(
+                        annot, annot, info, subject_metadata,
                         source_to_store,
                         check_id=subject_metadata.get("check_id"),
                         original_source=original_source_to_store,
@@ -1802,6 +2047,7 @@ class PDFAnnotator:
                     )
                 except Exception as e:
                     logger.error("FAILED to update source: %s", e, exc_info=True)
+                    return False
 
             logger.debug(
                 "Updated annotation %s on page %s (content=%s, rect=%s, color=%s, grader=%s, source=%s)",
@@ -1818,6 +2064,7 @@ class PDFAnnotator:
         except Exception as e:
             logger.error("Failed to update annotation %s: %s", annotation_identifier, e)
             return False
+
 
     def _move_annotation_to_page(
         self,
@@ -1974,21 +2221,27 @@ class PDFAnnotator:
                 textbox_rgb = new_stroke_color_rgb or subject_metadata.get(
                     "textbox_color_rgb"
                 )
-                text_color = _rgb_ints_to_floats(textbox_rgb) or (0.0, 0.0, 0.0)
-                new_annot = target_page.add_freetext_annot(
+                font_name, font_size, native_color = _native_textbox_style(annot)
+                text_color = _rgb_ints_to_floats(textbox_rgb) or native_color
+                new_rotation = (
+                    _textbox_rotation(annot)
+                    + target_page.rotation
+                    - self.doc[old_page_index].rotation
+                ) % 360
+                new_annot = _add_fitted_textbox(
+                    target_page,
                     rect,
                     content,
-                    fontsize=11,
-                    fontname="helv",
-                    text_color=text_color,
-                    fill_color=(1.0, 1.0, 1.0),
+                    text_color,
+                    new_rotation,
+                    font_name=font_name,
+                    font_size=font_size,
                 )
                 new_annot.set_opacity(0.9)
             elif is_ink:
                 source_page = self.doc[old_page_index]
-                source_page_height = source_page.rect.height
                 points_to_store = new_points or self._extract_ink_points_pdf(
-                    annot, source_page_height
+                    annot, source_page
                 )
                 if len(points_to_store) < 2:
                     annot_ref = preserved_id or (
@@ -2017,7 +2270,7 @@ class PDFAnnotator:
                     )
 
                 converted_points = [
-                    (float(point[0]), float(target_page.rect.height - point[1]))
+                    tuple(pdf_point_to_native(point, target_page))
                     for point in points_to_store
                 ]
                 new_annot = target_page.add_ink_annot([converted_points])
@@ -2072,8 +2325,8 @@ class PDFAnnotator:
                     else subject_metadata.get("textbox_color_rgb")
                 )
 
-                new_subject = _encode_subject_metadata(
-                    preserved_id,
+                new_subject = _encode_replacement_subject(
+                    annot, new_annot, info, subject_metadata,
                     source_to_set,
                     check_id=subject_metadata.get("check_id"),
                     original_source=original_source_to_set,
@@ -2097,6 +2350,7 @@ class PDFAnnotator:
                 logger.error(
                     "Failed to set UUID/source in subject field: %s", e, exc_info=True
                 )
+                return (False, None, None)
 
             # Store grader_name in "title" field
             if grader_name:
@@ -2146,8 +2400,10 @@ class PDFAnnotator:
             logger.error("Failed to move annotation: %s", e)
             return (False, None, None)
 
+
     def delete_annotation_by_xref(self, xref: int) -> bool:
         return self.delete_annotation(annotation_identifier=str(xref))
+
 
     def delete_annotation(self, annotation_identifier: str) -> bool:
         """
@@ -2161,7 +2417,7 @@ class PDFAnnotator:
         """
         xref, annotation_id = self._parse_annotation_identifier(annotation_identifier)
 
-        result = self._find_annotation(annotation_id=annotation_id, xref=xref)
+        result = self._find_annotation(annotation_id=annotation_id, xref=xref, canonical=True)
         if not result:
             logger.warning("Annotation %s not found", annotation_identifier)
             return False
@@ -2203,6 +2459,7 @@ class PDFAnnotator:
             logger.error("Failed to delete annotation %s: %s", annotation_identifier, e)
             return False
 
+
     def add_annotations(self, annotations: List[PDFAnnotation]) -> int:
         """
         Add multiple annotations to the PDF.
@@ -2218,6 +2475,7 @@ class PDFAnnotator:
             if self.add_annotation(annotation):
                 count += 1
         return count
+
 
     def save(self, output_path: Optional[Union[Path, str]] = None) -> Path:
         """
@@ -2247,6 +2505,7 @@ class PDFAnnotator:
 
         try:
             _validate_unique_annotation_ids(self.doc)
+            fit_existing_textboxes(self.doc)
             _scale_note_icons(self.doc)
             output_resolved = output_path.resolve()
             source_resolved = self.pdf_path.resolve()
@@ -2326,8 +2585,7 @@ class PDFAnnotator:
                 if hasattr(annot, "type") and annot.type[0] == fitz.PDF_ANNOT_INK:
                     annot_type_str = "drawing"
                     try:
-                        page_height = page.rect.height
-                        pdf_points = self._extract_ink_points_pdf(annot, page_height)
+                        pdf_points = self._extract_ink_points_pdf(annot, page)
                         if pdf_points:
                             extra_fields["points"] = pdf_points
                     except Exception as e:
@@ -2337,6 +2595,7 @@ class PDFAnnotator:
                     hasattr(annot, "type") and annot.type[0] == fitz.PDF_ANNOT_FREE_TEXT
                 ):
                     annot_type_str = "textbox"
+                    extra_fields["rotation"] = _textbox_rotation(annot)
                     if subject_metadata.get("textbox_color_rgb"):
                         extra_fields["stroke_color_rgb"] = subject_metadata[
                             "textbox_color_rgb"
@@ -2375,7 +2634,12 @@ class PDFAnnotator:
                     "xref": xref,
                     "page_index": page_index,
                     "id": combined_id,
-                    "stable_id": stable_id,  # Expose raw stable ID for direct lookup
+                    "stable_id": stable_id,
+                    "has_explicit_stable_id": bool(
+                        subject_metadata.get("has_explicit_stable_id")
+                        and subject_metadata.get("stable_id") == stable_id
+                        and not is_annotation_type_name(stable_id)
+                    ),  # Expose raw stable ID for direct lookup
                     "grader_name": grader_name,
                     "source": subject_metadata.get("source")
                     or "AI",  # Extract from subject field, default to AI
@@ -2420,6 +2684,7 @@ class PDFAnnotator:
 
         return annotations
 
+
     def find_text_location(
         self, page_index: int, search_text: str, fuzzy: bool = True
     ) -> Optional[BBox]:
@@ -2456,6 +2721,7 @@ class PDFAnnotator:
                 return BBox(x0=rect.x0, y0=rect.y0, x1=rect.x1, y1=rect.y1)
 
         return None
+
 
     def add_smart_annotation(
         self,

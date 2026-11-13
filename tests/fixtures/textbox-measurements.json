@@ -1,0 +1,380 @@
+[
+  {
+    "width": 595,
+    "height": 842,
+    "scale": 1,
+    "text": "This is a fully visible comment. FINALWORD",
+    "rect": [
+      50,
+      50,
+      270,
+      94
+    ],
+    "cssWidth": 220,
+    "cssHeight": 44
+  },
+  {
+    "width": 595,
+    "height": 842,
+    "scale": 1,
+    "text": "Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation FINALWORD",
+    "rect": [
+      50,
+      50,
+      270,
+      213
+    ],
+    "cssWidth": 220,
+    "cssHeight": 163
+  },
+  {
+    "width": 595,
+    "height": 842,
+    "scale": 1,
+    "text": "LongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordFINALWORD",
+    "rect": [
+      50,
+      50,
+      270,
+      196
+    ],
+    "cssWidth": 220,
+    "cssHeight": 146
+  },
+  {
+    "width": 595,
+    "height": 842,
+    "scale": 1.5,
+    "text": "This is a fully visible comment. FINALWORD",
+    "rect": [
+      50,
+      50,
+      196.66666666666666,
+      79.33333333333333
+    ],
+    "cssWidth": 220,
+    "cssHeight": 44
+  },
+  {
+    "width": 595,
+    "height": 842,
+    "scale": 1.5,
+    "text": "Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation FINALWORD",
+    "rect": [
+      50,
+      50,
+      196.66666666666666,
+      158.66666666666666
+    ],
+    "cssWidth": 220,
+    "cssHeight": 163
+  },
+  {
+    "width": 595,
+    "height": 842,
+    "scale": 1.5,
+    "text": "LongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordFINALWORD",
+    "rect": [
+      50,
+      50,
+      196.66666666666666,
+      147.33333333333334
+    ],
+    "cssWidth": 220,
+    "cssHeight": 146
+  },
+  {
+    "width": 595,
+    "height": 842,
+    "scale": 2,
+    "text": "This is a fully visible comment. FINALWORD",
+    "rect": [
+      50,
+      50,
+      160,
+      72
+    ],
+    "cssWidth": 220,
+    "cssHeight": 44
+  },
+  {
+    "width": 595,
+    "height": 842,
+    "scale": 2,
+    "text": "Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation FINALWORD",
+    "rect": [
+      50,
+      50,
+      160,
+      131.5
+    ],
+    "cssWidth": 220,
+    "cssHeight": 163
+  },
+  {
+    "width": 595,
+    "height": 842,
+    "scale": 2,
+    "text": "LongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordFINALWORD",
+    "rect": [
+      50,
+      50,
+      160,
+      123
+    ],
+    "cssWidth": 220,
+    "cssHeight": 146
+  },
+  {
+    "width": 842,
+    "height": 595,
+    "scale": 1,
+    "text": "This is a fully visible comment. FINALWORD",
+    "rect": [
+      50,
+      50,
+      270,
+      94
+    ],
+    "cssWidth": 220,
+    "cssHeight": 44
+  },
+  {
+    "width": 842,
+    "height": 595,
+    "scale": 1,
+    "text": "Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation FINALWORD",
+    "rect": [
+      50,
+      50,
+      270,
+      213
+    ],
+    "cssWidth": 220,
+    "cssHeight": 163
+  },
+  {
+    "width": 842,
+    "height": 595,
+    "scale": 1,
+    "text": "LongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordFINALWORD",
+    "rect": [
+      50,
+      50,
+      270,
+      196
+    ],
+    "cssWidth": 220,
+    "cssHeight": 146
+  },
+  {
+    "width": 842,
+    "height": 595,
+    "scale": 1.5,
+    "text": "This is a fully visible comment. FINALWORD",
+    "rect": [
+      50,
+      50,
+      196.66666666666666,
+      79.33333333333333
+    ],
+    "cssWidth": 220,
+    "cssHeight": 44
+  },
+  {
+    "width": 842,
+    "height": 595,
+    "scale": 1.5,
+    "text": "Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation FINALWORD",
+    "rect": [
+      50,
+      50,
+      196.66666666666666,
+      158.66666666666666
+    ],
+    "cssWidth": 220,
+    "cssHeight": 163
+  },
+  {
+    "width": 842,
+    "height": 595,
+    "scale": 1.5,
+    "text": "LongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordFINALWORD",
+    "rect": [
+      50,
+      50,
+      196.66666666666666,
+      147.33333333333334
+    ],
+    "cssWidth": 220,
+    "cssHeight": 146
+  },
+  {
+    "width": 842,
+    "height": 595,
+    "scale": 2,
+    "text": "This is a fully visible comment. FINALWORD",
+    "rect": [
+      50,
+      50,
+      160,
+      72
+    ],
+    "cssWidth": 220,
+    "cssHeight": 44
+  },
+  {
+    "width": 842,
+    "height": 595,
+    "scale": 2,
+    "text": "Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation FINALWORD",
+    "rect": [
+      50,
+      50,
+      160,
+      131.5
+    ],
+    "cssWidth": 220,
+    "cssHeight": 163
+  },
+  {
+    "width": 842,
+    "height": 595,
+    "scale": 2,
+    "text": "LongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordFINALWORD",
+    "rect": [
+      50,
+      50,
+      160,
+      123
+    ],
+    "cssWidth": 220,
+    "cssHeight": 146
+  },
+  {
+    "width": 300,
+    "height": 400,
+    "scale": 1,
+    "text": "This is a fully visible comment. FINALWORD",
+    "rect": [
+      50,
+      50,
+      170,
+      111
+    ],
+    "cssWidth": 120,
+    "cssHeight": 61
+  },
+  {
+    "width": 300,
+    "height": 400,
+    "scale": 1,
+    "text": "Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation FINALWORD",
+    "rect": [
+      50,
+      50,
+      170,
+      483
+    ],
+    "cssWidth": 120,
+    "cssHeight": 433
+  },
+  {
+    "width": 300,
+    "height": 400,
+    "scale": 1,
+    "text": "LongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordFINALWORD",
+    "rect": [
+      50,
+      50,
+      170,
+      314
+    ],
+    "cssWidth": 120,
+    "cssHeight": 264
+  },
+  {
+    "width": 300,
+    "height": 400,
+    "scale": 1.5,
+    "text": "This is a fully visible comment. FINALWORD",
+    "rect": [
+      50,
+      50,
+      164,
+      79.33333333333333
+    ],
+    "cssWidth": 171,
+    "cssHeight": 44
+  },
+  {
+    "width": 300,
+    "height": 400,
+    "scale": 1.5,
+    "text": "Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation FINALWORD",
+    "rect": [
+      50,
+      50,
+      164,
+      203.33333333333334
+    ],
+    "cssWidth": 171,
+    "cssHeight": 230
+  },
+  {
+    "width": 300,
+    "height": 400,
+    "scale": 1.5,
+    "text": "LongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordFINALWORD",
+    "rect": [
+      50,
+      50,
+      164,
+      169.33333333333334
+    ],
+    "cssWidth": 171,
+    "cssHeight": 179
+  },
+  {
+    "width": 300,
+    "height": 400,
+    "scale": 2,
+    "text": "This is a fully visible comment. FINALWORD",
+    "rect": [
+      50,
+      50,
+      160,
+      72
+    ],
+    "cssWidth": 220,
+    "cssHeight": 44
+  },
+  {
+    "width": 300,
+    "height": 400,
+    "scale": 2,
+    "text": "Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation Detailed explanation FINALWORD",
+    "rect": [
+      50,
+      50,
+      160,
+      131.5
+    ],
+    "cssWidth": 220,
+    "cssHeight": 163
+  },
+  {
+    "width": 300,
+    "height": 400,
+    "scale": 2,
+    "text": "LongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordLongUnbrokenWordFINALWORD",
+    "rect": [
+      50,
+      50,
+      160,
+      123
+    ],
+    "cssWidth": 220,
+    "cssHeight": 146
+  }
+]

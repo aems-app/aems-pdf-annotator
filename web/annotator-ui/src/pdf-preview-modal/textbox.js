@@ -130,16 +130,24 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
     }
 
     function resolveColorData(color) {
-        if (color && Array.isArray(color.rgb)) {
-            return {
-                css: 'rgb(' + color.rgb.join(',') + ')',
-                value: { name: color.name || '', rgb: color.rgb.slice() }
-            };
-        }
+        var rgb = Array.isArray(color) ? color : color && color.rgb;
         if (typeof color === 'string' && color) {
+            var probe = document.createElement('span');
+            probe.style.color = color;
+            if (probe.style.color) {
+                document.body.appendChild(probe);
+                var computed = window.getComputedStyle(probe).color;
+                probe.remove();
+                var components = computed.match(/^rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)/);
+                if (components) rgb = components.slice(1, 4).map(Number);
+            }
+        }
+        if (Array.isArray(rgb) && rgb.length === 3 && rgb.every(function (value) {
+            return Number.isFinite(value) && value >= 0 && value <= 255;
+        })) {
             return {
-                css: color,
-                value: color
+                css: 'rgb(' + rgb.join(',') + ')',
+                value: { name: color.name || '', rgb: rgb.slice() }
             };
         }
         return {
@@ -147,6 +155,10 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
             value: { name: 'black', rgb: [0, 0, 0] }
         };
     }
+
+    exports.resolveColorRgb = function resolveColorRgb(color) {
+        return resolveColorData(color).value.rgb;
+    };
 
     /**
      * Best-effort element removal for textbox refresh/blur races.
@@ -247,8 +259,35 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
         };
     }
 
+    /** Fit saved plain text inside its projected rectangle without moving it. */
+    function fitStoredTextbox(entry) {
+        var element = entry.element;
+        var content = getTextboxContentElement(entry);
+        var width = element.clientWidth;
+        var height = element.clientHeight;
+        // Hidden pages are fitted on their next visible load/edit.
+        if (!content || width <= 0 || height <= 0) return;
+        element.style.padding = Math.min(4, height * 0.05) + 'px ' + Math.min(6, width * 0.05) + 'px';
+        var style = window.getComputedStyle(element);
+        var innerHeight = height - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+        function fits() {
+            return content.scrollWidth <= content.clientWidth && content.scrollHeight <= Math.floor(innerHeight);
+        }
+        element.style.fontSize = exports.DEFAULT_FONT_SIZE + 'px';
+        if (fits()) return;
+        var low = 0;
+        var high = exports.DEFAULT_FONT_SIZE;
+        for (var i = 0; i < 12; i++) {
+            var size = (low + high) / 2;
+            element.style.fontSize = size + 'px';
+            if (fits()) low = size;
+            else high = size;
+        }
+        element.style.fontSize = Math.max(0.01, low) + 'px';
+    }
+
     /**
-     * Resize a textbox so the box hugs the text while respecting a width cap.
+     * Resize a draft, or fit text within an existing PDF rectangle.
      *
      * @param {Object} entry
      * @param {HTMLElement|null} [pageWrapper]
@@ -256,6 +295,12 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
      */
     function syncTextboxSize(entry, pageWrapper, text) {
         if (!entry || !entry.element) return;
+        // Stored rectangles are already projected from the PDF. Editing or
+        // moving their content must not replace that geometry with a draft cap.
+        if (entry.preserveGeometry) {
+            fitStoredTextbox(entry);
+            return;
+        }
         var wrapper = pageWrapper || getPageWrapperForEntry(entry);
         var size = measureTextbox(entry, wrapper, text);
         entry.element.style.width = size.width + 'px';
@@ -505,6 +550,27 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
     // Position
     // =========================================================================
 
+    function getTextboxVisualCssRect(entry) {
+        var el = entry.element;
+        var left = parseFloat(el.style.left);
+        var top = parseFloat(el.style.top);
+        var width = parseFloat(el.style.width);
+        var height = parseFloat(el.style.height);
+        if (!Number.isFinite(left)) left = el.offsetLeft;
+        if (!Number.isFinite(top)) top = el.offsetTop;
+        if (!Number.isFinite(width)) width = el.offsetWidth;
+        if (!Number.isFinite(height)) height = el.offsetHeight;
+
+        // The CSS origin follows the native text axes. Persist its visual
+        // rectangle, including the translation around the rotated origin.
+        switch (Number(entry.displayRotation)) {
+        case 90: return [left - height, top, left, top + width];
+        case 180: return [left - width, top - height, left, top];
+        case 270: return [left, top - width, left + height, top];
+        default: return [left, top, left + width, top + height];
+        }
+    }
+
     /**
      * Get the text box position as canvas pixel coordinates.
      *
@@ -516,20 +582,10 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
         entry = resolveLiveTextboxEntry(entry);
         if (!entry || !entry.element) return [0, 0, 0, 0];
 
-        var el = entry.element;
-
         var scale = getCanvasScale(pageWrapper);
-        var cssLeft = el.offsetLeft;
-        var cssTop = el.offsetTop;
-        var cssWidth = el.offsetWidth;
-        var cssHeight = el.offsetHeight;
-
-        var x0 = cssLeft / scale.scaleX;
-        var y0 = cssTop / scale.scaleY;
-        var x1 = (cssLeft + cssWidth) / scale.scaleX;
-        var y1 = (cssTop + cssHeight) / scale.scaleY;
-
-        return [x0, y0, x1, y1];
+        var rect = getTextboxVisualCssRect(entry);
+        return [rect[0] / scale.scaleX, rect[1] / scale.scaleY,
+            rect[2] / scale.scaleX, rect[3] / scale.scaleY];
     };
 
     /**
@@ -560,12 +616,27 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
     exports.moveTextboxToPage = function moveTextboxToPage(entry, targetPageIdx, targetPageWrapper, cssLeft, cssTop) {
         if (!entry || !entry.element || !targetPageWrapper) return;
 
+        var sourceWrapper = getPageWrapperForEntry(entry);
+        var sourceScale = getCanvasScale(sourceWrapper);
+        var targetScale = getCanvasScale(targetPageWrapper);
+        var viewer = window.__pdfGradedViewer;
+        var sourceViewport = viewer && viewer.getViewportForPage(entry.pageIdx + 1);
+        var targetViewport = viewer && viewer.getViewportForPage(targetPageIdx + 1);
+        var ratio = (targetViewport ? targetViewport.scale : 1) / (sourceViewport ? sourceViewport.scale : 1);
+        var sourceRect = getTextboxVisualCssRect(entry);
+        var width = (sourceRect[2] - sourceRect[0]) * ratio * targetScale.scaleX / sourceScale.scaleX;
+        var height = (sourceRect[3] - sourceRect[1]) * ratio * targetScale.scaleY / sourceScale.scaleY;
+        var quarterTurn = entry.displayRotation === 90 || entry.displayRotation === 270;
+        entry.element.style.width = (quarterTurn ? height : width) + 'px';
+        entry.element.style.height = (quarterTurn ? width : height) + 'px';
         removeEntryFromPageMap(entry.pageIdx, entry);
 
         var targetLayer = getOrCreateTextboxLayer(targetPageWrapper);
         targetLayer.appendChild(entry.element);
-        entry.element.style.left = cssLeft + 'px';
-        entry.element.style.top = cssTop + 'px';
+        var visualRect = getTextboxVisualCssRect(entry);
+        cssLeft = Math.max(0, Math.min(cssLeft, Math.max(0, targetLayer.offsetWidth - width)));
+        cssTop = Math.max(0, Math.min(cssTop, Math.max(0, targetLayer.offsetHeight - height)));
+        exports.moveTextbox(entry, cssLeft - visualRect[0], cssTop - visualRect[1]);
         entry.pageIdx = targetPageIdx;
 
         addEntryToPageMap(targetPageIdx, entry);
@@ -620,17 +691,34 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
             if (!pageWrapper) continue;
 
             var scale = getCanvasScale(pageWrapper);
+            var preserveGeometry = Number.isFinite(ann.width) && ann.width > 0
+                && Number.isFinite(ann.height) && ann.height > 0;
 
-            // Create textbox element (not in editing mode)
+            // Project the native text axes as well as its bounding rectangle.
+            // Existing annotations can follow a rotated page; fresh UI comments
+            // carry a compensating native rotation and remain upright.
+            var rotation = preserveGeometry && [90, 180, 270].includes(Number(ann.displayRotation))
+                ? Number(ann.displayRotation) : 0;
+            var quarterTurn = rotation === 90 || rotation === 270;
+            var visualWidth = preserveGeometry ? ann.width * scale.scaleX : exports.DEFAULT_WIDTH;
+            var visualHeight = preserveGeometry ? ann.height * scale.scaleY : exports.DEFAULT_HEIGHT;
             var textbox = document.createElement('div');
             textbox.className = 'markup-textbox';
             var resolvedColor = resolveColorData(ann.color);
             textbox.style.position = 'absolute';
-            textbox.style.left = (ann.x * scale.scaleX) + 'px';
-            textbox.style.top = (ann.y * scale.scaleY) + 'px';
-            textbox.style.width = exports.DEFAULT_WIDTH + 'px';
-            textbox.style.height = exports.DEFAULT_HEIGHT + 'px';
-            textbox.style.minHeight = exports.DEFAULT_HEIGHT + 'px';
+            textbox.style.left = (ann.x * scale.scaleX + (rotation === 90 || rotation === 180 ? visualWidth : 0)) + 'px';
+            textbox.style.top = (ann.y * scale.scaleY + (rotation === 180 || rotation === 270 ? visualHeight : 0)) + 'px';
+            textbox.style.width = (quarterTurn ? visualHeight : visualWidth) + 'px';
+            textbox.style.height = (quarterTurn ? visualWidth : visualHeight) + 'px';
+            if (rotation) {
+                textbox.style.transformOrigin = '0 0';
+                textbox.style.transform = 'rotate(' + rotation + 'deg)';
+            }
+            textbox.style.minHeight = (preserveGeometry ? 0 : exports.DEFAULT_HEIGHT) + 'px';
+            if (preserveGeometry) {
+                textbox.style.minWidth = '0px';
+                textbox.style.maxWidth = 'none';
+            }
             textbox.style.fontSize = exports.DEFAULT_FONT_SIZE + 'px';
             textbox.style.color = resolvedColor.css;
             textbox.style.borderColor = resolvedColor.css;
@@ -653,7 +741,9 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
                 annotationId: annotationId,
                 pageIdx: pageIdx,
                 content: ann.content || '',
-                color: resolvedColor.value
+                color: resolvedColor.value,
+                preserveGeometry: preserveGeometry,
+                displayRotation: rotation
             };
 
             addEntryToPageMap(pageIdx, entry);
