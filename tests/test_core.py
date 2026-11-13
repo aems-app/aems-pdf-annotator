@@ -560,7 +560,8 @@ class TestPDFAnnotator:
             valid_point.y = 20
             annot.vertices = [[valid_point, object(), (30, 40)]]
 
-            points = annotator._extract_ink_points_pdf(annot, 100)
+            page = annotator.doc.new_page(width=100, height=100)
+            points = annotator._extract_ink_points_pdf(annot, page)
 
             assert points == [[10.0, 80.0], [30.0, 60.0]]
 

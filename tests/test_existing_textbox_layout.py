@@ -11,6 +11,46 @@ from aems_pdf_annotator.core import PDFAnnotator, _encode_subject_metadata
 TEXT = "This is a fully visible comment. FINALWORD"
 
 
+@pytest.mark.parametrize("native_rotation", [0, 90, 180, 270])
+def test_existing_native_rotated_textbox_fits_its_rotated_inline_width(
+    tmp_path: Path, native_rotation: int
+) -> None:
+    """O4: native annotation rotation changes the width available to glyphs."""
+    source = tmp_path / "native-rotated-legacy.pdf"
+    destination = tmp_path / "native-rotated-legacy-fitted.pdf"
+    text = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZFINALWORD"
+    with fitz.open() as document:
+        page = document.new_page(width=300, height=400)
+        annotation = page.add_freetext_annot(
+            fitz.Rect(50, 100, 210, 140), text, fontsize=11, rotate=native_rotation
+        )
+        annotation.set_info(
+            subject=_encode_subject_metadata("native-rotated-explicit-id", "HUMAN"),
+            title="Synthetic Reviewer",
+            creationDate="D:20200102030405Z",
+            modDate="D:20210102030405Z",
+        )
+        original_xref = annotation.xref
+        original_rotation = annotation.rotation
+        original_rect = tuple(annotation.rect)
+        original_info = annotation.info
+        assert "".join(annotation.get_text().split()) != text, "fixture must start clipped"
+        document.save(source)
+    with PDFAnnotator(source) as writer:
+        writer.save(destination)
+    with fitz.open(destination) as document:
+        page = document[0]
+        annotation = page.load_annot(original_xref)
+        assert annotation.info == original_info
+        assert tuple(annotation.rect) == pytest.approx(original_rect)
+        assert annotation.rotation == original_rotation
+        painted = "".join(annotation.get_text().split())
+        assert painted == text, (
+            f"native rotation {native_rotation}: saved appearance paints "
+            f"{len(painted)}/{len(text)} characters"
+        )
+
+
 def _without_font_size(value: str) -> str:
     return re.sub(r"[\d.]+\s+Tf", "SIZE Tf", value)
 

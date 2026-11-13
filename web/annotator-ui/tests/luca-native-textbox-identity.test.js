@@ -23,7 +23,7 @@ describe('Luca F1 scoped native identity through actual textbox callbacks', () =
   let annotations;
   let modal;
   const annotation = {
-    stable_id: 'native-duplicate', xref: 12, page_index: 0, type: 'textbox',
+    stable_id: 'native-duplicate', has_explicit_stable_id: false, xref: 12, page_index: 0, type: 'textbox',
     etag: 'fixture-own-text',
     content: 'Check units', rect: [80, 100, 180, 128], color: 'amber',
   };
@@ -112,6 +112,51 @@ describe('Luca F1 scoped native identity through actual textbox callbacks', () =
   it('loader preserves different wire identities for matching native IDs on different pages', () => {
     expect(boxes.getPageTextboxes(0)[0].annotationId).toBe('xref:12|id:native-duplicate');
     expect(boxes.getPageTextboxes(1)[0].annotationId).toBe('xref:42|id:native-duplicate');
+  });
+
+  it('saving the second same-page native duplicate preserves the first annotation', async () => {
+    delete annotations()[1];
+    annotations()[0].push({ ...annotation, xref: 42, content: 'Second same-page text' });
+    helpers.refreshMarkupFromAnnotations();
+    const target = boxes.getPageTextboxes(0).find(entry => entry.annotationId === 'xref:42|id:native-duplicate');
+    expect(target).toBeDefined();
+    target.content = 'Only second native annotation edited';
+    boxes.onTextboxCommitted(target);
+    await settle();
+    expect(adapter.updateAnnotation.mock.calls[0][2]).toBe('xref:42|id:native-duplicate');
+    expect(annotations()[0]).toHaveLength(2);
+    expect(annotations()[0].find(entry => entry.xref === 12)).toMatchObject({ content: 'Check units' });
+    expect(annotations()[0].find(entry => entry.xref === 84)).toMatchObject({ content: target.content });
+  });
+
+  it.each([
+    ['id:foo', 'foo', 99],
+    ['xref:123', 'unrelated-explicit', 123],
+  ])('actual callback retains literal native ID %s and preserves the unrelated explicit annotation', async (nativeId, otherId, otherXref) => {
+    const native = { ...annotation, stable_id: nativeId, content: 'Native prefix target' };
+    const other = { ...annotation, stable_id: otherId, xref: otherXref,
+      has_explicit_stable_id: true, content: 'Unrelated explicit text' };
+    delete annotations()[1];
+    annotations()[0] = [other, native];
+    adapter.updateAnnotation.mockImplementation(async (_a, _s, _wire, body) => ({
+      success: true, annotation: { ...native, ...body, xref: 84 },
+    }));
+    helpers.refreshMarkupFromAnnotations();
+    const entry = boxes.getPageTextboxes(0).find(item => item.content === 'Native prefix target');
+    expect(entry).toBeDefined();
+    expect(native.stable_id).toBe(nativeId);
+    entry.content = 'Only native prefix target edited';
+    boxes.onTextboxCommitted(entry);
+    await settle();
+    expect(adapter.updateAnnotation).toHaveBeenCalledOnce();
+    expect(adapter.updateAnnotation.mock.calls[0][2]).toBe(`xref:12|id:${nativeId}`);
+    expect(annotations()[0]).toHaveLength(2);
+    expect(annotations()[0].find(item => item.xref === otherXref)).toMatchObject({
+      stable_id: otherId, content: 'Unrelated explicit text', has_explicit_stable_id: true,
+    });
+    expect(annotations()[0].find(item => item.xref === 84)).toMatchObject({
+      stable_id: nativeId, content: entry.content,
+    });
   });
 
   it.each(['helper', 'fallback'])('actual %s save targets the second native annotation, with xref retained', async mode => {

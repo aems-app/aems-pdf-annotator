@@ -10,6 +10,154 @@ from aems_pdf_annotator.core import PDFAnnotator, _encode_subject_metadata
 SHARED_NM = "fitz-A3"
 
 
+@pytest.mark.parametrize("native_prefix", ["id", "xref"])
+@pytest.mark.parametrize("action", ["find", "update", "delete"])
+def test_composite_native_identity_with_wire_prefix_is_parsed_only_once(
+    tmp_path: Path, native_prefix: str, action: str,
+) -> None:
+    path = tmp_path / "literal-wire-prefix.pdf"
+    with fitz.open() as document:
+        document.new_page(width=300, height=400)
+        document.new_page(width=300, height=400)
+        first_page = document[0]
+        bystander = first_page.add_freetext_annot(
+            fitz.Rect(30, 30, 220, 80), "EXPLICIT-BYSTANDER", fontsize=8,
+        )
+        bystander.set_info(subject=_encode_subject_metadata("foo", "HUMAN"))
+        native_id = "id:foo" if native_prefix == "id" else f"xref:{bystander.xref}"
+        page = document[1]
+        target = page.add_freetext_annot(
+            fitz.Rect(30, 30, 220, 80), "IMPLICIT-TARGET", fontsize=8,
+        )
+        document.xref_set_key(target.xref, "NM", fitz.get_pdf_str(native_id))
+        target_xref = target.xref
+        document.save(path)
+    with PDFAnnotator(path) as writer:
+        identifier = f"xref:{target_xref}|id:{native_id}"
+        if action == "find":
+            located = writer.find_annotation_by_id(identifier)
+            assert located is not None and located[1].xref == target_xref
+        elif action == "update":
+            assert writer.update_annotation(identifier, new_content="EDITED-TARGET")
+        else:
+            assert writer.delete_annotation(identifier)
+        bystanders = writer.get_annotations_on_page(0)
+        assert len(bystanders) == 1, (
+            "literal native wire prefix was parsed again and deleted the explicit sibling"
+        )
+        assert bystanders[0]["content"] == "EXPLICIT-BYSTANDER", (
+            "literal native wire prefix was parsed again and redirected to the explicit sibling"
+        )
+        expected = [] if action == "delete" else [
+            "EDITED-TARGET" if action == "update" else "IMPLICIT-TARGET",
+        ]
+        assert [row["content"] for row in writer.get_annotations_on_page(1)] == expected
+
+
+def _same_page_pdf(path: Path, *, explicit: bool) -> list[int]:
+    """Keep two native objects on one page so ordinal reload must select the second."""
+    xrefs = []
+    with fitz.open() as document:
+        page = document.new_page(width=300, height=400)
+        for index in range(2):
+            annotation = page.add_freetext_annot(
+                fitz.Rect(30, 30 + index * 70, 220, 80 + index * 70),
+                f"ORIGINAL-{index}",
+                fontsize=11,
+            )
+            if explicit:
+                annotation.set_info(
+                    subject=_encode_subject_metadata(SHARED_NM, "HUMAN")
+                )
+            document.xref_set_key(annotation.xref, "NM", fitz.get_pdf_str(SHARED_NM))
+            document.xref_set_key(annotation.xref, "Name", "null")
+            xrefs.append(annotation.xref)
+        document.save(path)
+    return xrefs
+
+
+@pytest.mark.parametrize("action", ["find", "update", "delete"])
+def test_same_page_composite_targets_second_duplicate_implicit_object(
+    tmp_path: Path,
+    action: str,
+) -> None:
+    path = tmp_path / "same-page-implicit.pdf"
+    xrefs = _same_page_pdf(path, explicit=False)
+    with PDFAnnotator(path) as writer:
+        identifier = f"xref:{xrefs[1]}|id:{SHARED_NM}"
+        if action == "find":
+            located = writer.find_annotation_by_id(identifier)
+            assert (
+                located is not None and located[1].xref == xrefs[1]
+            ), "same-page lookup reloaded the first ordinal instead of the scoped object"
+        elif action == "update":
+            assert writer.update_annotation(
+                identifier, new_content="EDITED-SECOND"
+            ), "same-page composite update did not accept the scoped duplicate target"
+        else:
+            assert writer.delete_annotation(
+                identifier
+            ), "same-page composite deletion did not accept the scoped duplicate target"
+        entries = writer.get_annotations_on_page(0)
+        assert (
+            entries[0]["xref"] == xrefs[0]
+        ), "same-page operation removed/recreated the first sibling"
+        assert (
+            entries[0]["content"] == "ORIGINAL-0"
+        ), "scoped operation changed the first sibling"
+        expected = (
+            ["ORIGINAL-0"]
+            if action == "delete"
+            else [
+                "ORIGINAL-0",
+                "EDITED-SECOND" if action == "update" else "ORIGINAL-1",
+            ]
+        )
+        assert [entry["content"] for entry in entries] == expected
+
+
+@pytest.mark.parametrize("namespace", ["id", "xref"])
+def test_public_find_accepts_explicit_identity_and_xref_namespaces(
+    tmp_path: Path,
+    namespace: str,
+) -> None:
+    path = tmp_path / "public-namespace.pdf"
+    xrefs = _pdf(path, duplicate_implicit=False)
+    token = "id:explicit-1" if namespace == "id" else f"xref:{xrefs[1]}"
+    with PDFAnnotator(path) as writer:
+        located = writer.find_annotation_by_id(token)
+        assert (
+            located is not None and located[0] == 1 and located[1].xref == xrefs[1]
+        ), "public namespaced lookup failed to retain the requested identity/scope"
+
+
+@pytest.mark.parametrize("action", ["find", "update", "delete"])
+def test_unscoped_duplicate_explicit_identity_refuses_without_mutating_comments(
+    tmp_path: Path,
+    action: str,
+) -> None:
+    path = tmp_path / "ambiguous-explicit.pdf"
+    _same_page_pdf(path, explicit=True)
+    original = path.read_bytes()
+    with PDFAnnotator(path) as writer:
+        if action == "find":
+            result = writer.find_annotation_by_id(SHARED_NM)
+        elif action == "update":
+            result = writer.update_annotation(
+                SHARED_NM, new_content="MUST-NOT-BE-WRITTEN"
+            )
+        else:
+            result = writer.delete_annotation(SHARED_NM)
+        assert (
+            not result
+        ), "ambiguous explicit identity selected a document-wide first match"
+        assert [entry["content"] for entry in writer.get_annotations_on_page(0)] == [
+            "ORIGINAL-0",
+            "ORIGINAL-1",
+        ], "ambiguous lookup dropped or rewrote a comment before save"
+    assert path.read_bytes() == original
+
+
 def _pdf(path: Path, *, duplicate_implicit: bool) -> list[int]:
     xrefs = []
     with fitz.open() as document:

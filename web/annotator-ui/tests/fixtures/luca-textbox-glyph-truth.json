@@ -1,0 +1,6 @@
+[
+  {"rotation":0,"nativeRect":[40,65,260,115],"visualRect":[40,65,260,115],"page":[595,842],"direction":[1,0],"viewBox":[0,0,595,842],"transform":[1,0,0,-1,0,842]},
+  {"rotation":90,"nativeRect":[40,65,260,115],"visualRect":[727,40,777,260],"page":[842,595],"direction":[0,1],"viewBox":[0,0,595,842],"transform":[0,1,1,0,0,0]},
+  {"rotation":180,"nativeRect":[40,65,260,115],"visualRect":[335,727,555,777],"page":[595,842],"direction":[-1,0],"viewBox":[0,0,595,842],"transform":[-1,0,0,1,595,0]},
+  {"rotation":270,"nativeRect":[40,65,260,115],"visualRect":[65,335,115,555],"page":[842,595],"direction":[0,-1],"viewBox":[0,0,595,842],"transform":[0,-1,-1,0,842,595]}
+]
