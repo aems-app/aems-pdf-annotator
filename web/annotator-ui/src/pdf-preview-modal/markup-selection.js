@@ -276,11 +276,13 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 
         if (type === 'textbox' && entry.element) {
             var el = entry.element;
+            var visualRect = el.getBoundingClientRect();
+            var parentRect = (el.parentElement || pageWrapper).getBoundingClientRect();
             return {
-                left: el.offsetLeft - padding,
-                top: el.offsetTop - padding,
-                width: el.offsetWidth + padding * 2,
-                height: el.offsetHeight + padding * 2
+                left: visualRect.left - parentRect.left - padding,
+                top: visualRect.top - parentRect.top - padding,
+                width: visualRect.width + padding * 2,
+                height: visualRect.height + padding * 2
             };
         }
 

@@ -80,17 +80,23 @@ def _textbox_font_size(
 
 
 def _add_fitted_textbox(
-    page: Any, rect: Any, text: str, text_color: Tuple[float, float, float], rotation: int = 0
+    page: Any,
+    rect: Any,
+    text: str,
+    text_color: Tuple[float, float, float],
+    rotation: int = 0,
+    *,
+    font_name: str = "helv",
 ) -> Any:
     """Fit the saved appearance, including edits and moves, inside the page."""
     fitted = _textbox_rect_on_page(page, rect)
-    size, _ = _textbox_font_size(page, fitted, text, "helv", 11.0, rotation)
+    size, _ = _textbox_font_size(page, fitted, text, font_name, 11.0, rotation)
     options = {"rotate": rotation} if rotation else {}
     return page.add_freetext_annot(
         fitted,
         text,
         fontsize=size * 0.95,
-        fontname="helv",
+        fontname=font_name,
         text_color=text_color,
         fill_color=(1.0, 1.0, 1.0),
         **options,
@@ -1318,11 +1324,14 @@ class PDFAnnotator:
         rect = fitz.Rect(new_rect) if new_rect is not None else annot.rect
 
         textbox_rgb = new_stroke_color_rgb or metadata.get("textbox_color_rgb")
-        text_color = _rgb_ints_to_floats(textbox_rgb) or _native_textbox_color(annot)
+        font_name, _, native_color = _native_textbox_style(annot)
+        text_color = _rgb_ints_to_floats(textbox_rgb) or native_color
         content = info.get("content", "") if new_content is None else new_content
 
         try:
-            new_annot = _add_fitted_textbox(page, rect, content, text_color, _textbox_rotation(annot))
+            new_annot = _add_fitted_textbox(
+                page, rect, content, text_color, _textbox_rotation(annot), font_name=font_name
+            )
             new_annot.set_opacity(0.9)
 
             effective_grader_name = grader_name or info.get("title")
@@ -1412,6 +1421,11 @@ class PDFAnnotator:
         for page_idx in range(self.doc.page_count):
             page = self.doc[page_idx]
             for ordinal, annot in enumerate(page.annots()):
+                try:
+                    if hasattr(annot, "parent") and annot.parent is None:
+                        continue
+                except Exception:
+                    logger.debug("Could not check annotation parent")
                 info = annot.info or {}
                 metadata = _decode_subject_metadata(info.get("subject", ""))
                 stable_id = _annotation_stable_id(info, metadata)
@@ -2183,9 +2197,12 @@ class PDFAnnotator:
                 textbox_rgb = new_stroke_color_rgb or subject_metadata.get(
                     "textbox_color_rgb"
                 )
-                text_color = _rgb_ints_to_floats(textbox_rgb) or _native_textbox_color(annot)
+                font_name, _, native_color = _native_textbox_style(annot)
+                text_color = _rgb_ints_to_floats(textbox_rgb) or native_color
                 new_rotation = (_textbox_rotation(annot) + target_page.rotation - self.doc[old_page_index].rotation) % 360
-                new_annot = _add_fitted_textbox(target_page, rect, content, text_color, new_rotation)
+                new_annot = _add_fitted_textbox(
+                    target_page, rect, content, text_color, new_rotation, font_name=font_name
+                )
                 new_annot.set_opacity(0.9)
             elif is_ink:
                 source_page = self.doc[old_page_index]

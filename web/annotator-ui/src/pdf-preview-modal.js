@@ -5127,15 +5127,9 @@
             // oldRect is in PyMuPDF top-left format (from annotationsData),
             // but the API expects PDF bottom-left format and converts internally.
             // Convert PyMuPDF → PDF to avoid double-conversion.
-            let apiRect = operation.oldRect;
-            const viewer = window.__pdfGradedViewer;
-            if (apiRect && viewer && viewer.pdf) {
-                try {
-                    const pg = await viewer.pdf.getPage(operation.oldPageIdx + 1);
-                    const pageHeight = pg.view[3] - pg.view[1];
-                    apiRect = [apiRect[0], pageHeight - apiRect[3], apiRect[2], pageHeight - apiRect[1]];
-                } catch (_e) { /* fallback to raw rect */ }
-            }
+            const apiRect = await convertHighlightTopLeftRectToPdf(
+                operation.oldRect, operation.oldPageIdx
+            );
 
             // A moved ink stroke is restored by its points: PyMuPDF ignores a Rect on Ink.
             updateData = Array.isArray(operation.oldPoints)
@@ -7295,12 +7289,12 @@
         }
         try {
             const page = await viewer.pdf.getPage(pageIdx + 1);
-            const pageHeight = page.view[3] - page.view[1];
+            const pageBox = page.view;
             return [
-                converted[0],
-                pageHeight - converted[3],
-                converted[2],
-                pageHeight - converted[1],
+                pageBox[0] + converted[0],
+                pageBox[3] - converted[3],
+                pageBox[0] + converted[2],
+                pageBox[3] - converted[1],
             ];
         } catch (_error) {
             return converted;

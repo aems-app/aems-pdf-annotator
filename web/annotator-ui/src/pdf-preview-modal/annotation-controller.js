@@ -927,12 +927,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
             try {
                 var page = await viewer.pdf.getPage(pageIdx + 1);
-                var pageHeight = page.view[3] - page.view[1];
+                var pageBox = page.view;
                 return [
-                    converted[0],
-                    pageHeight - converted[3],
-                    converted[2],
-                    pageHeight - converted[1],
+                    pageBox[0] + converted[0],
+                    pageBox[3] - converted[3],
+                    pageBox[0] + converted[2],
+                    pageBox[3] - converted[1],
                 ];
             } catch (_error) {
                 return converted;
