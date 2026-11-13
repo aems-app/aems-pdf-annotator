@@ -337,11 +337,31 @@ def test_valid_page_edge_rectangle_is_not_inset(tmp_path: Path, rotation: int) -
     with PDFAnnotator(source) as writer:
         assert writer.add_annotation(_model(list(requested), "Edge text"))
         page = writer.doc[0]
-        assert tuple(next(page.annots()).rect) == pytest.approx(tuple(requested), abs=0.01), (
+        annotation = next(page.annots())
+        assert tuple(annotation.rect) == pytest.approx(tuple(requested), abs=0.01), (
             "valid page-edge textbox was shifted by an unconditional inset"
         )
+        assert annotation.info["content"] == "Edge text"
+        assert "".join(annotation.get_text().split()) == "Edgetext"
+        # Font word boxes include an ascender overhang beyond actual ink. At the
+        # page edge, compare rendered pixels with the same box translated inward
+        # rather than rejecting that metric overhang as a clipped glyph.
+        control = fitz.Rect(120, 120, 220, 160)
+        assert writer.add_annotation(_model(list(control), "Edge text"))
+        edge_pixels = page.get_pixmap(
+            matrix=fitz.Matrix(2, 2), clip=requested * page.rotation_matrix, annots=True,
+        )
+        control_pixels = page.get_pixmap(
+            matrix=fitz.Matrix(2, 2), clip=control * page.rotation_matrix, annots=True,
+        )
+        assert (edge_pixels.width, edge_pixels.height) == (control_pixels.width, control_pixels.height)
+        assert edge_pixels.samples == control_pixels.samples, "page edge clips native text pixels"
         writer.save(saved)
-    _assert_visible(saved, "Edge text")
+    with fitz.open(saved) as document:
+        page = document[0]
+        annotation = next(page.annots())
+        assert annotation.info["content"] == "Edge text"
+        assert "".join(annotation.get_text().split()) == "Edgetext"
 
 
 @pytest.mark.parametrize("text_color", [(1.0, 0.0, 0.0), (0.0, 0.0, 1.0)])
