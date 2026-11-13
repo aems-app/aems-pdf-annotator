@@ -43,16 +43,12 @@ def _add_fitted_textbox(
     bounds = fitz.Rect(bounds.x0 + 4, bounds.y0 + 4, bounds.x1 - 4, bounds.y1 - 4)
     requested = fitz.Rect(rect)
     # FreeText wraps at spaces, unlike insert_textbox which also splits tokens.
-    # Give a long token room before reducing the font; never drop its suffix.
+    # Preserve caller geometry; managed boxes may already have a measured layout.
     longest = max(
         (fitz.get_text_length(word, fontsize=11) for word in text.split()), default=0
     )
-    width = min(max(requested.width, longest + 2, 1.0), bounds.width)
-    measuring = fitz.Rect(0, 0, width, 100000)
-    spare = page.new_shape().insert_textbox(
-        measuring, text, fontsize=11, fontname="helv"
-    )
-    height = min(max(requested.height, (100000 - spare) * 1.1 + 2, 1.0), bounds.height)
+    width = min(max(requested.width, 1.0), bounds.width)
+    height = min(max(requested.height, 1.0), bounds.height)
     left = max(bounds.x0, min(requested.x0, bounds.x1 - width))
     top = max(bounds.y0, min(requested.y0, bounds.y1 - height))
     fitted = fitz.Rect(left, top, left + width, top + height)
@@ -441,6 +437,23 @@ def _annotation_stable_id(
     if not stable_id or is_annotation_type_name(stable_id):
         stable_id = info.get("name") or info.get("id")
     return stable_id
+
+
+def _replacement_stable_id(
+    doc: Any, annot: Any, info: Dict[str, Any], metadata: Dict[str, Any]
+) -> str:
+    """Keep implicit legacy identities implicit when recreating an annotation.
+
+    Legacy NM/name values may repeat across pages. Preserve the reader's value
+    in NM without promoting it into the unique, explicit subject-ID namespace.
+    """
+    stable_id = _annotation_stable_id(info, metadata)
+    if metadata.get("has_explicit_stable_id"):
+        return stable_id or str(uuid.uuid4())
+    if stable_id:
+        doc.xref_set_key(annot.xref, "NM", fitz.get_pdf_str(str(stable_id)))
+        return ""
+    return str(uuid.uuid4())
 
 
 def _validate_unique_annotation_ids(doc: Any) -> None:
@@ -946,7 +959,7 @@ class PDFAnnotator:
                 original_source_to_store = metadata.get("source") or "AI"
 
             subject_value = _encode_subject_metadata(
-                metadata.get("stable_id") or str(uuid.uuid4()),
+                _replacement_stable_id(self.doc, new_annot, info, metadata),
                 effective_source,
                 check_id=metadata.get("check_id"),
                 original_source=original_source_to_store,
@@ -1075,7 +1088,7 @@ class PDFAnnotator:
             )
 
             subject_value = _encode_subject_metadata(
-                metadata.get("stable_id") or str(uuid.uuid4()),
+                _replacement_stable_id(self.doc, new_annot, info, metadata),
                 effective_source,
                 check_id=metadata.get("check_id"),
                 original_source=original_source_to_store,
@@ -1153,7 +1166,7 @@ class PDFAnnotator:
                 original_source_to_store = metadata.get("source") or "AI"
 
             subject_value = _encode_subject_metadata(
-                metadata.get("stable_id") or str(uuid.uuid4()),
+                _replacement_stable_id(self.doc, new_annot, info, metadata),
                 effective_source,
                 check_id=metadata.get("check_id"),
                 original_source=original_source_to_store,
