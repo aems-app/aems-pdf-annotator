@@ -437,9 +437,10 @@ class TestPDFAnnotator:
                 new_rect=(60, 60, 210, 90),
             )
 
-            assert updated is True
+            assert updated[0] is True  # FreeText recreation reports its replacement xref.
             page = annotator.doc[0]
             moved = next(page.annots())
+            assert updated[1:] == (0, moved.xref)
             assert moved.rect.x0 == pytest.approx(60, abs=0.5)
             assert moved.rect.y0 == pytest.approx(60, abs=0.5)
 
@@ -463,7 +464,7 @@ class TestPDFAnnotator:
                 grader_name="Reader Grader",
             )
 
-            assert updated is True
+            assert updated[0] is True
             ann = annotator.get_annotations_on_page(0)[0]
             assert ann["source"] == "HUMAN"
             assert ann["original_source"] == "AI"

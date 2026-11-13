@@ -30,6 +30,53 @@ from aems_pdf_annotator.models import (
 logger = logging.getLogger(__name__)
 
 
+def _add_fitted_textbox(
+    page: Any, rect: Any, text: str, text_color: Tuple[float, float, float]
+) -> Any:
+    """Fit the saved appearance, including edits and moves, inside the page.
+
+    Browser rectangles are measured at a display zoom, not at an 11-point PDF
+    font. Measure with MuPDF's textbox layout before creating the appearance.
+    Use unrotated bounds, the coordinate system of annotation rectangles.
+    """
+    bounds = page.rect * page.derotation_matrix
+    bounds = fitz.Rect(bounds.x0 + 4, bounds.y0 + 4, bounds.x1 - 4, bounds.y1 - 4)
+    requested = fitz.Rect(rect)
+    # FreeText wraps at spaces, unlike insert_textbox which also splits tokens.
+    # Give a long token room before reducing the font; never drop its suffix.
+    longest = max(
+        (fitz.get_text_length(word, fontsize=11) for word in text.split()), default=0
+    )
+    width = min(max(requested.width, longest + 2, 1.0), bounds.width)
+    measuring = fitz.Rect(0, 0, width, 100000)
+    spare = page.new_shape().insert_textbox(
+        measuring, text, fontsize=11, fontname="helv"
+    )
+    height = min(max(requested.height, (100000 - spare) * 1.1 + 2, 1.0), bounds.height)
+    left = max(bounds.x0, min(requested.x0, bounds.x1 - width))
+    top = max(bounds.y0, min(requested.y0, bounds.y1 - height))
+    fitted = fitz.Rect(left, top, left + width, top + height)
+    # Leave a little extra room for differences between textbox and FreeText metrics.
+    low, high = 0.0, 11.0
+    for _ in range(24):
+        size = (low + high) / 2
+        spare = page.new_shape().insert_textbox(
+            fitted, text, fontsize=size, fontname="helv"
+        )
+        if spare >= 0 and longest * size / 11 <= width - 1:
+            low = size
+        else:
+            high = size
+    return page.add_freetext_annot(
+        fitted,
+        text,
+        fontsize=low * 0.95,
+        fontname="helv",
+        text_color=text_color,
+        fill_color=(1.0, 1.0, 1.0),
+    )
+
+
 class DuplicateAnnotationIdError(RuntimeError):
     """Refuse to save ambiguous annotation identities without discarding comments."""
 
@@ -688,14 +735,7 @@ class PDFAnnotator:
                 else:
                     text_color = (0.0, 0.0, 0.0)
 
-                annot = page.add_freetext_annot(
-                    pymupdf_rect,
-                    text,
-                    fontsize=11,
-                    fontname="helv",
-                    text_color=text_color,
-                    fill_color=(1.0, 1.0, 1.0),
-                )
+                annot = _add_fitted_textbox(page, pymupdf_rect, text, text_color)
                 annot.set_opacity(0.9)
                 annot.update()
 
@@ -1096,14 +1136,7 @@ class PDFAnnotator:
         content = info.get("content", "") if new_content is None else new_content
 
         try:
-            new_annot = page.add_freetext_annot(
-                rect,
-                content,
-                fontsize=11,
-                fontname="helv",
-                text_color=text_color,
-                fill_color=(1.0, 1.0, 1.0),
-            )
+            new_annot = _add_fitted_textbox(page, rect, content, text_color)
             new_annot.set_opacity(0.9)
 
             effective_grader_name = grader_name or info.get("title")
@@ -1613,9 +1646,10 @@ class PDFAnnotator:
                     new_is_verdict,
                 )
 
-            if (
-                annot_type_code == fitz.PDF_ANNOT_FREE_TEXT
-                and new_stroke_color_rgb is not None
+            if annot_type_code == fitz.PDF_ANNOT_FREE_TEXT and (
+                new_stroke_color_rgb is not None
+                or new_content is not None
+                or new_rect is not None
             ):
                 return self._replace_textbox_annotation(
                     page_index,
@@ -1975,14 +2009,7 @@ class PDFAnnotator:
                     "textbox_color_rgb"
                 )
                 text_color = _rgb_ints_to_floats(textbox_rgb) or (0.0, 0.0, 0.0)
-                new_annot = target_page.add_freetext_annot(
-                    rect,
-                    content,
-                    fontsize=11,
-                    fontname="helv",
-                    text_color=text_color,
-                    fill_color=(1.0, 1.0, 1.0),
-                )
+                new_annot = _add_fitted_textbox(target_page, rect, content, text_color)
                 new_annot.set_opacity(0.9)
             elif is_ink:
                 source_page = self.doc[old_page_index]
