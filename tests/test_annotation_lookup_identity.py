@@ -180,3 +180,49 @@ def test_matching_xref_disambiguates_duplicate_explicit_identity_for_lookup(
         assert (
             located is not None and located[0] == 1
         ), "duplicate explicit lookup ignored its matching xref"
+
+
+@pytest.mark.parametrize("prefix", ["Note", "Text"])
+def test_exact_explicit_prefixed_identity_is_not_reinterpreted_as_a_legacy_alias(
+    tmp_path: Path,
+    prefix: str,
+) -> None:
+    path = tmp_path / "prefixed-explicit.pdf"
+    with fitz.open() as document:
+        for _ in range(2):
+            document.new_page(width=300, height=400)
+        for index in range(2):
+            page = document[index]
+            annotation = page.add_freetext_annot(
+                fitz.Rect(50, 50, 220, 100), f"ORIGINAL-{index}", fontsize=11
+            )
+            if index == 0:
+                document.xref_set_key(annotation.xref, "NM", fitz.get_pdf_str("1"))
+            else:
+                annotation.set_info(
+                    subject=_encode_subject_metadata(f"{prefix}:1", "HUMAN")
+                )
+        document.save(path)
+    with PDFAnnotator(path) as writer:
+        assert writer.update_annotation(f"{prefix}:1", new_content="EXPLICIT-EDIT")
+        assert (
+            writer.get_annotations_on_page(0)[0]["content"] == "ORIGINAL-0"
+        ), "explicit prefixed ID edited a legacy numeric alias"
+        assert writer.get_annotations_on_page(1)[0]["content"] == "EXPLICIT-EDIT"
+
+
+@pytest.mark.parametrize("prefix", ["Note", "Text"])
+def test_unambiguous_legacy_prefix_alias_remains_supported(
+    tmp_path: Path, prefix: str
+) -> None:
+    path = tmp_path / "legacy-prefixed-alias.pdf"
+    with fitz.open() as document:
+        page = document.new_page(width=300, height=400)
+        annotation = page.add_freetext_annot(
+            fitz.Rect(50, 50, 220, 100), "Original", fontsize=11
+        )
+        document.xref_set_key(annotation.xref, "NM", fitz.get_pdf_str("1"))
+        document.save(path)
+    with PDFAnnotator(path) as writer:
+        assert writer.update_annotation(f"{prefix}:1", new_content="LEGACY-EDIT")
+        assert writer.get_annotations_on_page(0)[0]["content"] == "LEGACY-EDIT"
