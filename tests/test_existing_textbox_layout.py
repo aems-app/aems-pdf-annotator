@@ -259,3 +259,49 @@ def test_existing_complete_but_outside_page_textbox_is_clamped_without_losing_ev
             annotation.rect
         ), "legacy appearance still extends beyond the visible page"
         assert "".join(annotation.get_text().split()) == "".join(TEXT.split())
+
+@pytest.mark.parametrize("font_name,font_key", [("helv", "Helv"), ("cour", "Cour"), ("tiro", "TiRo")])
+@pytest.mark.parametrize("page_rotation", [0, 90, 180, 270])
+@pytest.mark.parametrize("native_rotation", [0, 90])
+def test_legacy_absolute_appearance_frame_survives_native_refitting(
+    tmp_path: Path, font_name: str, font_key: str, page_rotation: int, native_rotation: int,
+) -> None:
+    """A valid absolute Form BBox must remain consistent with regenerated glyph coordinates."""
+    from aems_pdf_annotator.core import fit_existing_textboxes
+
+    path = tmp_path / "absolute-appearance-frame.pdf"
+    with fitz.open() as document:
+        page = document.new_page(width=595, height=842)
+        page.set_rotation(page_rotation)
+        annotation = page.add_freetext_annot(
+            fitz.Rect(50, 50, 160, 72), TEXT, fontsize=11, fontname=font_name,
+            text_color=(0, 0, 1), rotate=native_rotation,
+        )
+        annotation.set_info(subject="legacy-native-id|HUMAN", title="fixture-actor")
+        appearance_xref = int(document.xref_get_key(annotation.xref, "AP/N")[1].split()[0])
+        # This independent raw PDF frame matches widely existing absolute-coordinate
+        # appearance streams. It also avoids the minimum-version writer's blank AP.
+        document.xref_set_key(appearance_xref, "BBox", "[50 770 160 792]")
+        document.xref_set_key(appearance_xref, "Matrix", "[1 0 0 1 0 0]")
+        transform = "0 1 -1 0 160 770 cm" if native_rotation else "1 0 0 1 50 770 cm"
+        baseline = 99 if native_rotation else 11
+        stream = (f"q 50 770 110 22 re W n {transform} BT 0 0 1 rg "
+                  f"/{font_key} 11 Tf 0 {baseline} Td ({TEXT}) Tj ET Q")
+        document.update_stream(appearance_xref, stream.encode("ascii"))
+        document.save(path)
+    with fitz.open(path) as document:
+        page = document[0]
+        annotation = next(page.annots())
+        original_info, original_rect, original_xref = annotation.info, tuple(annotation.rect), annotation.xref
+        original_native_rotation = annotation.rotation
+        assert any(channel < 250 for channel in page.get_pixmap().samples), "raw native fixture has no ink"
+        assert "FINALWORD" not in annotation.get_text(), "raw fixture must reproduce clipping"
+        assert fit_existing_textboxes(document) == 1
+        page = document.reload_page(page)
+        annotation = page.load_annot(original_xref)
+        assert annotation.info == original_info and tuple(annotation.rect) == original_rect
+        assert annotation.rotation == original_native_rotation, "native Rotate field changed during fitting"
+        assert "".join(annotation.get_text().split()) == "".join(TEXT.split()), (
+            "native refitting produced a blank or clipped appearance from a valid absolute Form frame"
+        )
+        assert any(channel < 250 for channel in page.get_pixmap().samples)
