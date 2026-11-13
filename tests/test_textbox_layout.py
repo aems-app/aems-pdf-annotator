@@ -172,3 +172,49 @@ def test_legacy_recreation_retains_reader_identity_for_later_edit_and_delete(
         assert followup[0] if isinstance(followup, tuple) else followup
         assert writer.delete_annotation(stable_id)
         assert writer.get_annotations_on_page(0) == []
+
+
+@pytest.mark.parametrize("identity_field", ["id", "name"])
+def test_recreating_repeated_legacy_ids_does_not_promote_them_to_explicit_ids(
+    tmp_path: Path, identity_field: str,
+) -> None:
+    """Legacy NM/name values may repeat across pages without violating the save guard."""
+    from aems_pdf_annotator.core import _decode_subject_metadata
+
+    source = tmp_path / "repeated-legacy.pdf"
+    destination = tmp_path / "edited-legacy.pdf"
+    stable_id = "legacy-shared-identity"
+    with fitz.open() as document:
+        for index in range(2):
+            page = document.new_page(width=300, height=400)
+            annotation = page.add_freetext_annot(
+                fitz.Rect(50, 50, 180, 100), f"Synthetic page {index}", fontsize=11,
+            )
+            backend_id = stable_id if identity_field == "id" else f"legacy-backend-{index}"
+            document.xref_set_key(annotation.xref, "NM", fitz.get_pdf_str(backend_id))
+            if identity_field == "name":
+                document.xref_set_key(annotation.xref, "Name", f"/{stable_id}")
+            assert annotation.info[identity_field] == stable_id
+        document.save(source)
+    with PDFAnnotator(source) as writer:
+        for index in range(2):
+            row = writer.get_annotations_on_page(index)[0]
+            assert row["stable_id"] == stable_id
+            # Duplicate fallback ids are ambiguous on their own: the existing xref
+            # identifies the intended page's annotation for its first mutation.
+            result = writer.update_annotation(
+                str(row["xref"]), new_content=f"Updated synthetic page {index}",
+            )
+            assert isinstance(result, tuple) and result[0] is True
+            updated = writer.get_annotations_on_page(index)[0]
+            assert updated["stable_id"] == stable_id, "recreation replaced a legacy fallback id"
+            page = writer.doc[index]
+            metadata = _decode_subject_metadata(next(page.annots()).info["subject"])
+            assert not metadata["has_explicit_stable_id"], "implicit duplicate was promoted to explicit"
+        writer.save(destination)
+    with PDFAnnotator(destination) as reader:
+        rows = [reader.get_annotations_on_page(index)[0] for index in range(2)]
+        assert [row["stable_id"] for row in rows] == [stable_id, stable_id]
+        assert [row["content"] for row in rows] == [
+            "Updated synthetic page 0", "Updated synthetic page 1",
+        ]
