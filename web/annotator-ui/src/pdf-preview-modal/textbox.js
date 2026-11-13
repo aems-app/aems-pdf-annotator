@@ -538,6 +538,27 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
     // Position
     // =========================================================================
 
+    function getTextboxVisualCssRect(entry) {
+        var el = entry.element;
+        var left = parseFloat(el.style.left);
+        var top = parseFloat(el.style.top);
+        var width = parseFloat(el.style.width);
+        var height = parseFloat(el.style.height);
+        if (!Number.isFinite(left)) left = el.offsetLeft;
+        if (!Number.isFinite(top)) top = el.offsetTop;
+        if (!Number.isFinite(width)) width = el.offsetWidth;
+        if (!Number.isFinite(height)) height = el.offsetHeight;
+
+        // The CSS origin follows the native text axes. Persist its visual
+        // rectangle, including the translation around the rotated origin.
+        switch (Number(entry.displayRotation)) {
+        case 90: return [left - height, top, left, top + width];
+        case 180: return [left - width, top - height, left, top];
+        case 270: return [left, top - width, left + height, top];
+        default: return [left, top, left + width, top + height];
+        }
+    }
+
     /**
      * Get the text box position as canvas pixel coordinates.
      *
@@ -549,20 +570,10 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
         entry = resolveLiveTextboxEntry(entry);
         if (!entry || !entry.element) return [0, 0, 0, 0];
 
-        var el = entry.element;
-
         var scale = getCanvasScale(pageWrapper);
-        var cssLeft = el.offsetLeft;
-        var cssTop = el.offsetTop;
-        var cssWidth = el.offsetWidth;
-        var cssHeight = el.offsetHeight;
-
-        var x0 = cssLeft / scale.scaleX;
-        var y0 = cssTop / scale.scaleY;
-        var x1 = (cssLeft + cssWidth) / scale.scaleX;
-        var y1 = (cssTop + cssHeight) / scale.scaleY;
-
-        return [x0, y0, x1, y1];
+        var rect = getTextboxVisualCssRect(entry);
+        return [rect[0] / scale.scaleX, rect[1] / scale.scaleY,
+            rect[2] / scale.scaleX, rect[3] / scale.scaleY];
     };
 
     /**
@@ -597,8 +608,8 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
 
         var targetLayer = getOrCreateTextboxLayer(targetPageWrapper);
         targetLayer.appendChild(entry.element);
-        entry.element.style.left = cssLeft + 'px';
-        entry.element.style.top = cssTop + 'px';
+        var visualRect = getTextboxVisualCssRect(entry);
+        exports.moveTextbox(entry, cssLeft - visualRect[0], cssTop - visualRect[1]);
         entry.pageIdx = targetPageIdx;
 
         addEntryToPageMap(targetPageIdx, entry);
@@ -656,15 +667,26 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
             var preserveGeometry = Number.isFinite(ann.width) && ann.width > 0
                 && Number.isFinite(ann.height) && ann.height > 0;
 
-            // Create textbox element (not in editing mode)
+            // Project the native text axes as well as its bounding rectangle.
+            // Existing annotations can follow a rotated page; fresh UI comments
+            // carry a compensating native rotation and remain upright.
+            var rotation = preserveGeometry && [90, 180, 270].includes(Number(ann.displayRotation))
+                ? Number(ann.displayRotation) : 0;
+            var quarterTurn = rotation === 90 || rotation === 270;
+            var visualWidth = preserveGeometry ? ann.width * scale.scaleX : exports.DEFAULT_WIDTH;
+            var visualHeight = preserveGeometry ? ann.height * scale.scaleY : exports.DEFAULT_HEIGHT;
             var textbox = document.createElement('div');
             textbox.className = 'markup-textbox';
             var resolvedColor = resolveColorData(ann.color);
             textbox.style.position = 'absolute';
-            textbox.style.left = (ann.x * scale.scaleX) + 'px';
-            textbox.style.top = (ann.y * scale.scaleY) + 'px';
-            textbox.style.width = (preserveGeometry ? ann.width * scale.scaleX : exports.DEFAULT_WIDTH) + 'px';
-            textbox.style.height = (preserveGeometry ? ann.height * scale.scaleY : exports.DEFAULT_HEIGHT) + 'px';
+            textbox.style.left = (ann.x * scale.scaleX + (rotation === 90 || rotation === 180 ? visualWidth : 0)) + 'px';
+            textbox.style.top = (ann.y * scale.scaleY + (rotation === 180 || rotation === 270 ? visualHeight : 0)) + 'px';
+            textbox.style.width = (quarterTurn ? visualHeight : visualWidth) + 'px';
+            textbox.style.height = (quarterTurn ? visualWidth : visualHeight) + 'px';
+            if (rotation) {
+                textbox.style.transformOrigin = '0 0';
+                textbox.style.transform = 'rotate(' + rotation + 'deg)';
+            }
             textbox.style.minHeight = (preserveGeometry ? 0 : exports.DEFAULT_HEIGHT) + 'px';
             if (preserveGeometry) {
                 textbox.style.minWidth = '0px';
@@ -693,7 +715,8 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
                 pageIdx: pageIdx,
                 content: ann.content || '',
                 color: resolvedColor.value,
-                preserveGeometry: preserveGeometry
+                preserveGeometry: preserveGeometry,
+                displayRotation: rotation
             };
 
             addEntryToPageMap(pageIdx, entry);

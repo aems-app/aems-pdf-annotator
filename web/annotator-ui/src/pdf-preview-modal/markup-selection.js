@@ -545,12 +545,12 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
                     var newTextboxLeft = clampValue(
                         textboxRect.left - targetLayerRect.left,
                         0,
-                        Math.max(0, targetLayer.offsetWidth - selectedItem.entry.element.offsetWidth)
+                        Math.max(0, targetLayer.offsetWidth - textboxRect.width)
                     );
                     var newTextboxTop = clampValue(
                         textboxRect.top - targetLayerRect.top,
                         0,
-                        Math.max(0, targetLayer.offsetHeight - selectedItem.entry.element.offsetHeight)
+                        Math.max(0, targetLayer.offsetHeight - textboxRect.height)
                     );
                     var newOverlayLeft = clampValue(
                         overlayRect.left - targetLayerRect.left,

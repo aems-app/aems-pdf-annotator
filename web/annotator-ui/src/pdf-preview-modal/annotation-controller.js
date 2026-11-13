@@ -673,7 +673,22 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 : normalized;
         }
 
+        function _scopedOperationIdentity(operation) {
+            var wire = [operation?.identifier, operation?.requestId].find(function (value) {
+                return String(value || '').startsWith('xref:');
+            });
+            var parse = _h.parseCompositeIdentifier || (window.PdfPreviewModalAnnotationHelpers || {}).parseCompositeIdentifier;
+            return wire && parse ? parse(wire) : null;
+        }
+
         function _findAnnotationIndexByOperation(pageIdx, operation) {
+            var scoped = _scopedOperationIdentity(operation);
+            if (scoped) {
+                return (_getAnnotationsData()[pageIdx] || []).findIndex(function (annotation) {
+                    return String(annotation.xref) === String(scoped.xref)
+                        && (!scoped.stableId || _extractStableIdentifier(annotation, null) === scoped.stableId);
+                });
+            }
             if (_h.historyIdentityMatches) {
                 var currentAnnotations = _getAnnotationsData();
                 return (currentAnnotations[pageIdx] || []).findIndex(function (annotation) {
@@ -732,6 +747,10 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 var candidate = candidates[candidateIdx];
                 var normalized = _normalizeIdentifier(candidate.value);
                 if (!normalized) continue;
+                if (candidate.explicit) {
+                    if (!_h.isAnnotationType || !_h.isAnnotationType(normalized)) return normalized;
+                    continue;
+                }
 
                 var parts = normalized.split('|');
                 for (var partIdx = 0; partIdx < parts.length; partIdx++) {
@@ -761,7 +780,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var operationStableIdentifier = _extractStableIdentifier(null, operation);
             var annotationIdx = _findAnnotationIndexByOperation(
                 pageIdx,
-                operationStableIdentifier
+                [operation?.identifier, operation?.requestId].some(function (value) {
+                    return /^(xref:|id:)/.test(String(value || ''));
+                }) ? operation : operationStableIdentifier
                     ? {
                         identifier: operationStableIdentifier,
                         requestId: operationStableIdentifier,
@@ -780,7 +801,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 ? 'id:' + stableIdentifier
                 : stableIdentifier;
             var apiIdentifier = stableIdentifier
-                ? _h.buildApiAnnotationIdentifier({ identifier: namespacedStableIdentifier })
+                ? _h.buildApiAnnotationIdentifier({ identifier: namespacedStableIdentifier, xref: currentXref, has_explicit_stable_id: annotation.has_explicit_stable_id, canonicalStableId: annotation.stable_id ?? annotation.stableId })
                 : _h.buildApiAnnotationIdentifier({ xref: currentXref });
             if (!apiIdentifier) {
                 return null;
@@ -828,7 +849,15 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             if (!annotationsData[pageIdx]) {
                 annotationsData[pageIdx] = [];
             }
+            var previousScope = _scopedOperationIdentity(operation);
             var annotationIdx = _findAnnotationIndexByOperation(pageIdx, operation);
+            var nextWire = annotation?.has_explicit_stable_id === false && _h.buildApiAnnotationIdentifier
+                ? _h.buildApiAnnotationIdentifier({ identifier: annotation.id,
+                    canonicalStableId: annotation.stable_id ?? annotation.stableId,
+                    xref: annotation.xref, has_explicit_stable_id: false }) : null;
+            if (annotationIdx < 0 && nextWire) {
+                annotationIdx = _findAnnotationIndexByOperation(pageIdx, { identifier: nextWire });
+            }
             var currentAnnotation = annotationIdx >= 0 ? annotationsData[pageIdx][annotationIdx] : {};
             var updatedAnnotation;
 
@@ -846,6 +875,16 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 annotationsData[pageIdx].push(updatedAnnotation);
             }
             _setAnnotationsData(annotationsData);
+            if (nextWire && previousScope) {
+                _undoStack.concat([operation]).forEach(function (record) {
+                    var scope = _scopedOperationIdentity(record);
+                    if (!scope || String(scope.xref) !== String(previousScope.xref)
+                        || scope.stableId !== previousScope.stableId) return;
+                    record.identifier = nextWire;
+                    record.requestId = nextWire;
+                    record.xref = annotation.xref;
+                });
+            }
             return updatedAnnotation;
         }
 
@@ -935,6 +974,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 : _namespaceXrefIdentifier(markerRequestId, markerXref);
             var apiIdentifier = _h.buildApiAnnotationIdentifier({
                 identifier: requestIdentifier,
+                canonicalStableId: annotation.stable_id ?? annotation.stableId,
+                has_explicit_stable_id: annotation.has_explicit_stable_id,
                 xref: markerXref,
                 requestId: requestRequestId,
             });
@@ -992,6 +1033,13 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     _namespaceXrefIdentifier(rawUndoRequestId, undoXref),
                     markerXref
                 );
+            if (responseAnnotation && (responseAnnotation.has_explicit_stable_id === false
+                || /^(xref:|id:)/.test(String(responseAnnotation.stable_id ?? responseAnnotation.stableId ?? '')))) {
+                undoIdentifier = _h.buildApiAnnotationIdentifier({ identifier: responseAnnotation.id,
+                    canonicalStableId: responseAnnotation.stable_id ?? responseAnnotation.stableId,
+                    xref: undoXref, has_explicit_stable_id: responseAnnotation.has_explicit_stable_id });
+                undoRequestId = undoIdentifier;
+            }
             var newQuads = responseAnnotation && Array.isArray(responseAnnotation.quads)
                 ? _cloneQuads(responseAnnotation.quads)
                 : _cloneQuads(payload.quadsPdf);
@@ -1025,7 +1073,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var operation = peekUndoOperation();
             _updateHighlightMarkerSource(operation, responseAnnotation, 'HUMAN');
             if (responseAnnotation && Array.isArray(responseAnnotation.quads)) {
-                _replaceAnnotationFromResponse(pageIdx, operation, responseAnnotation, {
+                _replaceAnnotationFromResponse(pageIdx, responseAnnotation.has_explicit_stable_id === false
+                    ? { identifier: apiIdentifier, requestId: apiIdentifier, xref: markerXref } : operation, responseAnnotation, {
                     quads: newQuads,
                     anchor_text: newAnchorText,
                     rect: newRect,
@@ -2621,7 +2670,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     // A real document close can outlive this controller. Keep only
                     // the server identity and tag needed to delete that explicitly closed draft.
                     if (data && data.success && data.annotation) {
-                        optimisticAnnotation._closedDraftIdentifier = _h.resolveAnnotationIdentifierValue(data.annotation);
+                        optimisticAnnotation._closedDraftIdentifier = _h.buildApiAnnotationIdentifier
+                            ? _h.buildApiAnnotationIdentifier({ identifier: data.annotation.id,
+                                canonicalStableId: data.annotation.stable_id ?? data.annotation.stableId,
+                                xref: data.annotation.xref,
+                                has_explicit_stable_id: data.annotation.has_explicit_stable_id })
+                            : _h.resolveAnnotationIdentifierValue(data.annotation);
                         optimisticAnnotation.etag = data.annotation.etag;
                     }
                     if (!_isCurrentEpoch(requestEpoch)) return;
@@ -2866,6 +2920,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                 var apiIdentifier = _h.buildApiAnnotationIdentifier({
                     identifier: stableIdentifier,
+                    canonicalStableId: originalAnn?.stable_id ?? originalAnn?.stableId,
+                    has_explicit_stable_id: originalAnn?.has_explicit_stable_id,
                     xref: existingXref,
                     requestId: requestIdentifier,
                 });
@@ -3158,6 +3214,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
                 var apiIdentifier = _h.buildApiAnnotationIdentifier({
                     identifier: stableIdentifier,
+                    canonicalStableId: originalAnn?.stable_id ?? originalAnn?.stableId,
+                    has_explicit_stable_id: originalAnn?.has_explicit_stable_id,
                     xref: existingXref,
                     requestId: requestIdentifier,
                 });
@@ -3287,6 +3345,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
 
             var annotationEntry = _h.findAnnotationEntry ? _h.findAnnotationEntry(pageIdx, stableIdentifier) : null;
+            var returnedWireIdentity = false;
             if (annotationEntry && annotationEntry._createPromise) {
                 try {
                     await annotationEntry._createPromise;
@@ -3300,6 +3359,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     ? _h.resolveAnnotationIdentifierValue(annotationEntry) : stableIdentifier;
                 if (annotationEntry._discardOnClose && !annotationEntry._closedDraftIdentifier) return;
                 stableIdentifier = annotationEntry._closedDraftIdentifier || stableIdentifier;
+                returnedWireIdentity = !!annotationEntry._closedDraftIdentifier;
             }
 
             var annotationsData = _isCurrentEpoch(requestEpoch) ? _getAnnotationsData() : {};
@@ -3322,6 +3382,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 }
                 var apiIdentifier = _h.buildApiAnnotationIdentifier({
                     identifier: stableIdentifier,
+                    canonicalStableId: returnedWireIdentity ? undefined : annotationEntry?.stable_id ?? annotationEntry?.stableId,
+                    has_explicit_stable_id: returnedWireIdentity ? undefined : annotationEntry?.has_explicit_stable_id,
                     xref: annotationXref ? String(annotationXref) : null,
                     requestId: null,
                 });

@@ -142,8 +142,8 @@ window.PdfPreviewModalAnnotationHelpers = window.PdfPreviewModalAnnotationHelper
         );
 
         const resolvedXref = exports.normalizeAnnotationIdentifierValue(xref)
-            || parsedRequest.xref
-            || parsedIdentifier.xref;
+            || (normalizedRequest?.startsWith('xref:') ? parsedRequest.xref : null)
+            || (normalizedIdentifier?.startsWith('xref:') ? parsedIdentifier.xref : null);
 
         const resolvedStable = parsedRequest.stableId
             || parsedIdentifier.stableId
@@ -166,7 +166,7 @@ window.PdfPreviewModalAnnotationHelpers = window.PdfPreviewModalAnnotationHelper
      * buildApiAnnotationIdentifier({ xref: 42 }) // => 'xref:42'
      * buildApiAnnotationIdentifier({ identifier: 'my-id' }) // => 'my-id'
      */
-    exports.buildApiAnnotationIdentifier = function buildApiAnnotationIdentifier({ identifier, xref, requestId }) {
+    exports.buildApiAnnotationIdentifier = function buildApiAnnotationIdentifier({ identifier, xref, requestId, has_explicit_stable_id, canonicalStableId }) {
         const normXref = exports.normalizeAnnotationIdentifierValue(xref);
         const normRequest = exports.normalizeAnnotationIdentifierValue(requestId);
         const normIdentifier = exports.normalizeAnnotationIdentifierValue(identifier);
@@ -181,13 +181,29 @@ window.PdfPreviewModalAnnotationHelpers = window.PdfPreviewModalAnnotationHelper
             identifier: normIdentifier,
         });
 
-        const effectiveXref = parsedXref || null;
-        const effectiveStable = parsedStable || null;
+        const rawCanonical = canonicalStableId != null ? String(canonicalStableId)
+            : (has_explicit_stable_id === false && normIdentifier && !/^xref:\d+\|id:/.test(normIdentifier)
+                ? normIdentifier : null);
+        const effectiveXref = rawCanonical !== null
+            ? normXref || (validRequestId?.startsWith('xref:') ? exports.parseCompositeIdentifier(validRequestId).xref : null)
+            : parsedXref || null;
+        const effectiveStable = rawCanonical !== null ? rawCanonical : parsedStable || null;
 
-        // Stable IDs survive backend delete-and-recreate mutations; xrefs do not.
+        const scopedInput = [normRequest, normIdentifier].some((value) => value && value.startsWith('xref:') && value.includes('|id:'));
+        const unsafe = [normRequest, normIdentifier].some((value) => value && (
+            /[\x00-\x1f\x7f]/.test(value)
+            || (value.includes('|') && !/^xref:\d+\|id:[^|]+$/.test(value))
+        ));
+        if ((has_explicit_stable_id === false || scopedInput) && (
+            unsafe || (effectiveStable && !/^[A-Za-z0-9:_-]+$/.test(effectiveStable))
+        )) return effectiveXref ? `xref:${effectiveXref}` : null;
+        if ((has_explicit_stable_id === false || scopedInput) && effectiveXref && effectiveStable) {
+            return `xref:${effectiveXref}|id:${effectiveStable}`;
+        }
+        // Explicit stable IDs are unique and survive recreation.
         if (effectiveStable) {
             // Prefix numeric IDs with id: to avoid confusion with xref
-            if (/^\d+$/.test(effectiveStable)) {
+            if (/^\d+$/.test(effectiveStable) || /^(id:|xref:)/.test(effectiveStable)) {
                 return `id:${effectiveStable}`;
             }
             return effectiveStable;
@@ -225,7 +241,6 @@ window.PdfPreviewModalAnnotationHelpers = window.PdfPreviewModalAnnotationHelper
             // Don't use id if it equals xref (it's just a copy)
             entry.id && entry.xref != null && String(entry.xref) === String(entry.id) ? null : entry.id,
             entry.name,
-            entry.title,
         ];
         for (const candidate of candidates) {
             const normalized = exports.normalizeAnnotationIdentifierValue(candidate);
@@ -273,7 +288,6 @@ window.PdfPreviewModalAnnotationHelpers = window.PdfPreviewModalAnnotationHelper
             entry.identifier,
             entry.id,
             entry.name,
-            entry.title,
         ];
         for (const candidate of candidateFields) {
             const normalized = exports.normalizeAnnotationIdentifierValue(candidate);
@@ -300,6 +314,14 @@ window.PdfPreviewModalAnnotationHelpers = window.PdfPreviewModalAnnotationHelper
             return null;
         }
 
+        if (entry.has_explicit_stable_id === false) {
+            return exports.buildApiAnnotationIdentifier({
+                identifier: exports.extractAnnotationStableName(entry) || entry.identifier,
+                xref: entry.xref,
+                has_explicit_stable_id: false,
+                canonicalStableId: entry.stable_id ?? entry.stableId,
+            });
+        }
         // Prefer stable ID (but not fitz-* internal IDs)
         const stableId = exports.extractAnnotationStableName(entry);
         if (

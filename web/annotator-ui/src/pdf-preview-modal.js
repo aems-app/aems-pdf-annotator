@@ -1565,7 +1565,7 @@
         });
         if (data?.success && data.annotation && isCurrentHistoryEpoch(epoch)) {
             deletedAnnotationIdentities.delete(String(buildApiAnnotationIdentifier({
-                identifier: data.annotation.stable_id || data.annotation.id, xref: data.annotation.xref,
+                identifier: data.annotation.stable_id || data.annotation.id, canonicalStableId: data.annotation.stable_id ?? data.annotation.stableId, xref: data.annotation.xref,
             })));
         }
         return data;
@@ -1579,10 +1579,11 @@
      */
     function annotationWriteIdentity(annotationId) {
         annotationId = annotationIdentityAliases.get(String(annotationId)) || annotationId;
-        const local = Object.keys(annotationsData)
-            .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).find(Boolean);
+        const matches = Object.keys(annotationsData)
+            .map((pageIdx) => findAnnotationEntry(Number(pageIdx), annotationId)).filter(Boolean);
+        const local = matches.length === 1 ? matches[0] : null;
         return local ? buildApiAnnotationIdentifier({
-            identifier: local.stable_id || local.id || local.identifier, xref: local.xref,
+            identifier: local.stable_id || local.id || local.identifier, canonicalStableId: local.stable_id ?? local.stableId, xref: local.xref, has_explicit_stable_id: local.has_explicit_stable_id,
         }) : annotationId;
     }
 
@@ -1676,6 +1677,19 @@
                     throw CONCURRENT_ANNOTATION_WRITE;
                 }
                 if (failure) throw failure;
+                if (data?.success && data.annotation?.has_explicit_stable_id === false) {
+                    const previous = Object.keys(annotationsData).map((page) => (
+                        findAnnotationEntry(Number(page), identity)
+                    )).filter(Boolean);
+                    if (previous.length === 1) {
+                        const nextIdentity = buildApiAnnotationIdentifier({ identifier: data.annotation.stable_id || data.annotation.id, canonicalStableId: data.annotation.stable_id ?? data.annotation.stableId,
+                            xref: data.annotation.xref, has_explicit_stable_id: false });
+                        remapAnnotationHistory(data.annotation, { identifier: identity, xref: previous[0].xref });
+                        annotationIdentityAliases.set(String(identity), nextIdentity);
+                        Object.assign(previous[0], { xref: data.annotation.xref, id: data.annotation.id,
+                            stable_id: data.annotation.stable_id, requestIdentifier: nextIdentity });
+                    }
+                }
                 return data;
             } finally {
                 writes.requests.delete(signature);
@@ -1929,7 +1943,10 @@
     // Replace just this annotation, including its persisted-content snapshot and ownership.
     function replaceAnnotationLocally(annotationId, current) {
         const affectedPages = new Set(Object.keys(annotationsData).map(Number));
-        Object.keys(annotationsData).forEach((pageIdx) => removeAnnotationEntryLocal(Number(pageIdx), annotationId));
+        const targets = Object.keys(annotationsData).map((pageIdx) => ({
+            pageIdx: Number(pageIdx), entry: findAnnotationEntry(Number(pageIdx), annotationId),
+        })).filter(({ entry }) => entry);
+        targets.forEach(({ pageIdx, entry }) => removeAnnotationEntryLocal(pageIdx, annotationId, entry));
         if (current) {
             upsertAnnotationEntryLocal(current, current.page_index);
             affectedPages.add(current.page_index);
@@ -1955,7 +1972,7 @@
             } while (version !== writes.version);
             if (!data?.success || !data.annotations) throw new Error('Annotation refresh failed');
             const current = Object.values(data.annotations).flat().find((ann) =>
-                buildApiAnnotationIdentifier({ identifier: ann.stable_id || ann.id, xref: ann.xref }) === annotationId);
+                buildApiAnnotationIdentifier({ identifier: ann.stable_id || ann.id, canonicalStableId: ann.stable_id ?? ann.stableId, xref: ann.xref }) === annotationId);
             if (!writes.notified) {
                 writes.notified = true;
                 const latestSave = annotationContentSaves.get(`${epoch}:${annotationId}`);
@@ -3990,7 +4007,9 @@
                 : null
         );
         return {
-            xref: normalizeAnnotationIdentifierValue(xref) || parsedRequest.xref || parsedIdentifier.xref,
+            xref: normalizeAnnotationIdentifierValue(xref)
+                || (normalizedRequest?.startsWith('xref:') ? parsedRequest.xref : null)
+                || (normalizedIdentifier?.startsWith('xref:') ? parsedIdentifier.xref : null),
             stableId: parsedRequest.stableId
                 || parsedIdentifier.stableId
                 || bareStableId(normalizedRequest)
@@ -4003,15 +4022,33 @@
             return _helpers.buildApiAnnotationIdentifier(params);
         }
         // Fallback
-        const { identifier, xref, requestId } = params;
+        const { identifier, xref, requestId, has_explicit_stable_id, canonicalStableId } = params;
         const normXref = normalizeAnnotationIdentifierValue(xref);
         const normRequest = normalizeAnnotationIdentifierValue(requestId);
         const normIdentifier = normalizeAnnotationIdentifierValue(identifier);
         const validRequestId = normRequest && !isAnnotationType(normRequest) ? normRequest : null;
-        const { xref: parsedXref, stableId: parsedStable } = resolveAnnotationIdParts({
+        let { xref: parsedXref, stableId: parsedStable } = resolveAnnotationIdParts({
             xref: normXref, requestId: validRequestId, identifier: normIdentifier,
         });
-        if (parsedStable) return /^\d+$/.test(parsedStable) ? `id:${parsedStable}` : parsedStable;
+        const rawCanonical = canonicalStableId != null ? String(canonicalStableId)
+            : (has_explicit_stable_id === false && normIdentifier && !/^xref:\d+\|id:/.test(normIdentifier)
+                ? normIdentifier : null);
+        if (rawCanonical !== null) {
+            parsedXref = normXref || (validRequestId?.startsWith('xref:') ? parseCompositeIdentifier(validRequestId).xref : null);
+            parsedStable = rawCanonical;
+        }
+        const scopedInput = [normRequest, normIdentifier].some((value) => value && value.startsWith('xref:') && value.includes('|id:'));
+        const unsafe = [normRequest, normIdentifier].some((value) => value && (
+            /[\x00-\x1f\x7f]/.test(value)
+            || (value.includes('|') && !/^xref:\d+\|id:[^|]+$/.test(value))
+        ));
+        if ((has_explicit_stable_id === false || scopedInput) && (
+            unsafe || (parsedStable && !/^[A-Za-z0-9:_-]+$/.test(parsedStable))
+        )) return parsedXref ? `xref:${parsedXref}` : null;
+        if ((has_explicit_stable_id === false || scopedInput) && parsedXref && parsedStable) {
+            return `xref:${parsedXref}|id:${parsedStable}`;
+        }
+        if (parsedStable) return /^\d+$/.test(parsedStable) || /^(id:|xref:)/.test(parsedStable) ? `id:${parsedStable}` : parsedStable;
         if (parsedXref) return `xref:${parsedXref}`;
         return normIdentifier || null;
     }
@@ -4060,6 +4097,14 @@
     const HISTORY_IDENTITY_FIELDS = ['annotationId', 'identifier', 'requestId', 'requestIdentifier', 'stable_id', 'stableId', 'id'];
     const HISTORY_TARGET_FIELDS = ['annotation', 'snapshot', 'undoTarget', 'redoTarget'];
 
+    function historyWireIdentifiers(target) {
+        const raw = normalizeAnnotationIdentifierValue(target?.stable_id ?? target?.stableId);
+        return HISTORY_IDENTITY_FIELDS.filter((key) => key !== 'stable_id' && key !== 'stableId'
+            && !(key === 'id' && raw !== null))
+            .map((key) => normalizeAnnotationIdentifierValue(target?.[key]))
+            .filter((value) => value && value !== raw);
+    }
+
     // Bare identifiers (including numeric stable IDs) belong only to the stable namespace.
     // Only an xref field or an explicitly namespaced identifier can contribute an xref.
     function historyIdentityMatches(left, right) {
@@ -4070,11 +4115,9 @@
                 if (normalized != null) values.add(`${namespace}:${normalized}`);
             };
             add('xref', target?.xref);
-            HISTORY_IDENTITY_FIELDS.forEach((key) => {
-                const value = normalizeAnnotationIdentifierValue(target?.[key]);
-                if (!value) return;
-                if (key === 'stable_id' || key === 'stableId'
-                    || (!value.includes('|') && !value.startsWith('xref:') && !value.startsWith('id:'))) {
+            add('stable', target?.stable_id ?? target?.stableId);
+            historyWireIdentifiers(target).forEach((value) => {
+                if (!value.includes('|') && !value.startsWith('xref:') && !value.startsWith('id:')) {
                     add('stable', value);
                 } else {
                     const parts = parseCompositeIdentifier(value);
@@ -4084,6 +4127,14 @@
             });
             return values;
         };
+        const scoped = (target) => target?.has_explicit_stable_id === false
+            || historyWireIdentifiers(target).some((value) => value.startsWith('xref:'));
+        const scope = (target) => target?.xref || historyWireIdentifiers(target).map((value) => parseCompositeIdentifier(value).xref).find(Boolean);
+        if (scoped(left) || scoped(right)) {
+            const a = scope(left);
+            const b = scope(right);
+            if (a && b && String(a) !== String(b)) return false;
+        }
         const rightIdentities = identities(right);
         return [...identities(left)].some((value) => rightIdentities.has(value));
     }
@@ -4241,6 +4292,10 @@
         for (const candidate of candidates) {
             const normalized = normalizeAnnotationIdentifierValue(candidate.value);
             if (!normalized) continue;
+            if (candidate.explicit) {
+                if (!isAnnotationType(normalized)) return normalized;
+                continue;
+            }
 
             const parts = normalized.split('|');
             for (let token of parts) {
@@ -4267,7 +4322,8 @@
         const operationStableIdentifier = extractStableUndoIdentifier(null, operation);
         const annotationIdx = findAnnotationIndexByUndoOperation(
             pageIdx,
-            operationStableIdentifier
+            [operation?.identifier, operation?.requestId].some((value) => /^(xref:|id:)/.test(String(value || '')))
+                ? operation : operationStableIdentifier
                 ? {
                     identifier: operationStableIdentifier,
                     requestId: operationStableIdentifier,
@@ -4286,7 +4342,7 @@
             ? `id:${stableIdentifier}`
             : stableIdentifier;
         const apiIdentifier = stableIdentifier
-            ? buildApiAnnotationIdentifier({ identifier: namespacedStableIdentifier })
+            ? buildApiAnnotationIdentifier({ identifier: namespacedStableIdentifier, canonicalStableId: annotation.stable_id ?? annotation.stableId, xref: currentXref, has_explicit_stable_id: annotation.has_explicit_stable_id })
             : buildApiAnnotationIdentifier({ xref: currentXref });
         if (!apiIdentifier) {
             return null;
@@ -4420,7 +4476,7 @@
                 .then(function (data) {
                 if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (data && data.success && data.annotation) {
-                        stroke.annotationId = data.annotation.stable_id || data.annotation.xref;
+                        stroke.annotationId = buildApiAnnotationIdentifier({ identifier: data.annotation.stable_id || data.annotation.id, canonicalStableId: data.annotation.stable_id ?? data.annotation.stableId, xref: data.annotation.xref, has_explicit_stable_id: data.annotation.has_explicit_stable_id });
                         upsertAnnotationEntryLocal(data.annotation, pageIdx);
                         refreshMarkupFromAnnotations();
                         pushUndoOperation({
@@ -4484,7 +4540,7 @@
                 if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (!data?.success) throw new Error(data?.error || t('Failed to save text box.'));
                     if (data.success && data.annotation) {
-                        entry.annotationId = data.annotation.stable_id || data.annotation.xref;
+                        entry.annotationId = buildApiAnnotationIdentifier({ identifier: data.annotation.stable_id || data.annotation.id, canonicalStableId: data.annotation.stable_id ?? data.annotation.stableId, xref: data.annotation.xref, has_explicit_stable_id: data.annotation.has_explicit_stable_id });
                         upsertAnnotationEntryLocal(data.annotation, entry.pageIdx);
                         refreshMarkupFromAnnotations();
                         if (!isUpdate) {
@@ -4682,7 +4738,7 @@
                     var data = await updateAnnotationRequest(buildApiAnnotationIdentifier({ identifier: item.entry.annotationId }) || item.entry.annotationId, body);
                     if (!isCurrentHistoryEpoch(requestEpoch)) return;
                     if (data.success && data.annotation) {
-                        item.entry.annotationId = data.annotation.stable_id || data.annotation.xref || item.entry.annotationId;
+                        item.entry.annotationId = buildApiAnnotationIdentifier({ identifier: data.annotation.stable_id || data.annotation.id, canonicalStableId: data.annotation.stable_id ?? data.annotation.stableId, xref: data.annotation.xref, has_explicit_stable_id: data.annotation.has_explicit_stable_id }) || item.entry.annotationId;
                         if (sourcePageIdx !== targetPageIdx) {
                             removeAnnotationEntryLocal(sourcePageIdx, originalAnnotationId);
                         }
@@ -4920,10 +4976,17 @@
     // The identity of an annotation the server recreated by moving it to another page: PyMuPDF assigns a new
     // xref there, and the stable id from the response is the one that survives (issue #30).
     function crossPageMoveIdentity(annotation, fallbackXref) {
-        return {
+        const xref = annotation.xref ? String(annotation.xref) : fallbackXref;
+        const identifier = buildApiAnnotationIdentifier({
             identifier: annotation.stable_id || annotation.id || String(annotation.xref),
-            xref: annotation.xref ? String(annotation.xref) : fallbackXref,
-            requestId: annotation.stable_id || annotation.id,
+            canonicalStableId: annotation.stable_id ?? annotation.stableId,
+            xref,
+            has_explicit_stable_id: annotation.has_explicit_stable_id,
+        });
+        return {
+            identifier, canonicalStableId: annotation.stable_id ?? annotation.stableId,
+            xref,
+            requestId: identifier,
         };
     }
 
@@ -5332,7 +5395,7 @@
                 upsertAnnotationEntryLocal(data.annotation, respPg);
                 // Redo deletes the recreated markup by the id its creation path uses.
                 operation.redoTarget = {
-                    identifier: data.annotation.stable_id || data.annotation.xref,
+                    identifier: buildApiAnnotationIdentifier({ identifier: data.annotation.stable_id || data.annotation.id, canonicalStableId: data.annotation.stable_id ?? data.annotation.stableId, xref: data.annotation.xref, has_explicit_stable_id: data.annotation.has_explicit_stable_id }),
                     pageIdx: respPg ?? operation.pageIdx,
                 };
                 // Refresh the markup layer so the recreated textbox/stroke
@@ -5449,7 +5512,7 @@
             if (data.annotation) {
                 remapAnnotationHistory(data.annotation, operation);
                 upsertAnnotationEntryLocal(data.annotation, operation.pageIdx);
-                operation.annotationId = data.annotation.stable_id || data.annotation.xref;
+                operation.annotationId = buildApiAnnotationIdentifier({ identifier: data.annotation.stable_id || data.annotation.id, canonicalStableId: data.annotation.stable_id ?? data.annotation.stableId, xref: data.annotation.xref, has_explicit_stable_id: data.annotation.has_explicit_stable_id });
             }
             refreshMarkupPage(operation.pageIdx);
             return HISTORY_APPLIED;
@@ -5461,7 +5524,7 @@
 
     // Recreation changes identity for the entire timeline, including entries currently on the redo stack.
     function remapAnnotationHistory(annotation, inFlight) {
-        const newId = annotation.stable_id || annotation.id || annotation.xref;
+        const newId = buildApiAnnotationIdentifier({ identifier: annotation.stable_id || annotation.id, canonicalStableId: annotation.stable_id ?? annotation.stableId, xref: annotation.xref, has_explicit_stable_id: annotation.has_explicit_stable_id });
         // Capture every old alias before changing shared history objects. Sidebar deletions keep their
         // identity in annotation, whereas markup deletions use annotationId and snapshot.
         const identities = historyOperationTargets(inFlight).filter(Boolean).map((target) => ({ ...target }));
@@ -5472,7 +5535,7 @@
         const remap = (target) => {
             if (!target || !identities.some((identity) => historyIdentityMatches(target, identity))) return;
             HISTORY_IDENTITY_FIELDS.forEach((key) => {
-                if (target[key] != null) target[key] = newId;
+                if (target[key] != null) target[key] = key === 'stable_id' || key === 'stableId' ? annotation.stable_id : newId;
             });
             if (target.xref != null) target.xref = annotation.xref;
         };
@@ -5666,7 +5729,6 @@
             entry.identifier,
             entry.id,
             entry.name,
-            entry.title,
         ];
         for (const candidate of candidateFields) {
             const normalized = normalizeAnnotationIdentifierValue(candidate);
@@ -5690,7 +5752,6 @@
             entry.stableId,
             entry.id && entry.xref != null && String(entry.xref) === String(entry.id) ? null : entry.id,
             entry.name,
-            entry.title,
         ];
         for (const candidate of candidates) {
             const normalized = normalizeAnnotationIdentifierValue(candidate);
@@ -5710,6 +5771,14 @@
             return null;
         }
 
+        if (entry.has_explicit_stable_id === false) {
+            return buildApiAnnotationIdentifier({
+                identifier: extractAnnotationStableName(entry) || entry.identifier,
+                xref: entry.xref,
+                has_explicit_stable_id: false,
+                canonicalStableId: entry.stable_id ?? entry.stableId,
+            });
+        }
         // Prefer stable ID; fall back to xref
         const stableId = extractAnnotationStableName(entry);
         if (
@@ -5740,6 +5809,16 @@
         return null;
     }
 
+    function canonicalLocalAnnotationId(annotation) {
+        const raw = annotation.stable_id ?? annotation.stableId;
+        if (raw != null) return normalizeAnnotationIdentifierValue(raw);
+        const wire = normalizeAnnotationIdentifierValue(annotation.id || annotation.identifier);
+        if (wire?.startsWith('xref:') || wire?.startsWith('id:')) {
+            return parseCompositeIdentifier(wire).stableId;
+        }
+        return wire || normalizeAnnotationIdentifierValue(annotation.name);
+    }
+
     function findAnnotationIndex(pageIdx, identifier) {
         identifier = annotationIdentityAliases.get(String(identifier)) || identifier;
         const normalized = normalizeAnnotationIdentifierValue(identifier);
@@ -5753,6 +5832,26 @@
         const searchXref = searchParts.xref;
         const searchUuid = searchParts.stableId;
 
+        if (normalized.startsWith('xref:')) {
+            return pageEntries.findIndex((ann) => {
+                const raw = ann.stable_id ?? ann.stableId;
+                const parts = resolveAnnotationIdParts({ xref: ann.xref, identifier: raw == null ? ann.id : null });
+                return String(parts.xref) === String(searchXref)
+                    && (!searchUuid || (raw != null ? String(raw) : parts.stableId) === searchUuid);
+            });
+        }
+        if (searchUuid) {
+            const matches = Object.entries(annotationsData).flatMap(([page, entries]) => (
+                (entries || []).map((annotation, index) => ({ page: Number(page), annotation, index }))
+                    .filter(({ annotation }) => canonicalLocalAnnotationId(annotation) === searchUuid)
+            ));
+            const explicit = matches.filter(({ annotation }) => annotation.has_explicit_stable_id !== false);
+            const preferred = explicit.length ? explicit : matches;
+            if (preferred.length) {
+                return preferred.length === 1 && preferred[0].page === Number(pageIdx)
+                    ? preferred[0].index : -1;
+            }
+        }
         return pageEntries.findIndex(
             (ann) => {
                 // Parse annotation identifiers
@@ -5913,7 +6012,7 @@
                 projected.push({
                     type: 'drawing',
                     pageIdx,
-                    annotationId: ann.stable_id || ann.id || ann.xref || null,
+                    annotationId: buildApiAnnotationIdentifier({ identifier: ann.stable_id || ann.id, canonicalStableId: ann.stable_id ?? ann.stableId, xref: ann.xref, has_explicit_stable_id: ann.has_explicit_stable_id }),
                     drawing_style: ann.drawing_style || 'pen',
                     stroke_width: ann.stroke_width,
                     stroke_opacity: ann.stroke_opacity,
@@ -5958,8 +6057,9 @@
                 projected.push({
                     type: 'textbox',
                     pageIdx,
-                    annotationId: ann.stable_id || ann.id || ann.xref || null,
+                    annotationId: buildApiAnnotationIdentifier({ identifier: ann.stable_id || ann.id, canonicalStableId: ann.stable_id ?? ann.stableId, xref: ann.xref, has_explicit_stable_id: ann.has_explicit_stable_id }),
                     content: ann.content || '',
+                    displayRotation: (((Number(viewport.rotation) || 0) - (Number(ann.rotation) || 0)) % 360 + 360) % 360,
                     x,
                     y,
                     width,
@@ -6064,28 +6164,14 @@
         if (_currentAnnotationCtrl) _scheduleAnnotationsListRender();
     }
 
-    function removeAnnotationEntryLocal(pageIdx, identifier) {
-        const normalized = normalizeAnnotationIdentifierValue(identifier);
-        if (normalized === null || !annotationsData[pageIdx]) {
-            return;
-        }
-
-        annotationsData[pageIdx] = (annotationsData[pageIdx] || []).filter((ann) => {
-            if (ann.xref && String(ann.xref) === normalized) {
-                return false;
-            }
-            if (ann.requestIdentifier && normalizeAnnotationIdentifierValue(ann.requestIdentifier) === normalized) {
-                return false;
-            }
-            if (resolveAnnotationIdentifierValue(ann) === normalized) {
-                return false;
-            }
-            return true;
-        });
-
-        if (annotationsData[pageIdx].length === 0) {
-            delete annotationsData[pageIdx];
-        }
+    function removeAnnotationEntryLocal(pageIdx, identifier, expectedEntry) {
+        const page = annotationsData[pageIdx] || [];
+        const index = expectedEntry ? page.indexOf(expectedEntry) : findAnnotationIndex(pageIdx, identifier);
+        if (index < 0) return;
+        if (!expectedEntry && deletedAnnotationIdentities.has(String(annotationWriteIdentity(identifier)))
+            && !page[index]._deleted) return;
+        page.splice(index, 1);
+        if (!page.length) delete annotationsData[pageIdx];
     }
 
     function upsertAnnotationEntryLocal(annotation, fallbackPageIdx) {
@@ -6103,55 +6189,31 @@
             annotationsData[pageIdx] = [];
         }
 
-        const identifier = normalizeAnnotationIdentifierValue(resolveAnnotationIdentifierValue(enhanced));
-        const xrefString = enhanced.xref ? String(enhanced.xref) : null;
-        let replaced = false;
-
-        annotationsData[pageIdx] = annotationsData[pageIdx].map((ann) => {
-            const annIdentifier = normalizeAnnotationIdentifierValue(resolveAnnotationIdentifierValue(ann));
-            if ((identifier !== null && annIdentifier === identifier) ||
-                (xrefString && ann.xref && String(ann.xref) === xrefString)) {
-                replaced = true;
-                return enhanced;
-            }
-            return ann;
-        });
-
-        if (!replaced) {
-            annotationsData[pageIdx].push(enhanced);
+        if (enhanced.has_explicit_stable_id === false) {
+            const identity = buildApiAnnotationIdentifier({ identifier: enhanced.stable_id || enhanced.id, canonicalStableId: enhanced.stable_id ?? enhanced.stableId,
+                xref: enhanced.xref, has_explicit_stable_id: false });
+            const index = findAnnotationIndex(pageIdx, identity);
+            if (index >= 0) annotationsData[pageIdx][index] = enhanced;
+            else annotationsData[pageIdx].push(enhanced);
+            return;
         }
+        const identifier = canonicalLocalAnnotationId(enhanced);
+        const candidates = annotationsData[pageIdx].map((annotation, index) => ({ annotation, index }))
+            .filter(({ annotation }) => annotation.has_explicit_stable_id !== false
+                && canonicalLocalAnnotationId(annotation) === identifier);
+        let index = candidates.length === 1 ? candidates[0].index : -1;
+        if (index < 0 && enhanced.xref != null) {
+            index = annotationsData[pageIdx].findIndex((annotation) => (
+                annotation.has_explicit_stable_id !== false && String(annotation.xref) === String(enhanced.xref)
+            ));
+        }
+        if (index >= 0) annotationsData[pageIdx][index] = enhanced;
+        else annotationsData[pageIdx].push(enhanced);
     }
 
     function findAnnotationEntry(pageIdx, identifier) {
-        identifier = annotationIdentityAliases.get(String(identifier)) || identifier;
-        const normalized = normalizeAnnotationIdentifierValue(identifier);
-        if (normalized === null) {
-            return undefined;
-        }
-        const pageEntries = annotationsData[pageIdx] || [];
-        return pageEntries.find(
-            (ann) => {
-                // Check xref (as string) - CRITICAL FIX for cross-page moves
-                if (ann.xref && String(ann.xref) === normalized) {
-                    return true;
-                }
-                // Check requestIdentifier
-                if (ann.requestIdentifier && normalizeAnnotationIdentifierValue(ann.requestIdentifier) === normalized) {
-                    return true;
-                }
-                // Check resolved identifier
-                if (resolveAnnotationIdentifierValue(ann) === normalized) {
-                    return true;
-                }
-                if (ann._tempXref && String(ann._tempXref) === normalized) {
-                    return true;
-                }
-                if (ann._tempIdentifier && String(ann._tempIdentifier) === normalized) {
-                    return true;
-                }
-                return false;
-            }
-        );
+        const index = findAnnotationIndex(pageIdx, identifier);
+        return index >= 0 ? (annotationsData[pageIdx] || [])[index] : undefined;
     }
 
     async function loadAnnotations(submissionId, assignmentId = null) {
@@ -7096,6 +7158,8 @@
                 : namespaceXrefIdentifier(markerRequestId, markerXref);
             const apiIdentifier = buildApiAnnotationIdentifier({
                 identifier: requestIdentifier,
+                canonicalStableId: ann?.stable_id ?? ann?.stableId,
+                has_explicit_stable_id: ann?.has_explicit_stable_id,
                 xref: markerXref,
                 requestId: requestRequestId,
             });
@@ -7119,7 +7183,7 @@
                     ? String(responseAnn.xref)
                     : markerXref;
                 const responseStableIdentifier = extractStableUndoIdentifier(responseAnn, null);
-                const undoIdentifier = responseStableIdentifier
+                let undoIdentifier = responseStableIdentifier
                     || explicitStableIdentifier
                     || namespaceXrefIdentifier(
                         resolveAnnotationIdentifierValue(responseAnn)
@@ -7132,12 +7196,19 @@
                     || responseAnn.requestIdentifier
                     || responseAnn.id
                 )) || markerRequestId;
-                const undoRequestId = responseStableIdentifier
+                let undoRequestId = responseStableIdentifier
                     || explicitStableIdentifier
                     || namespaceXrefIdentifier(
                         namespaceXrefIdentifier(rawUndoRequestId, undoXref),
                         markerXref
                     );
+                if (responseAnn && (responseAnn.has_explicit_stable_id === false
+                    || /^(xref:|id:)/.test(String(responseAnn.stable_id ?? responseAnn.stableId ?? '')))) {
+                    undoIdentifier = buildApiAnnotationIdentifier({ identifier: responseAnn.id,
+                        canonicalStableId: responseAnn.stable_id ?? responseAnn.stableId,
+                        xref: undoXref, has_explicit_stable_id: responseAnn.has_explicit_stable_id });
+                    undoRequestId = undoIdentifier;
+                }
                 pushUndoOperation({
                     type: 'highlight-extend',
                     identifier: undoIdentifier,
@@ -7172,7 +7243,8 @@
                 if (responseAnn && Array.isArray(responseAnn.quads)) {
                     const pageAnns = annotationsData[payload.pageIdx] || [];
                     const norm = normalizeAnnotationIdentifierValue(resolveAnnotationIdentifierValue(ann));
-                    const idx = pageAnns.findIndex(function (a) {
+                    const idx = responseAnn.has_explicit_stable_id === false
+                        ? findAnnotationIndex(payload.pageIdx, undoIdentifier) : pageAnns.findIndex(function (a) {
                         return normalizeAnnotationIdentifierValue(resolveAnnotationIdentifierValue(a)) === norm;
                     });
                     if (idx >= 0) {
