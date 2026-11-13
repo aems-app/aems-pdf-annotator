@@ -52,8 +52,10 @@ for (const scale of [1, 0.5, 1.5]) {
         }, { scale, feedback });
         expect(result.stylesheetApplied, 'the real stylesheet must apply').toBe(true);
         expect(result.textUnchanged).toBe(true);
-        expect(result.width).toBeCloseTo(result.expectedWidth, 1);
-        expect(result.height).toBeCloseTo(result.expectedHeight, 1);
+        // Canvas offset dimensions round fractional CSS pixels. Keep the original
+        // geometry oracle's one-pixel allowance; the old 220px cap misses by hundreds.
+        expect(Math.abs(result.width - result.expectedWidth)).toBeLessThanOrEqual(1);
+        expect(Math.abs(result.height - result.expectedHeight)).toBeLessThanOrEqual(1);
         expect(result.withinPage).toBe(true);
         expect(result.tailVisible, JSON.stringify(result)).toBe(true);
         expect(result.fontSize).toBeGreaterThan(0);

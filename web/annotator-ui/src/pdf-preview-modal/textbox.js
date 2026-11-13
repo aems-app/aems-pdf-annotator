@@ -247,8 +247,36 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
         };
     }
 
+    /** Fit saved plain text inside its projected rectangle without moving it. */
+    function fitStoredTextbox(entry) {
+        var element = entry.element;
+        var content = getTextboxContentElement(entry);
+        var width = element.clientWidth;
+        var height = element.clientHeight;
+        // Hidden pages are fitted on their next visible load/edit.
+        if (!content || width <= 0 || height <= 0) return;
+        element.style.padding = Math.min(4, height * 0.05) + 'px ' + Math.min(6, width * 0.05) + 'px';
+        var style = window.getComputedStyle(element);
+        var innerWidth = width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        var innerHeight = height - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+        function fits() {
+            return content.scrollWidth <= innerWidth + 0.25 && content.scrollHeight <= innerHeight + 0.25;
+        }
+        element.style.fontSize = exports.DEFAULT_FONT_SIZE + 'px';
+        if (fits()) return;
+        var low = 0;
+        var high = exports.DEFAULT_FONT_SIZE;
+        for (var i = 0; i < 12; i++) {
+            var size = (low + high) / 2;
+            element.style.fontSize = size + 'px';
+            if (fits()) low = size;
+            else high = size;
+        }
+        element.style.fontSize = Math.max(0.01, low) + 'px';
+    }
+
     /**
-     * Resize a textbox so the box hugs the text while respecting a width cap.
+     * Resize a draft, or fit text within an existing PDF rectangle.
      *
      * @param {Object} entry
      * @param {HTMLElement|null} [pageWrapper]
@@ -256,6 +284,12 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
      */
     function syncTextboxSize(entry, pageWrapper, text) {
         if (!entry || !entry.element) return;
+        // Stored rectangles are already projected from the PDF. Editing or
+        // moving their content must not replace that geometry with a draft cap.
+        if (entry.preserveGeometry) {
+            fitStoredTextbox(entry);
+            return;
+        }
         var wrapper = pageWrapper || getPageWrapperForEntry(entry);
         var size = measureTextbox(entry, wrapper, text);
         entry.element.style.width = size.width + 'px';
@@ -620,6 +654,8 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
             if (!pageWrapper) continue;
 
             var scale = getCanvasScale(pageWrapper);
+            var preserveGeometry = Number.isFinite(ann.width) && ann.width > 0
+                && Number.isFinite(ann.height) && ann.height > 0;
 
             // Create textbox element (not in editing mode)
             var textbox = document.createElement('div');
@@ -628,9 +664,13 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
             textbox.style.position = 'absolute';
             textbox.style.left = (ann.x * scale.scaleX) + 'px';
             textbox.style.top = (ann.y * scale.scaleY) + 'px';
-            textbox.style.width = exports.DEFAULT_WIDTH + 'px';
-            textbox.style.height = exports.DEFAULT_HEIGHT + 'px';
-            textbox.style.minHeight = exports.DEFAULT_HEIGHT + 'px';
+            textbox.style.width = (preserveGeometry ? ann.width * scale.scaleX : exports.DEFAULT_WIDTH) + 'px';
+            textbox.style.height = (preserveGeometry ? ann.height * scale.scaleY : exports.DEFAULT_HEIGHT) + 'px';
+            textbox.style.minHeight = (preserveGeometry ? 0 : exports.DEFAULT_HEIGHT) + 'px';
+            if (preserveGeometry) {
+                textbox.style.minWidth = '0px';
+                textbox.style.maxWidth = 'none';
+            }
             textbox.style.fontSize = exports.DEFAULT_FONT_SIZE + 'px';
             textbox.style.color = resolvedColor.css;
             textbox.style.borderColor = resolvedColor.css;
@@ -653,7 +693,8 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
                 annotationId: annotationId,
                 pageIdx: pageIdx,
                 content: ann.content || '',
-                color: resolvedColor.value
+                color: resolvedColor.value,
+                preserveGeometry: preserveGeometry
             };
 
             addEntryToPageMap(pageIdx, entry);

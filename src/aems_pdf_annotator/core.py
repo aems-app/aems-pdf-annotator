@@ -40,15 +40,17 @@ def _add_fitted_textbox(
     Use unrotated bounds, the coordinate system of annotation rectangles.
     """
     bounds = page.rect * page.derotation_matrix
-    bounds = fitz.Rect(bounds.x0 + 4, bounds.y0 + 4, bounds.x1 - 4, bounds.y1 - 4)
     requested = fitz.Rect(rect)
+    if not bounds.contains(requested):
+        # Only a box that already needs correction receives glyph clearance.
+        bounds = fitz.Rect(bounds.x0 + 4, bounds.y0 + 4, bounds.x1 - 4, bounds.y1 - 4)
     # FreeText wraps at spaces, unlike insert_textbox which also splits tokens.
     # Preserve caller geometry; managed boxes may already have a measured layout.
     longest = max(
         (fitz.get_text_length(word, fontsize=11) for word in text.split()), default=0
     )
-    width = min(max(requested.width, 1.0), bounds.width)
-    height = min(max(requested.height, 1.0), bounds.height)
+    width = min(requested.width, bounds.width)
+    height = min(requested.height, bounds.height)
     left = max(bounds.x0, min(requested.x0, bounds.x1 - width))
     top = max(bounds.y0, min(requested.y0, bounds.y1 - height))
     fitted = fitz.Rect(left, top, left + width, top + height)
@@ -59,10 +61,12 @@ def _add_fitted_textbox(
         spare = page.new_shape().insert_textbox(
             fitted, text, fontsize=size, fontname="helv"
         )
-        if spare >= 0 and longest * size / 11 <= width - 1:
+        if spare >= 0 and longest * size / 11 <= width - min(1.0, width * 0.05):
             low = size
         else:
             high = size
+    if low <= 0:
+        raise ValueError("The text cannot fit inside this textbox.")
     return page.add_freetext_annot(
         fitted,
         text,
@@ -437,6 +441,24 @@ def _annotation_stable_id(
     if not stable_id or is_annotation_type_name(stable_id):
         stable_id = info.get("name") or info.get("id")
     return stable_id
+
+
+def _native_textbox_color(annot: Any) -> Tuple[float, float, float]:
+    """Read native FreeText color, including empty legacy comments, through MuPDF."""
+    native = fitz.mupdf
+    color = native.new_floats(4)
+    try:
+        _, _, count = native.pdf_annot_default_appearance(annot.this, color)
+        spaces = {1: native.fz_device_gray(), 3: native.fz_device_rgb(), 4: native.fz_device_cmyk()}
+        if count not in spaces:
+            return (0.0, 0.0, 0.0)
+        rgb = native.fz_convert_color(
+            spaces[count], color, native.fz_device_rgb(), native.FzColorspace(),
+            native.FzColorParams(native.fz_default_color_params),
+        )
+        return (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+    finally:
+        native.delete_floats(color)
 
 
 def _replacement_stable_id(
@@ -1145,7 +1167,7 @@ class PDFAnnotator:
         rect = fitz.Rect(new_rect) if new_rect is not None else annot.rect
 
         textbox_rgb = new_stroke_color_rgb or metadata.get("textbox_color_rgb")
-        text_color = _rgb_ints_to_floats(textbox_rgb) or (0.0, 0.0, 0.0)
+        text_color = _rgb_ints_to_floats(textbox_rgb) or _native_textbox_color(annot)
         content = info.get("content", "") if new_content is None else new_content
 
         try:
@@ -1792,9 +1814,7 @@ class PDFAnnotator:
                     )
 
                     new_subject = _encode_subject_metadata(
-                        subject_metadata.get("stable_id")
-                        or annotation_id
-                        or str(uuid.uuid4()),
+                        _replacement_stable_id(self.doc, annot, info, subject_metadata),
                         source_to_store,
                         check_id=subject_metadata.get("check_id"),
                         original_source=original_source_to_store,
@@ -2021,7 +2041,7 @@ class PDFAnnotator:
                 textbox_rgb = new_stroke_color_rgb or subject_metadata.get(
                     "textbox_color_rgb"
                 )
-                text_color = _rgb_ints_to_floats(textbox_rgb) or (0.0, 0.0, 0.0)
+                text_color = _rgb_ints_to_floats(textbox_rgb) or _native_textbox_color(annot)
                 new_annot = _add_fitted_textbox(target_page, rect, content, text_color)
                 new_annot.set_opacity(0.9)
             elif is_ink:
