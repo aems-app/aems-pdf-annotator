@@ -388,3 +388,79 @@ def test_native_freetext_colour_survives_recreation_without_aems_metadata(
                 text_color, (16, 8, 0),
             ))
             assert colors and set(colors) == {expected_color}, "painted native colour changed"
+
+
+def _native_colour_fixture(page: Any, text: str, appearance: str | None) -> Any:
+    annotation = page.add_freetext_annot(fitz.Rect(50, 50, 220, 100), text, fontsize=11)
+    if appearance is not None:
+        page.parent.xref_set_key(annotation.xref, "DA", fitz.get_pdf_str(appearance))
+        annotation.update()
+    else:
+        # Retain MuPDF's black appearance stream but remove the optional DA entry.
+        page.parent.xref_set_key(annotation.xref, "DA", "null")
+    return annotation
+
+
+@pytest.mark.parametrize("appearance", [None, "/Helv 11 Tf .4 g", "/Helv 11 Tf 0 1 1 0 k"])
+@pytest.mark.parametrize("empty", [False, True])
+def test_native_default_gray_and_cmyk_colour_survive_empty_and_nonempty_recreation(
+    tmp_path: Path, appearance: str | None, empty: bool,
+) -> None:
+    """Use a native letter's painted colour as oracle, including empty comments."""
+    with fitz.open() as oracle_document:
+        page = oracle_document.new_page(width=300, height=400)
+        oracle = _native_colour_fixture(page, "A", appearance)
+        expected_color = oracle.get_text("dict")["blocks"][0]["lines"][0]["spans"][0]["color"]
+        if appearance is not None:
+            assert expected_color != 0, "native coloured fixture unexpectedly painted black"
+    source = tmp_path / "native-colour-space.pdf"
+    original_text = "" if empty else "Native colour-space text"
+    with fitz.open() as document:
+        page = document.new_page(width=300, height=400)
+        annotation = _native_colour_fixture(page, original_text, appearance)
+        xref = annotation.xref
+        document.save(source)
+    with PDFAnnotator(source) as writer:
+        result = writer.update_annotation(str(xref), new_rect=(60, 60, 230, 110))
+        assert isinstance(result, tuple) and result[0] is True
+        page = writer.doc[0]
+        updated = next(page.annots())
+        assert updated.info["content"] == original_text
+        # A separate native scratch letter using the resulting DA observes empty
+        # comments without implementing RGB/gray/CMYK conversion in the oracle.
+        resulting_da = writer.doc.xref_get_key(updated.xref, "DA")[1]
+        with fitz.open() as probe_document:
+            probe_page = probe_document.new_page(width=300, height=400)
+            probe = _native_colour_fixture(probe_page, "A", resulting_da)
+            actual_color = probe.get_text("dict")["blocks"][0]["lines"][0]["spans"][0]["color"]
+        assert all(
+            abs(((actual_color >> shift) & 255) - ((expected_color >> shift) & 255)) <= 1
+            for shift in (16, 8, 0)
+        ), "recreation changed native gray/CMYK/default colour"
+
+
+def test_impossible_text_layout_fails_before_creating_a_freetext_annotation() -> None:
+    """An invalid layout must not become a zero-font annotation using native defaults."""
+    from aems_pdf_annotator.core import _add_fitted_textbox
+
+    class ImpossibleShape:
+        def insert_textbox(self, *args: Any, **kwargs: Any) -> float:
+            return -1.0
+
+    class ImpossiblePage:
+        rect = fitz.Rect(0, 0, 300, 400)
+        derotation_matrix = fitz.Matrix(1, 0, 0, 1, 0, 0)
+
+        def __init__(self) -> None:
+            self.created = False
+
+        def new_shape(self) -> ImpossibleShape:
+            return ImpossibleShape()
+
+        def add_freetext_annot(self, *args: Any, **kwargs: Any) -> None:
+            self.created = True
+
+    page = ImpossiblePage()
+    with pytest.raises(ValueError, match="(?i)(fit|layout|font)"):
+        _add_fitted_textbox(page, fitz.Rect(50, 50, 150, 90), "A", (0.0, 0.0, 0.0))
+    assert not page.created, "invalid layout created a FreeText annotation"
