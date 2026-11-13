@@ -62,9 +62,18 @@ def _textbox_font_size(
     # although Font.text_length omits several of them. Keep content verbatim.
     control_widths = dict.fromkeys(range(32), " ")
     control_widths[127] = " "
+    encoded_advances = {
+        char: fitz.get_text_length(char, fontname=font_name, fontsize=1)
+        for char in set(text.translate(control_widths))
+    }
     longest = max(
         (
-            font.text_length(word.translate(control_widths), fontsize=1, language="")
+            max(
+                font.text_length(word.translate(control_widths), fontsize=1, language=""),
+                # Older native engines paint fallback glyphs for zero-width
+                # Unicode characters; their encoded advance still needs room.
+                sum(encoded_advances[char] for char in word.translate(control_widths)),
+            )
             # Native FreeText breaks only at ASCII spaces and CR/LF.
             for word in re.split(r"[ \r\n]+", text)
         ),
