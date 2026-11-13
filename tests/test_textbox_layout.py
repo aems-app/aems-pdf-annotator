@@ -124,3 +124,51 @@ def test_crop_newlines_empty_and_offpage_rectangles(
         assert writer.add_annotation(_model(rect, text))
         writer.save(target)
     _assert_visible(target, text)
+
+
+@pytest.mark.parametrize(
+    "kind,changes",
+    [
+        ("textbox", {"new_content": "Updated synthetic text FINALWORD"}),
+        ("textbox", {"new_rect": (60, 60, 180, 100)}),
+        ("textbox", {"new_stroke_color_rgb": [20, 30, 40]}),
+        ("drawing", {"new_stroke_color_rgb": [20, 30, 40]}),
+        ("highlight", {"new_quads": [[50, 50, 180, 75]]}),
+    ],
+    ids=["textbox-content", "textbox-geometry", "textbox-colour", "drawing", "highlight"],
+)
+@pytest.mark.parametrize("identity_field", ["id", "name"])
+def test_legacy_recreation_retains_reader_identity_for_later_edit_and_delete(
+    tmp_path: Path, kind: str, changes: dict[str, Any], identity_field: str,
+) -> None:
+    """Recreating a legacy annotation must not orphan its existing client identity."""
+    source = tmp_path / "legacy.pdf"
+    stable_id = f"legacy-{kind}-identity"
+    with fitz.open() as document:
+        page = document.new_page(width=300, height=400)
+        if kind == "textbox":
+            annotation = page.add_freetext_annot(
+                fitz.Rect(50, 50, 170, 100), "Original synthetic text", fontsize=11,
+            )
+        elif kind == "drawing":
+            annotation = page.add_ink_annot([[(50, 50), (100, 90)]])
+        else:
+            annotation = page.add_highlight_annot(fitz.Rect(50, 50, 150, 75))
+        document.xref_set_key(annotation.xref, "NM", fitz.get_pdf_str(stable_id))
+        if identity_field == "name":
+            document.xref_set_key(annotation.xref, "Name", f"/{stable_id}")
+        assert annotation.info[identity_field] == stable_id
+        assert not annotation.info["subject"]
+        document.save(source)
+    with PDFAnnotator(source) as writer:
+        before = writer.get_annotations_on_page(0)[0]
+        assert before["stable_id"] == stable_id
+        result = writer.update_annotation(stable_id, **changes)
+        assert isinstance(result, tuple) and result[0] is True
+        after = writer.get_annotations_on_page(0)[0]
+        assert after["stable_id"] == stable_id, "recreation changed the legacy client identity"
+        assert writer.find_annotation_by_id(stable_id) is not None
+        followup = writer.update_annotation(stable_id, new_content="Follow-up synthetic text")
+        assert followup[0] if isinstance(followup, tuple) else followup
+        assert writer.delete_annotation(stable_id)
+        assert writer.get_annotations_on_page(0) == []
