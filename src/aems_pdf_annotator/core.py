@@ -32,6 +32,11 @@ from aems_pdf_annotator.models import (
 logger = logging.getLogger(__name__)
 
 
+def textbox_content_error(text: str) -> Optional[str]:
+    """Return the native text restriction before a caller starts a write."""
+    return "Textbox text cannot contain a NUL character." if "\x00" in text else None
+
+
 def _textbox_rect_on_page(page: Any, rect: Any) -> Any:
     """Keep valid geometry; clamp only rectangles already outside the page."""
     bounds = page.rect * page.derotation_matrix
@@ -48,13 +53,29 @@ def _textbox_rect_on_page(page: Any, rect: Any) -> Any:
 def _textbox_font_size(
     page: Any, rect: Any, text: str, font_name: str, maximum: float, rotation: int = 0
 ) -> Tuple[float, bool]:
-    """Measure wrapping with native font metrics, including unsplittable words."""
+    """Measure native Unicode words and count each native line separator."""
+    error = textbox_content_error(text)
+    if error:
+        raise ValueError(error)
+    font = fitz.Font(fitz.Base14_fontdict.get(font_name.lower(), font_name), language="")
+    # These encoded control glyphs advance like spaces in the native PDF,
+    # although Font.text_length omits several of them. Keep content verbatim.
+    control_widths = dict.fromkeys(range(32), " ")
+    control_widths[127] = " "
+    encoded_advances = {
+        char: fitz.get_text_length(char, fontname=font_name, fontsize=1)
+        for char in set(text.translate(control_widths))
+    }
     longest = max(
         (
-            fitz.get_text_length(word, fontname=font_name, fontsize=1)
-            # Native FreeText does not wrap at TAB.
-            # Shape.insert_textbox expands TAB, so its fit check alone lies.
-            for word in re.split(r"[^\S\t]+", text)
+            max(
+                font.text_length(word.translate(control_widths), fontsize=1, language=""),
+                # Older native engines paint fallback glyphs for zero-width
+                # Unicode characters; their encoded advance still needs room.
+                sum(encoded_advances[char] for char in word.translate(control_widths)),
+            )
+            # Native FreeText breaks only at ASCII spaces and CR/LF.
+            for word in re.split(r"[ \r\n]+", text)
         ),
         default=0,
     )
@@ -62,7 +83,7 @@ def _textbox_font_size(
     def fits(size: float) -> bool:
         options = {"rotate": rotation} if rotation else {}
         spare = page.new_shape().insert_textbox(
-            rect, text, fontsize=size, fontname=font_name, **options
+            rect, text.replace("\r", "\n"), fontsize=size, fontname=font_name, **options
         )
         width = rect.height if rotation % 180 else rect.width
         return spare >= 0 and longest * size <= width - min(1.0, width * 0.05)
@@ -102,7 +123,7 @@ def _add_fitted_textbox(
         rotation,
     )
     options = {"rotate": rotation} if rotation else {}
-    return page.add_freetext_annot(
+    annot = page.add_freetext_annot(
         fitted,
         text,
         fontsize=size if font_size is not None and original_fits else size * 0.95,
@@ -111,6 +132,9 @@ def _add_fitted_textbox(
         fill_color=(1.0, 1.0, 1.0),
         **options,
     )
+    _safe_set_info(annot, "content", text)
+    fitz.mupdf.pdf_update_annot(annot.this)
+    return annot
 
 
 class DuplicateAnnotationIdError(RuntimeError):
@@ -196,6 +220,17 @@ def _derive_task_id_from_check_id(check_id: Optional[str]) -> Optional[str]:
 
 def _safe_set_info(annot: Any, key: str, value: str) -> None:
     """PyMuPDF set_info expects a dict in newer versions; handle both."""
+    if (
+        key == "content"
+        and any("\x18" <= char <= "\x1f" for char in value)
+        and annot.type[0] == fitz.PDF_ANNOT_FREE_TEXT
+    ):
+        # Single-byte PDFDocEncoding maps these controls to accent glyphs.
+        # An explicit Unicode PDF string retains the original code points.
+        doc = annot.parent.parent
+        doc.xref_set_key(annot.xref, "Contents", "<FEFF" + value.encode("utf-16-be").hex() + ">")
+        fitz.mupdf.pdf_dirty_annot(annot.this)
+        return
     try:
         annot.set_info({key: value})
     except TypeError:
@@ -1682,6 +1717,14 @@ class PDFAnnotator:
                 annot = fresh_annot
             else:
                 logger.error("Failed to refresh annotation xref=%s", annot_xref)
+
+        if (
+            new_content is not None
+            and textbox_content_error(new_content)
+            and annot.type[0] == fitz.PDF_ANNOT_FREE_TEXT
+        ):
+            logger.error("Refusing textbox update containing a NUL character")
+            return False
 
         try:
             _legacy_subject_id(_decode_subject_metadata((annot.info or {}).get("subject", "")))
