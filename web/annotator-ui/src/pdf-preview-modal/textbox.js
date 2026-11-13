@@ -257,10 +257,9 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
         if (!content || width <= 0 || height <= 0) return;
         element.style.padding = Math.min(4, height * 0.05) + 'px ' + Math.min(6, width * 0.05) + 'px';
         var style = window.getComputedStyle(element);
-        var innerWidth = width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
         var innerHeight = height - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
         function fits() {
-            return content.scrollWidth <= innerWidth + 0.25 && content.scrollHeight <= innerHeight + 0.25;
+            return content.scrollWidth <= content.clientWidth && content.scrollHeight <= Math.floor(innerHeight);
         }
         element.style.fontSize = exports.DEFAULT_FONT_SIZE + 'px';
         if (fits()) return;

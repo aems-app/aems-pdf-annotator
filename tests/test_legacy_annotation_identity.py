@@ -133,12 +133,16 @@ def test_unencodable_malformed_legacy_subject_refuses_update_without_touching_fi
         document.new_page(width=300, height=400)
         page = document[0]
         annotation = _create_annotation(page, kind)
-        annotation.set_info(subject="bad|legacy#%%%")
+        # A one-character base64 payload really fails decoding. Punctuation-only
+        # payloads may decode as empty and become explicit under legacy parsing.
+        annotation.set_info(subject="bad|legacy#x")
         document.save(source)
     original_bytes = source.read_bytes()
     with PDFAnnotator(source) as writer:
         row = writer.get_annotations_on_page(0)[0]
         assert row["stable_id"] == "bad|legacy"
+        page = writer.doc[0]
+        assert not _decode_subject_metadata(next(page.annots()).info["subject"])["has_explicit_stable_id"]
         result = writer.update_annotation(str(row["xref"]), **_changes(kind, operation))
         assert not (result[0] if isinstance(result, tuple) else result), (
             "unencodable malformed subject was silently rewritten"

@@ -461,21 +461,34 @@ def _native_textbox_color(annot: Any) -> Tuple[float, float, float]:
         native.delete_floats(color)
 
 
-def _replacement_stable_id(
-    doc: Any, annot: Any, info: Dict[str, Any], metadata: Dict[str, Any]
-) -> str:
-    """Keep implicit legacy identities implicit when recreating an annotation.
+def _legacy_subject_id(metadata: Dict[str, Any]) -> Optional[str]:
+    """Return an implicit subject ID that older readers can still understand."""
+    value = metadata.get("stable_id")
+    if metadata.get("has_explicit_stable_id") or not value or is_annotation_type_name(value):
+        return None
+    if "|" in value:
+        raise ValueError("Legacy subject identity contains a reserved delimiter")
+    return str(value)
 
-    Legacy NM/name values may repeat across pages. Preserve the reader's value
-    in NM without promoting it into the unique, explicit subject-ID namespace.
-    """
+
+def _encode_replacement_subject(
+    original: Any, replacement: Any, info: Dict[str, Any],
+    metadata: Dict[str, Any], source: str, **fields: Any,
+) -> str:
+    """Preserve native identities and the legacy implicit subject namespace."""
+    legacy_id = _legacy_subject_id(metadata)
     stable_id = _annotation_stable_id(info, metadata)
-    if metadata.get("has_explicit_stable_id"):
-        return stable_id or str(uuid.uuid4())
-    if stable_id:
-        doc.xref_set_key(annot.xref, "NM", fitz.get_pdf_str(str(stable_id)))
-        return ""
-    return str(uuid.uuid4())
+    if original is not replacement:
+        native = fitz.mupdf
+        old_object = native.pdf_annot_obj(original.this)
+        new_object = native.pdf_annot_obj(replacement.this)
+        for key in ("NM", "Name"):
+            native.pdf_dict_puts(new_object, key, native.pdf_dict_gets(old_object, key))
+    if legacy_id and stable_id:
+        return _encode_subject_metadata(stable_id, source, legacy_subject=True, **fields)
+    if metadata.get("has_explicit_stable_id") or not stable_id:
+        return _encode_subject_metadata(stable_id or str(uuid.uuid4()), source, **fields)
+    return _encode_subject_metadata("", source, **fields)
 
 
 def _validate_unique_annotation_ids(doc: Any) -> None:
@@ -514,6 +527,7 @@ def _encode_subject_metadata(
     stroke_color_rgb: Optional[Sequence[int]] = None,
     textbox_color_rgb: Optional[Sequence[int]] = None,
     anchor_text: Optional[str] = None,
+    legacy_subject: bool = False,
 ) -> str:
     """Encode stable ID and metadata into the PDF annotation subject field."""
     tokens = [source]
@@ -546,6 +560,8 @@ def _encode_subject_metadata(
         tokens.append(original_source or "")
     tokens.extend(metadata_tokens)
 
+    if legacy_subject:
+        return f"{stable_id}|" + "|".join(tokens)
     encoded_payload = base64.b64encode("|".join(tokens).encode("utf-8")).decode("ascii")
     return f"{stable_id}#{encoded_payload}"
 
@@ -980,8 +996,8 @@ class PDFAnnotator:
             if effective_source == "HUMAN" and not original_source_to_store:
                 original_source_to_store = metadata.get("source") or "AI"
 
-            subject_value = _encode_subject_metadata(
-                _replacement_stable_id(self.doc, new_annot, info, metadata),
+            subject_value = _encode_replacement_subject(
+                annot, new_annot, info, metadata,
                 effective_source,
                 check_id=metadata.get("check_id"),
                 original_source=original_source_to_store,
@@ -1109,8 +1125,8 @@ class PDFAnnotator:
                 else metadata.get("anchor_text")
             )
 
-            subject_value = _encode_subject_metadata(
-                _replacement_stable_id(self.doc, new_annot, info, metadata),
+            subject_value = _encode_replacement_subject(
+                annot, new_annot, info, metadata,
                 effective_source,
                 check_id=metadata.get("check_id"),
                 original_source=original_source_to_store,
@@ -1187,8 +1203,8 @@ class PDFAnnotator:
             if effective_source == "HUMAN" and not original_source_to_store:
                 original_source_to_store = metadata.get("source") or "AI"
 
-            subject_value = _encode_subject_metadata(
-                _replacement_stable_id(self.doc, new_annot, info, metadata),
+            subject_value = _encode_replacement_subject(
+                annot, new_annot, info, metadata,
                 effective_source,
                 check_id=metadata.get("check_id"),
                 original_source=original_source_to_store,
@@ -1511,6 +1527,12 @@ class PDFAnnotator:
             else:
                 logger.error("Failed to refresh annotation xref=%s", annot_xref)
 
+        try:
+            _legacy_subject_id(_decode_subject_metadata((annot.info or {}).get("subject", "")))
+        except ValueError:
+            logger.error("Refusing annotation update with an unencodable legacy identity")
+            return False
+
         # Auto-transfer ownership from AI to HUMAN if any field ACTUALLY changes
         # This ensures any human modification takes ownership
         if new_source is None:
@@ -1813,8 +1835,8 @@ class PDFAnnotator:
                         else bool(new_is_verdict)
                     )
 
-                    new_subject = _encode_subject_metadata(
-                        _replacement_stable_id(self.doc, annot, info, subject_metadata),
+                    new_subject = _encode_replacement_subject(
+                        annot, annot, info, subject_metadata,
                         source_to_store,
                         check_id=subject_metadata.get("check_id"),
                         original_source=original_source_to_store,
@@ -1869,6 +1891,7 @@ class PDFAnnotator:
                     )
                 except Exception as e:
                     logger.error("FAILED to update source: %s", e, exc_info=True)
+                    return False
 
             logger.debug(
                 "Updated annotation %s on page %s (content=%s, rect=%s, color=%s, grader=%s, source=%s)",
@@ -2132,8 +2155,8 @@ class PDFAnnotator:
                     else subject_metadata.get("textbox_color_rgb")
                 )
 
-                new_subject = _encode_subject_metadata(
-                    preserved_id,
+                new_subject = _encode_replacement_subject(
+                    annot, new_annot, info, subject_metadata,
                     source_to_set,
                     check_id=subject_metadata.get("check_id"),
                     original_source=original_source_to_set,
@@ -2157,6 +2180,7 @@ class PDFAnnotator:
                 logger.error(
                     "Failed to set UUID/source in subject field: %s", e, exc_info=True
                 )
+                return (False, None, None)
 
             # Store grader_name in "title" field
             if grader_name:
