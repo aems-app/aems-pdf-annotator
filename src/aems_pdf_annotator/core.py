@@ -52,7 +52,9 @@ def _textbox_font_size(
     longest = max(
         (
             fitz.get_text_length(word, fontname=font_name, fontsize=1)
-            for word in text.split()
+            # Native FreeText does not wrap at TAB.
+            # Shape.insert_textbox expands TAB, so its fit check alone lies.
+            for word in re.split(r"[^\S\t]+", text)
         ),
         default=0,
     )
