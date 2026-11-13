@@ -7,6 +7,7 @@ on portrait, landscape and small pages. It contains no student material.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -270,3 +271,120 @@ def test_precomputed_inpage_box_keeps_its_rectangle_for_caller_font_layout(
         annotation.update(fontsize=6.5)
         writer.save(saved)
     _assert_visible(saved, text)
+
+
+@pytest.mark.parametrize("width", [0.5, 1.0])
+def test_narrow_nonempty_textbox_uses_positive_font_and_keeps_its_text(
+    tmp_path: Path, width: float,
+) -> None:
+    source = tmp_path / "narrow.pdf"
+    saved = tmp_path / "narrow-saved.pdf"
+    with fitz.open() as document:
+        document.new_page(width=300, height=400)
+        document.save(source)
+    with PDFAnnotator(source) as writer:
+        assert writer.add_annotation(_model([50, 50, 50 + width, 100], "A"))
+        page = writer.doc[0]
+        annotation = next(page.annots())
+        default_appearance = writer.doc.xref_get_key(annotation.xref, "DA")[1]
+        font_match = re.search(r"([\d.]+)\s+Tf", default_appearance)
+        assert font_match is not None
+        font_size = float(font_match.group(1))
+        assert font_size > 0, "narrow textbox selected a zero font"
+        assert fitz.get_text_length("A", fontsize=font_size) <= annotation.rect.width + 0.01, (
+            "zero fitted font fell back to a native font that cannot fit the narrow box"
+        )
+        writer.save(saved)
+    _assert_visible(saved, "A")
+
+
+@pytest.mark.parametrize("lookup", ["xref", "stable_id"])
+@pytest.mark.parametrize("changes", [{"new_source": "AI"}, {"new_is_verdict": True}])
+def test_legacy_identity_remains_implicit_after_source_or_verdict_only_update(
+    tmp_path: Path, lookup: str, changes: dict[str, Any],
+) -> None:
+    from aems_pdf_annotator.core import _decode_subject_metadata
+
+    source = tmp_path / "legacy-retag.pdf"
+    stable_id = "legacy-retag-identity"
+    with fitz.open() as document:
+        page = document.new_page(width=300, height=400)
+        annotation = page.add_freetext_annot(fitz.Rect(50, 50, 180, 100), "Original", fontsize=11)
+        document.xref_set_key(annotation.xref, "NM", fitz.get_pdf_str(stable_id))
+        document.save(source)
+    with PDFAnnotator(source) as writer:
+        result = writer.update_annotation(stable_id, new_content="Updated")
+        assert isinstance(result, tuple) and result[0] is True
+        row = writer.get_annotations_on_page(0)[0]
+        assert row["stable_id"] == stable_id
+        identifier = str(row["xref"]) if lookup == "xref" else stable_id
+        assert writer.update_annotation(identifier, **changes)
+        updated = writer.get_annotations_on_page(0)[0]
+        assert updated["stable_id"] == stable_id, "retagging replaced the implicit legacy identity"
+        page = writer.doc[0]
+        metadata = _decode_subject_metadata(next(page.annots()).info["subject"])
+        assert not metadata["has_explicit_stable_id"], "retagging promoted an implicit legacy id"
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_valid_page_edge_rectangle_is_not_inset(tmp_path: Path, rotation: int) -> None:
+    source = tmp_path / "edge-valid.pdf"
+    saved = tmp_path / "edge-valid-saved.pdf"
+    requested = fitz.Rect(0, 0, 100, 40)
+    with fitz.open() as document:
+        document.new_page(width=300, height=400).set_rotation(rotation)
+        document.save(source)
+    with PDFAnnotator(source) as writer:
+        assert writer.add_annotation(_model(list(requested), "Edge text"))
+        page = writer.doc[0]
+        assert tuple(next(page.annots()).rect) == pytest.approx(tuple(requested), abs=0.01), (
+            "valid page-edge textbox was shifted by an unconditional inset"
+        )
+        writer.save(saved)
+    _assert_visible(saved, "Edge text")
+
+
+@pytest.mark.parametrize("text_color", [(1.0, 0.0, 0.0), (0.0, 0.0, 1.0)])
+@pytest.mark.parametrize("operation", ["content", "geometry", "move", "empty"])
+def test_native_freetext_colour_survives_recreation_without_aems_metadata(
+    tmp_path: Path, text_color: tuple[float, float, float], operation: str,
+) -> None:
+    source = tmp_path / "native-colour.pdf"
+    stable_id = "legacy-native-colour"
+    with fitz.open() as document:
+        for _ in range(2):
+            document.new_page(width=300, height=400)
+        page = document[0]
+        annotation = page.add_freetext_annot(
+            fitz.Rect(50, 50, 220, 100), "Native colour", fontsize=11, text_color=text_color,
+        )
+        document.xref_set_key(annotation.xref, "NM", fitz.get_pdf_str(stable_id))
+        document.save(source)
+    changes = {
+        "content": {"new_content": "Edited native colour"},
+        "geometry": {"new_rect": (60, 60, 230, 110)},
+        "move": {"new_page_index": 1},
+        "empty": {"new_content": ""},
+    }[operation]
+    with PDFAnnotator(source) as writer:
+        result = writer.update_annotation(stable_id, **changes)
+        assert isinstance(result, tuple) and result[0] is True
+        page = writer.doc[1 if operation == "move" else 0]
+        annotation = next(page.annots())
+        default_appearance = writer.doc.xref_get_key(annotation.xref, "DA")[1]
+        rgb = re.search(r"([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg", default_appearance)
+        assert rgb is not None, "native colour missing from the default appearance"
+        assert tuple(float(value) for value in rgb.groups()) == pytest.approx(text_color), (
+            "recreation replaced native FreeText colour with black"
+        )
+        if operation != "empty":
+            colors = [
+                span["color"]
+                for block in annotation.get_text("dict")["blocks"]
+                for line in block.get("lines", [])
+                for span in line["spans"]
+            ]
+            expected_color = sum(round(component * 255) << shift for component, shift in zip(
+                text_color, (16, 8, 0),
+            ))
+            assert colors and set(colors) == {expected_color}, "painted native colour changed"
