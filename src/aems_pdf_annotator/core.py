@@ -525,9 +525,9 @@ def fit_existing_textboxes(doc: Any) -> int:
     """Repair legacy plain FreeText appearances without changing review evidence.
 
     Existing valid rectangles, native font/color, identity and audit fields stay
-    intact. PyMuPDF 1.25 cannot extract FreeText AP text, so native font metrics
-    provide the fitting fallback there. Unsupported external font metrics are
-    left intact rather than replaced with a different font.
+    intact. Native font metrics also handle old blank or clipped appearances.
+    Unsupported external font metrics are left intact rather than replaced
+    with a different font.
     """
     repaired = 0
     for page in doc:
@@ -560,10 +560,9 @@ def fit_existing_textboxes(doc: Any) -> int:
             original_da = doc.xref_get_key(annot.xref, "DA")
             if moved:
                 annot.set_rect(rect)
-            annot.update(fontsize=target_size)
+            da = original_da[1] if original_da[0] == "string" else ""
             if original_da[0] == "string":
-                # MuPDF may reorder DA operators while regenerating AP. Keep
-                # the original operators exactly, replacing only the font size.
+                # Keep authored operators, replacing only the font size.
                 matches = list(
                     re.finditer(
                         r"/[^\s]+\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?)\s+Tf",
@@ -577,7 +576,17 @@ def fit_existing_textboxes(doc: Any) -> int:
                         + format(target_size, ".9g")
                         + original_da[1][match.end(1) :]
                     )
-                    doc.xref_set_key(annot.xref, "DA", fitz.get_pdf_str(da))
+                else:
+                    da += f" /{font_name} {target_size:.9g} Tf"
+            else:
+                da = f"/{font_name} {target_size:.9g} Tf"
+            doc.xref_set_key(annot.xref, "DA", fitz.get_pdf_str(da))
+            # PyMuPDF 1.25's high-level update rewrites an absolute native
+            # Form stream into local coordinates without matching its BBox.
+            # MuPDF regenerates the whole appearance consistently, including
+            # the authored rotation, font, color and existing annotation xref.
+            fitz.mupdf.pdf_dirty_annot(annot.this)
+            fitz.mupdf.pdf_update_annot(annot.this)
             repaired += 1
     return repaired
 
