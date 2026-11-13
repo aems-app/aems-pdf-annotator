@@ -251,14 +251,14 @@ def test_mismatched_implicit_xref_scope_is_refused(tmp_path: Path) -> None:
         ), "xref scope was accepted despite a different effective subject identity"
 
 
-def test_explicit_stable_identity_survives_an_obsolete_xref(tmp_path: Path) -> None:
+def test_obsolete_xref_never_redirects_to_a_unique_explicit_identity(tmp_path: Path) -> None:
     path = tmp_path / "explicit-stale-xref.pdf"
     xrefs = _pdf(path, duplicate_implicit=False)
     with PDFAnnotator(path) as writer:
         located = writer._find_annotation(annotation_id="explicit-1", xref=xrefs[0])
-        assert (
-            located is not None and located[0] == 1
-        ), "stale xref overrode a unique explicit stable identity"
+        assert located is None, "mismatched object scope redirected to a unique explicit identity"
+        located = writer.find_annotation_by_id("explicit-1")
+        assert located is not None and located[0] == 1, "bare explicit identity stopped resolving"
 
 
 def test_xref_only_lookup_remains_precise(tmp_path: Path) -> None:
@@ -374,3 +374,55 @@ def test_unambiguous_legacy_prefix_alias_remains_supported(
     with PDFAnnotator(path) as writer:
         assert writer.update_annotation(f"{prefix}:1", new_content="LEGACY-EDIT")
         assert writer.get_annotations_on_page(0)[0]["content"] == "LEGACY-EDIT"
+
+@pytest.mark.parametrize("different_page", [False, True])
+@pytest.mark.parametrize("action", ["update", "delete"])
+def test_stale_implicit_scope_never_redirects_to_explicit_peer_after_recreation(
+    tmp_path: Path, different_page: bool, action: str,
+) -> None:
+    path = tmp_path / "stale-implicit-shared-id.pdf"
+    with fitz.open() as document:
+        document.new_page(width=300, height=400)
+        if different_page:
+            document.new_page(width=300, height=400)
+        for index in range(2):
+            page = document[1 if different_page and index == 1 else 0]
+            annotation = page.add_freetext_annot(
+                fitz.Rect(30, 30 + index * 70, 220, 80 + index * 70),
+                "EXPLICIT-PEER" if index == 0 else "IMPLICIT-TARGET", fontsize=8,
+            )
+            if index == 0:
+                annotation.set_info(subject=_encode_subject_metadata("shared-id", "HUMAN"))
+            else:
+                document.xref_set_key(annotation.xref, "NM", fitz.get_pdf_str("shared-id"))
+                target_xref = annotation.xref
+        document.save(path)
+    with PDFAnnotator(path) as writer:
+        stale_wire = f"xref:{target_xref}|id:shared-id"
+        first = writer.update_annotation(stale_wire, new_content="FIRST-TARGET-EDIT")
+        assert isinstance(first, tuple) and first[0] and first[2] != target_xref
+        before = [dict(row) for page in range(writer.doc.page_count)
+                  for row in writer.get_annotations_on_page(page)]
+        result = (writer.update_annotation(stale_wire, new_content="MUST-NOT-REDIRECT")
+                  if action == "update" else writer.delete_annotation(stale_wire))
+        assert not result, "stale implicit scope redirected mutation to an explicit peer"
+        after = [dict(row) for page in range(writer.doc.page_count)
+                 for row in writer.get_annotations_on_page(page)]
+        assert after == before, "stale scoped mutation changed a different current object"
+
+@pytest.mark.parametrize("action", ["update", "delete"])
+def test_bare_explicit_identity_still_recovers_after_recreation(
+    tmp_path: Path, action: str,
+) -> None:
+    path = tmp_path / "bare-explicit-recreation.pdf"
+    _pdf(path, duplicate_implicit=False)
+    with PDFAnnotator(path) as writer:
+        first = writer.update_annotation("explicit-1", new_content="FIRST-EXPLICIT-EDIT")
+        assert isinstance(first, tuple) and first[0]
+        result = (writer.update_annotation("explicit-1", new_content="SECOND-EXPLICIT-EDIT")
+                  if action == "update" else writer.delete_annotation("explicit-1"))
+        assert result, "bare explicit identity stopped resolving after native recreation"
+        assert writer.get_annotations_on_page(0)[0]["content"] == "ORIGINAL-0"
+        assert [row["content"] for row in writer.get_annotations_on_page(1)] == (
+            ["SECOND-EXPLICIT-EDIT"] if action == "update" else []
+        )
