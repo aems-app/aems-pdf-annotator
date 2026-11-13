@@ -245,6 +245,35 @@ describe('Luca F1 scoped native identity through actual textbox callbacks', () =
     expect(after.width).toBeCloseTo(before.width,5);expect(after.height).toBeCloseTo(before.height,5);
   });
 
+  it.each([0,90,180,270])('actual same-page pointer drag preserves the visual delta at page %s', async rotation=> {
+    const fixture=glyphFixtures.find(item=>item.rotation===rotation),entry=loadGeometry(fixture);
+    wrapper.style.width=`${fixture.page[0]}px`;wrapper.style.height=`${fixture.page[1]}px`;
+    const layer=entry.element.parentElement;
+    layer.style.width=wrapper.style.width;layer.style.height=wrapper.style.height;
+    const before=entry.element.getBoundingClientRect();
+    const event=(type,x,y)=> {
+      const value=new w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientX:x,clientY:y});
+      Object.defineProperty(value,'pointerId',{value:1});return value;
+    };
+    const x=before.left+before.width/2,y=before.top+before.height/2;
+    const down=event('pointerdown',x,y);Object.defineProperty(down,'target',{value:entry.element});
+    selection.startDrag('textbox',entry,0,wrapper,down);
+    const overlay=d.querySelector('.markup-selection-overlay, .markup-selection');
+    overlay.dispatchEvent(event('pointermove',x+10,y));overlay.dispatchEvent(event('pointerup',x+10,y));
+    await settle();
+    const after=entry.element.getBoundingClientRect();
+    expect.soft(after.left).toBeCloseTo(before.left+10,5);
+    expect.soft(after.top).toBeCloseTo(before.top,5);
+    expect.soft(after.width).toBeCloseTo(before.width,5);
+    expect.soft(after.height).toBeCloseTo(before.height,5);
+    expect(adapter.updateAnnotation).toHaveBeenCalledOnce();
+    const viewport=w.__pdfGradedViewer.getViewportForPage(1);
+    const a=viewport.convertToPdfPoint(before.left+10,before.top);
+    const b=viewport.convertToPdfPoint(before.right+10,before.bottom);
+    const expected=[Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.max(a[0],b[0]),Math.max(a[1],b[1])];
+    adapter.updateAnnotation.mock.calls[0][3].rect.forEach((value,index)=>expect.soft(value).toBeCloseTo(expected[index],5));
+  });
+
   async function restartWithoutHelperModule() {
     const viewer=w.__pdfGradedViewer;
     modal.destroy();
