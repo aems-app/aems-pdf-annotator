@@ -50,53 +50,90 @@ def _textbox_rect_on_page(page: Any, rect: Any) -> Any:
     return fitz.Rect(left, top, left + width, top + height)
 
 
+class _TextboxInkBounds(fitz.mupdf.FzDevice2):
+    """Observe every glyph the native writer emits, including clipped glyphs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.use_virtual_fill_text()
+        self.bounds = fitz.Rect()
+
+    def fill_text(self, ctx: Any, text: Any, ctm: Any, *args: Any) -> None:
+        box = fitz.mupdf.ll_fz_bound_text(text, None, ctm)
+        self.bounds |= fitz.Rect(box.x0, box.y0, box.x1, box.y1)
+
+
+def _textbox_ink_bounds(annot: Any) -> Any:
+    """Run the appearance without a raster device's clipping side effects."""
+    native = fitz.mupdf
+    device = _TextboxInkBounds()
+    native.pdf_run_annot(annot.this, device, native.FzMatrix(), native.FzCookie())
+    return device.bounds
+
+
 def _textbox_font_size(
     page: Any, rect: Any, text: str, font_name: str, maximum: float, rotation: int = 0
 ) -> Tuple[float, bool]:
-    """Measure native Unicode words and count each native line separator."""
+    """Fit using the FreeText writer's own unclipped glyph bounds."""
     error = textbox_content_error(text)
     if error:
         raise ValueError(error)
-    font = fitz.Font(fitz.Base14_fontdict.get(font_name.lower(), font_name), language="")
-    # These encoded control glyphs advance like spaces in the native PDF,
-    # although Font.text_length omits several of them. Keep content verbatim.
-    control_widths = dict.fromkeys(range(32), " ")
-    control_widths[127] = " "
-    encoded_advances = {
-        char: fitz.get_text_length(char, fontname=font_name, fontsize=1)
-        for char in set(text.translate(control_widths))
-    }
-    longest = max(
-        (
-            max(
-                font.text_length(word.translate(control_widths), fontsize=1, language=""),
-                # Older native engines paint fallback glyphs for zero-width
-                # Unicode characters; their encoded advance still needs room.
-                sum(encoded_advances[char] for char in word.translate(control_widths)),
+    if rect.is_empty:
+        raise ValueError("The text cannot fit inside this textbox.")
+    # A disposable document avoids adding probe annotations or font resources
+    # to the user's PDF. The same writer, encoding and rotation paint both.
+    with fitz.open() as probe:
+        width, height = (rect.height, rect.width) if rotation % 180 else (rect.width, rect.height)
+        target = fitz.Rect(20, 20, 20 + width, 20 + height)
+        probe_page = probe.new_page(width=target.x1 + 20, height=target.y1 + 20)
+        # Keep unbroken words together too. Measure them with this writer on
+        # unconstrained lines, including all fallback fonts and combining runs.
+        longest = top_overhang = left_overhang = 0.0
+        for word in sorted(set(re.split(r"[ \r\n]+", text)) - {""}):
+            word_annot = probe_page.add_freetext_annot(
+                fitz.Rect(20, 20, 20 + max(1000, len(word) * 10), 120),
+                word, fontsize=1, fontname=font_name
             )
-            # Native FreeText breaks only at ASCII spaces and CR/LF.
-            for word in re.split(r"[ \r\n]+", text)
-        ),
-        default=0,
-    )
-
-    def fits(size: float) -> bool:
-        options = {"rotate": rotation} if rotation else {}
-        spare = page.new_shape().insert_textbox(
-            rect, text.replace("\r", "\n"), fontsize=size, fontname=font_name, **options
+            _safe_set_info(word_annot, "content", word)
+            fitz.mupdf.pdf_update_annot(word_annot.this)
+            word_bounds = _textbox_ink_bounds(word_annot)
+            if not word_bounds.is_empty:
+                longest = max(longest, word_bounds.x1 - 21)
+                top_overhang = max(top_overhang, 19 - word_bounds.y0)
+                left_overhang = max(left_overhang, 19 - word_bounds.x0)
+        annot = probe_page.add_freetext_annot(
+            target, text, fontsize=maximum, fontname=font_name
         )
-        width = rect.height if rotation % 180 else rect.width
-        return spare >= 0 and longest * size <= width - min(1.0, width * 0.05)
+        _safe_set_info(annot, "content", text)
+        native = fitz.mupdf
+        font, _, _ = _native_textbox_style(annot)
 
-    if fits(maximum):
-        return maximum, True
-    low, high = 0.0, maximum
-    for _ in range(24):
-        size = (low + high) / 2
-        if fits(size):
-            low = size
-        else:
-            high = size
+        def fits(size: float) -> bool:
+            probe.xref_set_key(annot.xref, "DA", fitz.get_pdf_str(f"/{font} {size:.9g} Tf"))
+            native.pdf_dirty_annot(annot.this)
+            native.pdf_update_annot(annot.this)
+            bounds = _textbox_ink_bounds(annot)
+            # fz_bound_text pads each glyph bound by one device unit for
+            # raster rounding. Compare with that same padding on the box.
+            # Native first-line glyph bearings can extend above/left of its
+            # origin at every size. Do not mistake that for trailing overflow.
+            # Float coordinates are rounded independently at size 1 and size N.
+            padded = target + (
+                -1.0001 - left_overhang * size, -1.0001 - top_overhang * size, 1.0001, 1.0001
+            )
+            return (bounds.is_empty or padded.contains(bounds)) and (
+                longest * size <= width - min(1.0, width * 0.05)
+            )
+
+        if fits(maximum):
+            return maximum, True
+        low, high = 0.0, maximum
+        for _ in range(24):
+            size = (low + high) / 2
+            if fits(size):
+                low = size
+            else:
+                high = size
     if low <= 0:
         raise ValueError("The text cannot fit inside this textbox.")
     return low, False

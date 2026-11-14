@@ -32,7 +32,10 @@ def test_writer_fallback_glyphs_cannot_clip_letters(separator: str, rotation: in
         assert "FINALWORD" in painted
 
 
-@pytest.mark.parametrize("text", ["abc \u20dddef FINALWORD", "abc def \u20ddFINALWORD"])
+@pytest.mark.parametrize("text", [
+    "abc \u20dddef FINALWORD", "abc def \u20ddFINALWORD",
+    "\u00e5\u00e4\u00f6\u00c5\u00c4\u00d6" * 200 + "FINALWORD",
+])
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
 def test_tall_glyph_bearings_are_independent_of_word_order(text: str, rotation: int) -> None:
     with fitz.open() as document:
