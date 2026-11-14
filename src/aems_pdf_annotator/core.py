@@ -60,8 +60,11 @@ class _TextboxInkBounds(fitz.mupdf.FzDevice2):
         self.local = local
 
     def fill_text(self, ctx: Any, text: Any, ctm: Any, *args: Any) -> None:
+        # internal() borrows the SWIG wrapper's storage. Retain the owner until
+        # the native call returns; a temporary wrapper dangles on Linux.
+        identity = fitz.mupdf.FzMatrix()
         box = fitz.mupdf.ll_fz_bound_text(
-            text, None, fitz.mupdf.FzMatrix().internal() if self.local else ctm
+            text, None, identity.internal() if self.local else ctm
         )
         self.bounds |= fitz.Rect(box.x0, box.y0, box.x1, box.y1)
 
