@@ -53,13 +53,16 @@ def _textbox_rect_on_page(page: Any, rect: Any) -> Any:
 class _TextboxInkBounds(fitz.mupdf.FzDevice2):
     """Observe every glyph the native writer emits, including clipped glyphs."""
 
-    def __init__(self) -> None:
+    def __init__(self, local: bool = False) -> None:
         super().__init__()
         self.use_virtual_fill_text()
         self.bounds = fitz.Rect()
+        self.local = local
 
     def fill_text(self, ctx: Any, text: Any, ctm: Any, *args: Any) -> None:
-        box = fitz.mupdf.ll_fz_bound_text(text, None, ctm)
+        box = fitz.mupdf.ll_fz_bound_text(
+            text, None, fitz.mupdf.FzMatrix().internal() if self.local else ctm
+        )
         self.bounds |= fitz.Rect(box.x0, box.y0, box.x1, box.y1)
 
 
@@ -69,6 +72,47 @@ def _textbox_ink_bounds(annot: Any) -> Any:
     device = _TextboxInkBounds()
     native.pdf_run_annot(annot.this, device, native.FzMatrix(), native.FzCookie())
     return device.bounds
+
+
+def _contain_textbox_ink(annot: Any) -> bool:
+    """Fit emitted ink inside the native clip, including all glyph bearings.
+
+    Native FreeText paints in a local, top-down frame before the BT block.
+    Measure in that frame so page and annotation rotations cancel out. Keep
+    the existing clipping paths and background; transform only the text.
+    fz_bound_text's extra unit also leaves room for raster rounding.
+    """
+    doc = annot.parent.parent
+    xref = int(doc.xref_get_key(annot.xref, "AP/N")[1].split()[0])
+    stream = doc.xref_stream(xref)
+    if b"% AEMS ink containment\n" in stream:
+        return False
+    native = fitz.mupdf
+    device = _TextboxInkBounds(local=True)
+    native.pdf_run_annot(annot.this, device, native.FzMatrix(), native.FzCookie())
+    bounds = device.bounds
+    rect = annot.rect
+    width, height = (
+        (rect.height, rect.width)
+        if _textbox_rotation(annot) % 180
+        else (rect.width, rect.height)
+    )
+    target = fitz.Rect(0, 0, width, height)
+    if bounds.is_empty or target.contains(bounds):
+        return False
+    scale = min(1.0, width / bounds.width, height / bounds.height) * 0.999
+    dx = max(0.0, -bounds.x0 * scale)
+    dy = max(0.0, -bounds.y0 * scale)
+    dx = min(dx, width - bounds.x1 * scale)
+    dy = min(dy, height - bounds.y1 * scale)
+    transform = (
+        f"% AEMS ink containment\nq\n"
+        f"{scale:.12g} 0 0 {scale:.12g} {dx:.12g} {dy:.12g} cm\n"
+    ).encode("ascii")
+    stream = stream.replace(b"BT\n", transform + b"BT\n", 1)
+    stream = stream.replace(b"ET\n", b"ET\nQ\n", 1)
+    doc.update_stream(xref, stream)
+    return True
 
 
 def _textbox_font_size(
@@ -171,6 +215,7 @@ def _add_fitted_textbox(
     )
     _safe_set_info(annot, "content", text)
     fitz.mupdf.pdf_update_annot(annot.this)
+    _contain_textbox_ink(annot)
     return annot
 
 
@@ -628,7 +673,14 @@ def fit_existing_textboxes(doc: Any) -> int:
             moved = tuple(rect) != tuple(annot.rect)
             painted = "".join(annot.get_text().split())
             if not moved and painted == "".join(text.split()):
-                continue
+                clip = fitz.mupdf.pdf_bound_annot(annot.this)
+                clip = fitz.Rect(clip.x0, clip.y0, clip.x1, clip.y1)
+                # Bound-text adds a device unit for raster rounding; accept
+                # that padding, never an actual glyph bearing outside the clip.
+                if (clip + (-1.0001, -1.0001, 1.0001, 1.0001)).contains(
+                    _textbox_ink_bounds(annot)
+                ):
+                    continue
             font_name, maximum, _ = _native_textbox_style(annot)
             try:
                 fitz.get_text_length("M", fontname=font_name, fontsize=1)
@@ -671,6 +723,7 @@ def fit_existing_textboxes(doc: Any) -> int:
             # the authored rotation, font, color and existing annotation xref.
             fitz.mupdf.pdf_dirty_annot(annot.this)
             fitz.mupdf.pdf_update_annot(annot.this)
+            _contain_textbox_ink(annot)
             repaired += 1
     return repaired
 
