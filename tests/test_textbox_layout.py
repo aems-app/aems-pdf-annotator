@@ -463,24 +463,8 @@ def test_impossible_text_layout_fails_before_creating_a_freetext_annotation() ->
     """An invalid layout must not become a zero-font annotation using native defaults."""
     from aems_pdf_annotator.core import _add_fitted_textbox
 
-    class ImpossibleShape:
-        def insert_textbox(self, *args: Any, **kwargs: Any) -> float:
-            return -1.0
-
-    class ImpossiblePage:
-        rect = fitz.Rect(0, 0, 300, 400)
-        derotation_matrix = fitz.Matrix(1, 0, 0, 1, 0, 0)
-
-        def __init__(self) -> None:
-            self.created = False
-
-        def new_shape(self) -> ImpossibleShape:
-            return ImpossibleShape()
-
-        def add_freetext_annot(self, *args: Any, **kwargs: Any) -> None:
-            self.created = True
-
-    page = ImpossiblePage()
-    with pytest.raises(ValueError, match="(?i)(fit|layout|font)"):
-        _add_fitted_textbox(page, fitz.Rect(50, 50, 150, 90), "A", (0.0, 0.0, 0.0))
-    assert not page.created, "invalid layout created a FreeText annotation"
+    with fitz.open() as document:
+        page = document.new_page(width=300, height=400)
+        with pytest.raises(ValueError, match="(?i)(fit|layout|font)"):
+            _add_fitted_textbox(page, fitz.Rect(50, 50, 50, 90), "A", (0.0, 0.0, 0.0))
+        assert not list(page.annots() or []), "invalid layout created a FreeText annotation"
