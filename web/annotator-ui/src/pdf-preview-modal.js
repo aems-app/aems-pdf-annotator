@@ -1553,6 +1553,34 @@
         );
     }
 
+    // Capture the issuing page before a request (or queued cleanup) can outlive
+    // its modal. Stored writes still complete when their UI epoch is stale.
+    function captureAnnotationMutation() {
+        const options = _activeModalState?.options;
+        const notify = options?.callbacks.onAnnotationsChanged;
+        const context = {
+            assignmentId: currentAssignmentId,
+            submissionId: currentSubmissionId,
+            courseId: options?.courseId,
+            mode: options?.mode || _resolveAnnotationAssignmentMode(),
+            offline: _isOfflineMode(),
+        };
+        return async (send) => {
+            const data = await send();
+            if (data?.success && notify) {
+                // Page refresh failures must not turn an acknowledged write into
+                // a failed save or cause callers to retry the stored mutation.
+                try {
+                    Promise.resolve(notify({ ...context, annotation: data.annotation, version: data.version }))
+                        .catch((error) => console.error('[pdf-preview-modal] Annotation completion callback failed', error));
+                } catch (error) {
+                    console.error('[pdf-preview-modal] Annotation completion callback failed', error);
+                }
+            }
+            return data;
+        };
+    }
+
     /**
      * Create a new annotation.
      * @param {Object} body - Raw annotation body (will be JSON-stringified by adapter)
@@ -1560,9 +1588,9 @@
      */
     async function createAnnotationRequest(body) {
         const epoch = currentHistoryEpoch();
-        const data = await _requireAnnotationAdapter().createAnnotation(currentAssignmentId, currentSubmissionId, body, {
+        const data = await captureAnnotationMutation()(() => _requireAnnotationAdapter().createAnnotation(currentAssignmentId, currentSubmissionId, body, {
             offline: _isOfflineMode()
-        });
+        }));
         if (data?.success && data.annotation && isCurrentHistoryEpoch(epoch)) {
             deletedAnnotationIdentities.delete(String(buildApiAnnotationIdentifier({
                 identifier: data.annotation.stable_id || data.annotation.id, canonicalStableId: data.annotation.stable_id ?? data.annotation.stableId, xref: data.annotation.xref,
@@ -1826,6 +1854,7 @@
     }
 
     function chainAnnotationWrite(writes, annotationId, epoch, send) {
+        const completeMutation = captureAnnotationMutation();
         const previous = writes.tail;
         const displayedEtag = findLocalAnnotation(annotationId)?.etag;
         const request = (async () => {
@@ -1834,7 +1863,7 @@
             if (deletedAnnotationIdentities.has(String(annotationId))) throw CANCELED_ANNOTATION_WRITE;
             const options = annotationWriteOptions(previous ? dataBefore?.annotation?.etag : displayedEtag,
                 _isOfflineMode(), Boolean(previous && displayedEtag));
-            const data = await send(options);
+            const data = await completeMutation(() => send(options));
             if (isCurrentHistoryEpoch(epoch)) rememberAnnotationEtag(annotationId, data);
             return data;
         })();
@@ -2063,9 +2092,10 @@
         const submissionId = currentSubmissionId;
         const offline = _isOfflineMode();
         const epoch = currentHistoryEpoch();
+        const completeMutation = captureAnnotationMutation();
         return async (id) => {
-            const data = await adapter.deleteAnnotation(assignmentId, submissionId, id,
-                annotationWriteOptions(annotation?.etag, offline, !annotation));
+            const data = await completeMutation(() => adapter.deleteAnnotation(assignmentId, submissionId, id,
+                annotationWriteOptions(annotation?.etag, offline, !annotation)));
             if (data?.success && isCurrentHistoryEpoch(epoch)) invalidateDeletedAnnotation(id);
             return data;
         };
@@ -10542,13 +10572,9 @@
             });
 
             // Wire annotation controller events to monolith functions
-            var _annCtrlCallbacks = state.options.callbacks || {};
             _currentAnnotationCtrl.onAnnotationsChanged(function (data) {
                 if (_currentOverlayRenderer && data?.renderOverlays !== false) {
                     _currentOverlayRenderer.renderAnnotations(data?.forceRender === true);
-                }
-                if (_annCtrlCallbacks.onAnnotationsChanged) {
-                    _annCtrlCallbacks.onAnnotationsChanged(data);
                 }
             });
 

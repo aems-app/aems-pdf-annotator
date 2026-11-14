@@ -189,6 +189,8 @@ describe('stored mutation completion notifications (L2b R2)', () => {
   ])('%s completes exactly once after close, with the issuing context', async (_name, body) => {
     const notify = vi.fn();
     const h = await openPackage({ callbacks: { onAnnotationsChanged: notify } });
+    h.fill('Persisted comment');
+    await h.key('Enter', { target: h.editor });
     notify.mockClear();
     let release;
     h.hostApi.updateAnnotation.mockImplementationOnce(async () => {
@@ -210,6 +212,8 @@ describe('stored mutation completion notifications (L2b R2)', () => {
     const notify = vi.fn();
     const nextNotify = vi.fn();
     const h = await openPackage({ callbacks: { onAnnotationsChanged: notify } });
+    h.fill('Persisted comment');
+    await h.key('Enter', { target: h.editor });
     notify.mockClear();
     let release;
     const delayed = async () => {
@@ -248,6 +252,8 @@ describe('stored mutation completion notifications (L2b R2)', () => {
   it.each(['refused', 'rejected'])('does not announce a %s write', async (kind) => {
     const notify = vi.fn();
     const h = await openPackage({ callbacks: { onAnnotationsChanged: notify } });
+    h.fill('Persisted comment');
+    await h.key('Enter', { target: h.editor });
     notify.mockClear();
     h.hostApi.updateAnnotation.mockImplementationOnce(async () => {
       if (kind === 'rejected') throw new Error('Synthetic failure');
@@ -256,6 +262,23 @@ describe('stored mutation completion notifications (L2b R2)', () => {
     await h.w.PdfPreviewModal.__test.updateAnnotationRequest('created-1', { content: 'Refused' }).catch(() => null);
     await settle(100);
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it.each(['throw', 'reject', 'pending'])('a %s page refresh cannot change a stored acknowledgement', async (kind) => {
+    const notify = vi.fn();
+    const h = await openPackage({ callbacks: { onAnnotationsChanged: notify } });
+    h.fill('Persisted comment');
+    await h.key('Enter', { target: h.editor });
+    notify.mockClear();
+    notify.mockImplementation(() => {
+      if (kind === 'throw') throw new Error('Synthetic page refresh failure');
+      if (kind === 'reject') return Promise.reject(new Error('Synthetic page refresh rejection'));
+      return new Promise(() => {});
+    });
+    const result = await h.w.PdfPreviewModal.__test.updateAnnotationRequest('created-1', { content: 'Stored' });
+    expect(result.success).toBe(true);
+    expect(h.stored.get('created-1').content).toBe('Stored');
+    expect(notify).toHaveBeenCalledTimes(1);
   });
 });
 
