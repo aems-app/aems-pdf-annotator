@@ -9,12 +9,15 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const orderedSources = readFileSync(join(root, 'rollup.config.js'), 'utf8')
   .match(/const orderedSources = \[([\s\S]*?)\];/)[1]
   .match(/'[^']+'/g).map((quoted) => quoted.slice(1, -1));
-const source = orderedSources.map((file) => readFileSync(join(root, 'src', file), 'utf8')).join('\n\n');
+const source = orderedSources.map((file) => readFileSync(join(root, 'src', file), 'utf8')).join('\n\n')
+  .replace('window.PdfPreviewModal.__test = {', `window.PdfPreviewModal.__test = {
+    createAnnotationRequest, updateAnnotationRequest, deleteAnnotationRequest,
+    revertAnnotationToAiRequest, captureDraftDeleteRequest,`);
 const opened = [];
 afterEach(() => opened.splice(0).forEach((dom) => dom.window.close()));
 const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function openPackage({ pendingCreate = false, createFailure = false } = {}) {
+async function openPackage({ pendingCreate = false, createFailure = false, callbacks = {} } = {}) {
   const dom = new JSDOM(`<!doctype html><body>
     <div id="pdfPreviewModal"><div id="pdfPreviewStudent"></div>
     <div id="pdfOriginalPane"></div><div id="pdfGradedPane"></div>
@@ -114,7 +117,7 @@ async function openPackage({ pendingCreate = false, createFailure = false } = {}
   };
   const modal = w.AEMSPdfAnnotator.createAnnotatorModal({
     context: { assignmentId: 10, submissionId: 1, mode: 'local', annotatedPdfPolicy: 'local_required' },
-    hostApi,
+    hostApi, callbacks,
   });
   await modal.open();
   await vi.waitFor(() => expect(w.document.querySelector('.pdf-annotation-overlay')?._dblclickHandler).toBeTypeOf('function'));
@@ -174,6 +177,110 @@ async function openPackage({ pendingCreate = false, createFailure = false } = {}
 
 // POST has no target id; PUT and DELETE must always address a currently live id.
 const requestSequence = (h) => h.writes.map(([method, id]) => [method, method === 'POST' ? null : id]);
+
+describe('stored mutation completion notifications (L2b R2)', () => {
+  it.each([
+    ['inline', { content: 'Teacher edit' }],
+    ['drag', { rect: [20, 30, 40, 50] }],
+    ['drawing', { ink_list: [[20, 30, 40, 50]] }],
+    ['highlight', { quads: [[20, 30, 40, 30, 20, 40, 40, 40]] }],
+    ['undo', { content: 'Earlier content', source: 'AI' }],
+    ['redo', { content: 'Teacher edit again' }],
+  ])('%s completes exactly once after close, with the issuing context', async (_name, body) => {
+    const notify = vi.fn();
+    const h = await openPackage({ callbacks: { onAnnotationsChanged: notify } });
+    h.fill('Persisted comment');
+    await h.key('Enter', { target: h.editor });
+    notify.mockClear();
+    let release;
+    h.hostApi.updateAnnotation.mockImplementationOnce(async () => {
+      await new Promise((resolve) => { release = resolve; });
+      return { success: true, annotation: { ...h.stored.get('created-1'), ...body } };
+    });
+    const request = h.w.PdfPreviewModal.__test.updateAnnotationRequest('created-1', body);
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    expect(notify).not.toHaveBeenCalled();
+    h.modal.close();
+    release();
+    await request;
+    await settle(100);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0][0]).toMatchObject({ assignmentId: 10, submissionId: 1, mode: 'local', offline: false });
+  });
+
+  it.each(['create', 'delete', 'restore', 'draft-delete'])('%s completion belongs to the old document after a switch', async (kind) => {
+    const notify = vi.fn();
+    const nextNotify = vi.fn();
+    const h = await openPackage({ callbacks: { onAnnotationsChanged: notify } });
+    h.fill('Persisted comment');
+    await h.key('Enter', { target: h.editor });
+    notify.mockClear();
+    let release;
+    const delayed = async () => {
+      await new Promise((resolve) => { release = resolve; });
+      return { success: true, annotation: { ...h.stored.get('created-1'), source: 'AI' } };
+    };
+    const hooks = h.w.PdfPreviewModal.__test;
+    let request;
+    if (kind === 'create') {
+      h.hostApi.createAnnotation.mockImplementationOnce(delayed);
+      request = hooks.createAnnotationRequest({ type: 'Ink' });
+    } else if (kind === 'restore') {
+      h.hostApi.revertAnnotationToAi = delayed;
+      request = hooks.revertAnnotationToAiRequest('created-1');
+    } else {
+      h.hostApi.deleteAnnotation.mockImplementationOnce(delayed);
+      request = kind === 'delete' ? hooks.deleteAnnotationRequest('created-1')
+        : hooks.captureDraftDeleteRequest(h.stored.get('created-1'))('created-1');
+    }
+    // Attach a handler before switching: a stale UI step may reject after a stored success.
+    const outcome = request.catch(() => null);
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    h.modal.close();
+    h.w.AEMSPdfAnnotator.createAnnotatorModal({
+      context: { assignmentId: 20, submissionId: 2, mode: 'offline' },
+      hostApi: h.hostApi, callbacks: { onAnnotationsChanged: nextNotify },
+    });
+    release();
+    await outcome;
+    await settle(100);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(nextNotify).not.toHaveBeenCalled();
+    expect(notify.mock.calls[0][0]).toMatchObject({ assignmentId: 10, submissionId: 1, offline: false });
+  });
+
+  it.each(['refused', 'rejected'])('does not announce a %s write', async (kind) => {
+    const notify = vi.fn();
+    const h = await openPackage({ callbacks: { onAnnotationsChanged: notify } });
+    h.fill('Persisted comment');
+    await h.key('Enter', { target: h.editor });
+    notify.mockClear();
+    h.hostApi.updateAnnotation.mockImplementationOnce(async () => {
+      if (kind === 'rejected') throw new Error('Synthetic failure');
+      return { success: false };
+    });
+    await h.w.PdfPreviewModal.__test.updateAnnotationRequest('created-1', { content: 'Refused' }).catch(() => null);
+    await settle(100);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it.each(['throw', 'reject', 'pending'])('a %s page refresh cannot change a stored acknowledgement', async (kind) => {
+    const notify = vi.fn();
+    const h = await openPackage({ callbacks: { onAnnotationsChanged: notify } });
+    h.fill('Persisted comment');
+    await h.key('Enter', { target: h.editor });
+    notify.mockClear();
+    notify.mockImplementation(() => {
+      if (kind === 'throw') throw new Error('Synthetic page refresh failure');
+      if (kind === 'reject') return Promise.reject(new Error('Synthetic page refresh rejection'));
+      return new Promise(() => {});
+    });
+    const result = await h.w.PdfPreviewModal.__test.updateAnnotationRequest('created-1', { content: 'Stored' });
+    expect(result.success).toBe(true);
+    expect(h.stored.get('created-1').content).toBe('Stored');
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('page double-click and first comment commit through the package entry', () => {
   it.each(['inline', 'sidebar'])('saves %s text exactly once when editing starts before POST resolves', async (path) => {
