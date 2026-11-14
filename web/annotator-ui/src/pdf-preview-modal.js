@@ -1557,7 +1557,7 @@
     // its modal. Stored writes still complete when their UI epoch is stale.
     function captureAnnotationMutation() {
         const options = _activeModalState?.options;
-        const notify = options?.callbacks.onAnnotationsChanged;
+        const notify = options?.callbacks?.onAnnotationsChanged;
         const context = {
             assignmentId: currentAssignmentId,
             submissionId: currentSubmissionId,
