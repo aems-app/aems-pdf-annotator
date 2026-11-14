@@ -2,7 +2,6 @@
 
 import re
 
-import numpy as np
 import pytest
 
 from aems_pdf_annotator._fitz import fitz
@@ -51,13 +50,16 @@ def test_identical_unclipped_glyph_commands_have_no_ink_outside_box(
         # removing only clipping. Expose strokes the saved PDF would hide.
         doc.update_stream(xref, re.sub(rb"\bW\*?\s+n\b", b"n", before))
         pix = page.get_pixmap(matrix=fitz.Matrix(8, 8), clip=fitz.Rect(30, 30, 180, 92))
-        pixels = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
-            pix.height, pix.width, pix.n
-        )
-        dark = pixels[:, :, :3].min(axis=2) < 200
-        outside = dark.copy()
-        outside[160:336, 160:1040] = False
-        assert not outside.any(), "Unclipped control exposes lost glyph strokes"
+        assert pix.n == 3
+        samples = pix.samples
+        stride = pix.width * pix.n
+        outside = [samples[: 160 * stride], samples[336 * stride :]]
+        for y in range(160, 336):
+            row = samples[y * stride : (y + 1) * stride]
+            outside.extend((row[: 160 * pix.n], row[1040 * pix.n :]))
+        assert all(
+            min(part, default=255) >= 200 for part in outside
+        ), "Unclipped control exposes lost glyph strokes"
 
 
 def test_complete_external_absolute_appearance_is_preserved() -> None:
