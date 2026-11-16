@@ -427,11 +427,82 @@ describe('own markup editing with real pointer and click sequences', () => {
     expect(marker.style.zIndex).toBe('10');
   });
 
+  it('293d: a markup drag ending over the same textbox keeps selection after the click', async () => {
+    const entry = boxes.getPageTextboxes(0)[0];
+    click(entry.element);
+    const overlay = d.querySelector('.markup-selection-overlay');
+    pointer(overlay, 'pointerdown');
+    pointer(overlay, 'pointermove', 100, 115);
+    pointer(overlay, 'pointerup', 100, 115);
+    expect(selection.hasSelection()).toBe(true);
+    overlay.dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true, clientX: 100, clientY: 115 }));
+    expect(selection.hasSelection(), 'the synthesized click must not open the editor').toBe(true);
+    await settle();
+    const liveEntry = boxes.getPageTextboxes(0)[0];
+    expect(selection.getSelected()?.entry === liveEntry).toBe(true);
+    expect(liveEntry.element.classList.contains('selected')).toBe(true);
+    expect(liveEntry.element.classList.contains('editing')).toBe(false);
+    click(d.querySelector('.markup-selection-delete'));
+    await settle();
+    expect(adapter.deleteAnnotation).toHaveBeenCalledTimes(1);
+    expect(boxes.getPageTextboxes(0)).toHaveLength(0);
+  });
+
+  it('293d: a textbox refresh leaves a stroke selection intact', () => {
+    const stroke = { annotationId: 'stroke-fixture', points: [{ x: 20, y: 20 }, { x: 40, y: 40 }] };
+    w.PdfPreviewModalDrawingCanvas.getStrokeBounds = () => ({ minX: 20, minY: 20, maxX: 40, maxY: 40 });
+    selection.select('stroke', stroke, 0, wrapper);
+    helpers.refreshMarkupFromAnnotations();
+    expect(selection.getSelected()?.entry === stroke).toBe(true);
+    expect(d.querySelector('.markup-selection-delete')?.isConnected).toBe(true);
+  });
+
+  it('293d: refreshing a removed selected textbox clears its overlay', () => {
+    selection.select('textbox', boxes.getPageTextboxes(0)[0], 0, wrapper);
+    annotations()[0].splice(0);
+    helpers.refreshMarkupFromAnnotations();
+    expect(selection.hasSelection()).toBe(false);
+    expect(d.querySelector('.markup-selection-overlay')).toBeNull();
+  });
+
+  it('FIX6: textbox refresh during a captured review drag saves the final rect', async () => {
+    d.querySelector('.js-toggle-markup').click();
+    const entry = boxes.getPageTextboxes(0)[0];
+    pointer(entry.element, 'pointerdown');
+    const overlay = d.querySelector('.markup-selection-overlay');
+    pointer(overlay, 'pointermove', 110, 130);
+    helpers.refreshMarkupFromAnnotations();
+    expect.soft(overlay.isConnected).toBe(true);
+    expect.soft(boxes.getPageTextboxes(0)[0] === entry).toBe(true);
+    pointer(overlay, 'pointermove', 130, 150);
+    pointer(overlay, 'pointerup', 130, 150);
+    await settle();
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    expect(adapter.updateAnnotation.mock.calls[0][3].rect.slice(0, 2)).toEqual([120, 140]);
+    expect(selection.getSelected()?.entry === boxes.getPageTextboxes(0)[0]).toBe(true);
+  });
+
+  it('FIX6: persistence timeout rebinds selection to the live textbox', () => {
+    selection.select('textbox', boxes.getPageTextboxes(0)[0], 0, wrapper);
+    helpers.setPendingDrawingSaves(1);
+    // Drive the real bounded retry path synchronously; no source-only shortcut.
+    const retries = [];
+    w.setTimeout = callback => { retries.push(callback); return retries.length; };
+    helpers.refreshMarkupFromAnnotations();
+    for (let count = 0; retries.length && count < 200; count++) retries.shift()();
+    expect(helpers.getMarkupRefreshState().retryArmed).toBe(false);
+    const live = boxes.getPageTextboxes(0)[0];
+    expect.soft(selection.getSelected()?.entry === live).toBe(true);
+    expect.soft(live.element.classList.contains('selected')).toBe(true);
+    expect(d.querySelector('.markup-selection-delete')?.isConnected).toBe(true);
+  });
+
   // Luca 2026-11-08 (item a): a teacher text box is dragged in normal review mode like the
   // other comments, without reopening the markup tool first.
   describe('241a: dragging a teacher text box in normal review mode', () => {
     beforeEach(() => {
       d.querySelector('.js-toggle-markup').click();
+      selection.init(); // The real modal initializes keyboard handling on show.
     });
 
     function drag(target, toX, toY, fromX = 90, fromY = 110) {
@@ -451,18 +522,63 @@ describe('own markup editing with real pointer and click sequences', () => {
       expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
       expect(adapter.updateAnnotation.mock.calls[0][3].rect.slice(0, 2)).toEqual([100, 120]);
       expect(annotations()[0][0].rect[0]).toBe(100);
-      expect(boxes.getPageTextboxes(0)[0].element.classList.contains('editing')).toBe(false);
-      expect(d.querySelector('.markup-selection-overlay')).toBeNull();
+      const liveEntry = boxes.getPageTextboxes(0)[0];
+      expect(liveEntry.element.classList.contains('editing')).toBe(false);
+      expect(selection.getSelected()?.entry === liveEntry).toBe(true);
+      expect(liveEntry.element.classList.contains('selected')).toBe(true);
+      expect(d.querySelector('.markup-selection-delete')?.isConnected).toBe(true);
     });
 
-    it('a stationary click neither saves nor opens the editor', async () => {
+    it('a stationary click keeps selection without saving or opening the editor', async () => {
       const entry = boxes.getPageTextboxes(0)[0];
       // The browser routes the captured pointer's release to the selection overlay.
       drag(entry.element, 90, 110);
       await settle();
       expect(adapter.updateAnnotation).not.toHaveBeenCalled();
       expect(entry.element.classList.contains('editing')).toBe(false);
+      expect(selection.getSelected()?.entry === entry).toBe(true);
+      expect(entry.element.classList.contains('selected')).toBe(true);
+      expect(d.querySelector('.markup-selection-delete')?.isConnected).toBe(true);
+    });
+
+    it.each([false, true])('293d: release retains the box and X, which deletes (drag=%s)', async moved => {
+      const entry = boxes.getPageTextboxes(0)[0];
+      pointer(entry.element, 'pointerdown');
+      const overlay = d.querySelector('.markup-selection-overlay');
+      expect(selection.getSelected()?.entry === entry).toBe(true);
+      if (moved) pointer(overlay, 'pointermove', 110, 130);
+      pointer(overlay, 'pointerup', moved ? 110 : 90, moved ? 130 : 110);
+      expect(selection.hasSelection(), 'pointerup must retain selection').toBe(true);
+      expect(overlay.isConnected).toBe(true);
+      overlay.dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true,
+        clientX: moved ? 110 : 90, clientY: moved ? 130 : 110 }));
+      await settle();
+      const liveEntry = boxes.getPageTextboxes(0)[0];
+      expect(selection.getSelected()?.entry === liveEntry).toBe(true);
+      expect(liveEntry.element.classList.contains('selected')).toBe(true);
+      click(d.querySelector('.markup-selection-overlay'));
+      expect(selection.hasSelection(), 'another click on the review selection keeps the X').toBe(true);
+      const deleteButton = d.querySelector('.markup-selection-delete');
+      expect(deleteButton?.isConnected).toBe(true);
+      click(deleteButton);
+      await settle();
+      expect(adapter.deleteAnnotation).toHaveBeenCalledTimes(1);
+      expect(adapter.deleteAnnotation.mock.calls[0][2]).toBe('own-text');
+      expect(boxes.getPageTextboxes(0)).toHaveLength(0);
+      expect(annotations()[0] || []).toHaveLength(0);
+      expect(selection.hasSelection()).toBe(false);
       expect(d.querySelector('.markup-selection-overlay')).toBeNull();
+    });
+
+    it.each(['outside', 'sidebar', 'Escape'])('293d: selection clears on %s', async action => {
+      drag(boxes.getPageTextboxes(0)[0].element, 90, 110);
+      expect(selection.hasSelection()).toBe(true);
+      if (action === 'outside') click(wrapper, 400, 500);
+      else if (action === 'sidebar') click(d.querySelector('#pdfGradedCommentsList'));
+      else d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      expect(selection.hasSelection()).toBe(false);
+      expect(d.querySelector('.markup-selection-overlay')).toBeNull();
+      expect(adapter.deleteAnnotation).not.toHaveBeenCalled();
     });
 
     it('a cancelled drag puts the box back, clears the selection and saves nothing', async () => {

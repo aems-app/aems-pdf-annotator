@@ -32,6 +32,9 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
     /** @type {{x: number, y: number}|null} */
     var dragStart = null;
 
+    /** Latest repaint requested while a pointer is captured. */
+    var deferredRefresh = null;
+
     /** @type {HTMLElement|null} */
     var dragPageWrapper = null;
 
@@ -74,6 +77,9 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
     /** @type {Function|null} Called when a move operation completes */
     exports.onMoveCompleted = null;
 
+    /** @type {Function|null} Called when markup takes the modal selection. */
+    exports.onSelected = null;
+
     // =========================================================================
     // Keyboard Handler (bound reference for cleanup)
     // =========================================================================
@@ -92,6 +98,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         if (boundKeydownHandler) return;
         boundKeydownHandler = handleKeydown;
         document.addEventListener('keydown', boundKeydownHandler);
+        document.addEventListener('pointerdown', onOutsidePointerDown);
     };
 
     // =========================================================================
@@ -112,6 +119,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 
         selectedItem = { type: type, entry: entry, pageIdx: pageIdx };
         dragPageWrapper = pageWrapper;
+        if (exports.onSelected) exports.onSelected(selectedItem);
 
         // For textbox: add .selected class to the element
         if (type === 'textbox' && entry.element) {
@@ -121,6 +129,28 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         // Create and position the selection overlay
         createSelectionOverlay(type, entry, pageWrapper);
     };
+
+    /** Rebind an existing selection after its data/DOM entry is reloaded. */
+    exports.refreshSelected = function refreshSelected(entry, pageWrapper) {
+        if (!selectedItem) return;
+        if (exports.deferRefresh(function () { exports.refreshSelected(entry, pageWrapper); })) return;
+        var editsTextbox = clickEditsTextbox;
+        exports.select(selectedItem.type, entry, selectedItem.pageIdx, pageWrapper);
+        clickEditsTextbox = editsTextbox;
+    };
+
+    /** Keep the captured overlay and its underlying entry alive until release. */
+    exports.deferRefresh = function deferRefresh(refresh) {
+        if (!dragStart) return false;
+        deferredRefresh = refresh;
+        return true;
+    };
+
+    function flushDeferredRefresh() {
+        var refresh = deferredRefresh;
+        deferredRefresh = null;
+        if (refresh) refresh();
+    }
 
     /**
      * Deselect the current selection.
@@ -143,6 +173,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         isDragging = false;
         clickEditsTextbox = true;
         dragStart = null;
+        deferredRefresh = null;
         cachedPageRects = [];
         dragSourcePageIdx = null;
         dragTargetPageIdx = null;
@@ -193,7 +224,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
      * Select a markup item and begin dragging it from this pointer press, for
      * review mode outside the markup tool. Movement past the click threshold
      * moves the item and reports onMoveCompleted, like a markup-mode drag; a
-     * press without movement only clears the selection again.
+     * press without movement keeps the selection and its delete button visible.
      *
      * @param {'stroke'|'textbox'} type - The type of markup item
      * @param {Object} entry - The data entry for the item
@@ -258,6 +289,10 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         layer.appendChild(overlay);
 
         selectionOverlay = overlay;
+
+        // The click synthesized after pointerup belongs to this selection,
+        // not the page's select/edit handler underneath it.
+        overlay.addEventListener('click', function (e) { e.stopPropagation(); });
 
         // Attach drag handlers to overlay
         attachDragHandlers(overlay);
@@ -512,7 +547,9 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
             moveSelectedItem(-appliedDrag.dx, -appliedDrag.dy);
         }
         appliedDrag = { dx: 0, dy: 0 };
+        var refresh = deferredRefresh;
         exports.deselect();
+        if (refresh) refresh();
     }
 
     /**
@@ -572,8 +609,6 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 
         var clickedTextbox = !isDragging && clickEditsTextbox && selectedItem && selectedItem.type === 'textbox'
             ? selectedItem.entry : null;
-        var reviewModeDrag = !clickEditsTextbox;
-        clickEditsTextbox = true;
         isDragging = false;
         dragStart = null;
         cachedPageRects = [];
@@ -591,21 +626,22 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
             // the caret inside the contenteditable textbox.
             exports.deselect();
             window.PdfPreviewModalTextbox.editTextbox(clickedTextbox);
-        } else if (reviewModeDrag) {
-            // Outside the markup tool a selection has no further use.
-            exports.deselect();
         }
+        flushDeferredRefresh();
     }
 
     // =========================================================================
     // Keyboard Handling
     // =========================================================================
 
-    /**
-     * Handle keydown events for selection shortcuts.
-     *
-     * @param {KeyboardEvent} e
-     */
+    /** Clear selection when a pointer press begins elsewhere in the document. */
+    function onOutsidePointerDown(e) {
+        if (!selectedItem || (selectionOverlay && selectionOverlay.contains(e.target))) return;
+        if (selectedItem.type === 'textbox' && selectedItem.entry.element.contains(e.target)) return;
+        exports.deselect();
+    }
+
+    /** Handle keyboard selection shortcuts without intercepting text editing. */
     function handleKeydown(e) {
         // Don't intercept when typing in inputs
         var tag = e.target.tagName;
@@ -637,6 +673,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 
         if (boundKeydownHandler) {
             document.removeEventListener('keydown', boundKeydownHandler);
+            document.removeEventListener('pointerdown', onOutsidePointerDown);
             boundKeydownHandler = null;
         }
 

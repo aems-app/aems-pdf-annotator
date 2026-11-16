@@ -542,6 +542,8 @@
     function buildDisplayOrderByPagePosition(pageAnnotations) {
         const ordered = (pageAnnotations || [])
             .filter((ann) => {
+                const column = window.PdfPreviewModalSidebarPanel;
+                if (column && !column.shouldDisplayAnnotation(ann, true)) return false;
                 if (isMarkupAnnotation(ann) && !String(ann.content || '').trim()) {
                     return false;
                 }
@@ -4608,6 +4610,9 @@
         }
 
         if (MarkupSelection) {
+            MarkupSelection.onSelected = function () {
+                highlightAnnotationSelection(null, null, { focusListItem: false });
+            };
             MarkupSelection.onDeleteRequested = function () {
                 var requestEpoch = currentHistoryEpoch();
                 var item = MarkupSelection.deleteSelected();
@@ -6111,10 +6116,24 @@
      * because reloading it would discard a stroke whose save has not landed.
      */
     function refreshTextboxesOnly() {
+        if (MarkupSelection && MarkupSelection.deferRefresh(refreshTextboxesOnly)) return;
         var wrappers = getMarkupPageWrappers();
         if (TextboxModule) {
             TextboxModule.loadTextboxesFromAnnotations(
                 projectTextboxAnnotationsForDom(), wrappers);
+            // Reloading replaces textbox DOM entries. Both normal and timeout
+            // refreshes must attach the selection to the new live entry.
+            var selected = MarkupSelection && MarkupSelection.getSelected();
+            if (selected && selected.type === 'textbox') {
+                var liveEntry = TextboxModule.getPageTextboxes(selected.pageIdx).find(function (entry) {
+                    return entry.annotationId === selected.entry.annotationId;
+                });
+                if (liveEntry && wrappers[selected.pageIdx]) {
+                    MarkupSelection.refreshSelected(liveEntry, wrappers[selected.pageIdx]);
+                } else {
+                    MarkupSelection.deselect();
+                }
+            }
         }
     }
 
@@ -6182,9 +6201,7 @@
             });
         }
 
-        if (TextboxModule) {
-            TextboxModule.loadTextboxesFromAnnotations(projectTextboxAnnotationsForDom(), wrappers);
-        }
+        refreshTextboxesOnly();
         if (_currentAnnotationCtrl) _scheduleAnnotationsListRender();
     }
 
@@ -6372,12 +6389,13 @@
             return _currentAnnotationCtrl.selectAnnotation(identifierValue, pageIdx, { focusListItem });
         }
         const stableId = normalizeAnnotationIdentifierValue(identifierValue);
-        if (stableId === null || Number.isNaN(pageIdx)) {
+        if (Number.isNaN(pageIdx)) {
             return;
         }
 
         // FIX Issue #27: Store the selected annotation to preserve after scroll/re-render
         selectedAnnotation = { pageIdx: pageIdx, identifier: stableId };
+        if (stableId !== null && MarkupSelection) MarkupSelection.deselect();
 
         // Highlight markers on the PDF
         document.querySelectorAll('.annotation-marker').forEach(marker => {
@@ -9826,6 +9844,15 @@
                 return;
             }
 
+            // A selected review markup consumes Escape before modal/fullscreen
+            // handlers, including other listeners on document capture.
+            if (MarkupSelection && MarkupSelection.hasSelection()) {
+                MarkupSelection.deselect();
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                return;
+            }
+
             // Case 2: Exit markup mode before fullscreen handling.
             if (markupModeActive) {
                 e.preventDefault();
@@ -10499,7 +10526,10 @@
                 getEditingAnnotationId: function () { return editingAnnotationId; },
                 setEditingAnnotationId: function (id) { editingAnnotationId = id; },
                 getSelectedAnnotation: function () { return selectedAnnotation; },
-                setSelectedAnnotation: function (sel) { selectedAnnotation = sel; },
+                setSelectedAnnotation: function (sel) {
+                    selectedAnnotation = sel;
+                    if (sel.identifier !== null && MarkupSelection) MarkupSelection.deselect();
+                },
                 getSplitPanelActive: function () { return splitPanelActive; },
                 getPreviewFullscreenActive: function () { return previewFullscreenActive; },
                 isDrawingFn: isDrawingPersistenceActive,

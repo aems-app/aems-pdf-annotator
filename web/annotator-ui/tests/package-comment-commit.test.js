@@ -17,9 +17,10 @@ const opened = [];
 afterEach(() => opened.splice(0).forEach((dom) => dom.window.close()));
 const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function openPackage({ pendingCreate = false, createFailure = false, callbacks = {} } = {}) {
+async function openPackage({ pendingCreate = false, createFailure = false, callbacks = {}, commentTool = false } = {}) {
   const dom = new JSDOM(`<!doctype html><body>
     <div id="pdfPreviewModal"><div id="pdfPreviewStudent"></div>
+    <button class="js-toggle-markup"></button>
     <div id="pdfOriginalPane"></div><div id="pdfGradedPane"></div>
     <button id="pdfOriginalTab"></button><button id="pdfGradedTab"></button>
     <div id="pdfGradedCommentsList"></div><div id="pdfGradedAICommentsList"></div>
@@ -30,7 +31,7 @@ async function openPackage({ pendingCreate = false, createFailure = false, callb
   const instances = new WeakMap();
   w.bootstrap = { Modal: class {
     constructor(el) { this.el = el; instances.set(el, this); }
-    show() { this.el.classList.add('show'); this.el.dispatchEvent(new w.Event('shown.bs.modal')); }
+    show() { this.el.dispatchEvent(new w.Event('show.bs.modal')); this.el.classList.add('show'); this.el.dispatchEvent(new w.Event('shown.bs.modal')); }
     hide() { this.el.classList.remove('show'); this.el.dispatchEvent(new w.Event('hidden.bs.modal')); }
     static getInstance(el) { return instances.get(el); }
   } };
@@ -124,7 +125,11 @@ async function openPackage({ pendingCreate = false, createFailure = false, callb
   await vi.waitFor(() => expect(hostApi.listAnnotations).toHaveBeenCalled());
   await settle(100);
   const overlay = w.document.querySelector('.pdf-annotation-overlay');
-  overlay.dispatchEvent(new w.MouseEvent('dblclick', { bubbles: true, clientX: 200, clientY: 200 }));
+  if (commentTool) {
+    w.document.querySelector('.js-toggle-markup').click();
+    w.document.querySelector('[data-tool="comment"]').click();
+  }
+  overlay.dispatchEvent(new w.MouseEvent(commentTool ? 'click' : 'dblclick', { bubbles: true, clientX: 200, clientY: 200 }));
   await vi.waitFor(() => expect(w.document.querySelector('.inline-annotation-editor')).not.toBeNull());
   const originalEditor = w.document.querySelector('.inline-annotation-editor');
   // Ensure the optimistic editor was opened before the POST response, as on a
@@ -177,6 +182,17 @@ async function openPackage({ pendingCreate = false, createFailure = false, callb
 
 // POST has no target id; PUT and DELETE must always address a currently live id.
 const requestSequence = (h) => h.writes.map(([method, id]) => [method, method === 'POST' ? null : id]);
+
+it('the Comment button uses the same pin POST and inline editor as page double-click', async () => {
+  const doubleClick = await openPackage();
+  const singleClick = await openPackage({ commentTool: true });
+  expect(singleClick.hostApi.createAnnotation.mock.calls[0]).toEqual(doubleClick.hostApi.createAnnotation.mock.calls[0]);
+  expect(singleClick.writes[0][1]).toMatchObject({ kind: 'text', page_index: 0 });
+  singleClick.fill('Check units');
+  await singleClick.key('Enter', { target: singleClick.editor });
+  await vi.waitFor(() => expect(singleClick.hostApi.updateAnnotation).toHaveBeenCalled());
+  expect([...singleClick.stored.values()][0]).toMatchObject({ type: 'Text', content: 'Check units', source: 'HUMAN' });
+});
 
 describe('stored mutation completion notifications (L2b R2)', () => {
   it.each([

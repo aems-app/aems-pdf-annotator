@@ -129,6 +129,8 @@ async function createUndoHarness({
     adapter,
     clickMarker: (data) => markerClickHandlers.forEach((handler) => handler(data)),
     getAnnotationsData: () => controllerOptions.getAnnotationsData(),
+    highlightSelection: modalHelpers.highlightAnnotationSelection,
+    getSelectedAnnotation: controllerOptions.getSelectedAnnotation,
     buildApiAnnotationIdentifier: modalHelpers.buildApiAnnotationIdentifier,
     unobserveAnnotationMarker: overlayHelpers?.unobserveAnnotationMarker,
     pushLocalUndo: modalHelpers.pushUndoOperation,
@@ -1403,10 +1405,11 @@ describe('pdf-preview-modal placement helpers', () => {
     expect(label.dataset.position).toBe('bottom-right');
   });
 
-  it('numbers text-bearing markup with comments and excludes empty drawings', async () => {
+  it('FIX7: numbers column comments and excludes text-bearing markup and empty drawings', async () => {
     window.PdfPreviewModalCrud = {
       isMarkupType: (type) => type === 'drawing' || type === 'textbox',
     };
+    await import('../src/pdf-preview-modal/sidebar-panel.js');
     const { buildDisplayOrderByPagePosition } = await loadPlacementHelpers();
 
     const lookup = buildDisplayOrderByPagePosition([
@@ -1417,9 +1420,29 @@ describe('pdf-preview-modal placement helpers', () => {
     ]);
 
     expect(lookup.get('ann-1')).toBe(1);
-    expect(lookup.get('ann-2')).toBe(3);
+    expect(lookup.get('ann-2')).toBe(2);
     expect(lookup.has('draw-1')).toBe(false);
-    expect(lookup.get('box-1')).toBe(2);
+    expect(lookup.has('box-1')).toBe(false);
+  });
+
+  it.each([false, true])('FIX7: fallback pin selection and clearing work with markup module=%s', async markupAvailable => {
+    const deselect = vi.fn();
+    if (markupAvailable) window.PdfPreviewModalMarkupSelection = { deselect };
+    else delete window.PdfPreviewModalMarkupSelection;
+    const h = await createUndoHarness();
+    const { marker } = createMarker();
+    marker.dataset.annotationRequestId = 'pin';
+    h.highlightSelection(0, 'pin');
+    expect(marker.classList.contains('annotation-marker-selected')).toBe(true);
+    expect(deselect).toHaveBeenCalledTimes(markupAvailable ? 1 : 0);
+    h.highlightSelection(NaN, 'pin');
+    expect(marker.classList.contains('annotation-marker-selected')).toBe(true);
+    h.highlightSelection(null, null, { focusListItem: false });
+    expect(marker.classList.contains('annotation-marker-selected')).toBe(false);
+    expect(h.getSelectedAnnotation()).toEqual({ pageIdx: null, identifier: null });
+    expect(deselect).toHaveBeenCalledTimes(markupAvailable ? 1 : 0);
+    h.handle.destroy();
+    delete window.PdfPreviewModalMarkupSelection;
   });
 
   it('keeps bare numeric stable-only identifiers stable in the monolith fallback', async () => {
@@ -2087,7 +2110,7 @@ describe('pdf-preview-modal placement helpers', () => {
 
     // A selected pen stroke; deleteStroke() presses the Delete key.
     async function strokeSelected() {
-      const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
+      const selection = { deleteSelected: vi.fn(), getSelected: vi.fn(() => null), deferRefresh: () => false, deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
       window.PdfPreviewModalMarkupSelection = selection;
       const createAnnotation = vi.fn(async (_assignment, _submission, body) => ({
         success: true, annotation: { ...body, stable_id: 'stroke-2', xref: 61, etag: 'fixture-stroke-2' },
@@ -2635,7 +2658,7 @@ describe('pdf-preview-modal placement helpers', () => {
     });
 
     async function numericIdentityHarness() {
-      const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
+      const selection = { deleteSelected: vi.fn(), getSelected: vi.fn(() => null), deferRefresh: () => false, deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
       window.PdfPreviewModalMarkupSelection = selection;
       const h = await splitHarness();
       const a = {
@@ -3460,7 +3483,7 @@ describe('pdf-preview-modal placement helpers', () => {
       // Keep the fake DOM surface, but use the real shared color contract.
       await import('../src/pdf-preview-modal/textbox.js');
       const resolveColorRgb = window.PdfPreviewModalTextbox.resolveColorRgb;
-      const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
+      const selection = { deleteSelected: vi.fn(), getSelected: vi.fn(() => null), deferRefresh: () => false, deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
       window.PdfPreviewModalMarkupSelection = selection;
       const canvas = {
         init: vi.fn(), destroy: vi.fn(), ensureCanvasForPage: vi.fn(), getActiveColor: vi.fn(),

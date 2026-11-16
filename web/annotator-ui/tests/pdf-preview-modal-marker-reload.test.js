@@ -24,7 +24,7 @@ describe('real modal marker reload after Restore', () => {
       if (key.startsWith('PdfPreviewModal') || key.startsWith('__pdf') || key === 'PDFViewer') delete window[key];
     }
     document.body.innerHTML = `
-      <div id="pdfPreviewModal"></div><div id="pdfPreviewStudent"></div>
+      <div id="pdfPreviewModal"><button id="pdfPreviewFullscreenToggle"></button></div><div id="pdfPreviewStudent"></div>
       <div id="pdfOriginalPane"></div><div id="pdfGradedPane"></div>
       <button id="pdfOriginalTab"></button><button id="pdfGradedTab"></button>
       <div id="pdfGradedCommentsList"></div><div id="pdfGradedAICommentsList"></div>
@@ -60,6 +60,8 @@ describe('real modal marker reload after Restore', () => {
     await import('../src/pdf-preview-modal/annotation-helpers.js');
     await import('../src/pdf-preview-modal/sidebar-panel.js');
     await import('../src/pdf-preview-modal/modal-state.js');
+    await import('../src/pdf-preview-modal/textbox.js');
+    await import('../src/pdf-preview-modal/markup-selection.js');
     await import('../src/pdf-preview-modal/rendering.js');
     await import('../src/pdf-preview-modal/overlay-renderer.js');
     await import('../src/pdf-preview-modal/annotation-controller.js');
@@ -158,6 +160,148 @@ describe('real modal marker reload after Restore', () => {
     expect.soft(list.querySelector('.source-human')).toBeNull();
     expect.soft(list.querySelector('.revert-annotation-to-ai'), 'can_revert_to_ai=false removes Restore').toBeNull();
   }
+
+  it('FIX7: only column comments consume numbers before and after reload/removal', async () => {
+    const { controller } = await open(0);
+    const pins = Array.from({ length: 5 }, (_, i) => ({
+      ...ai, id: `pin-${i}`, stable_id: `pin-${i}`, xref: 2000 + i,
+      rect: [100, 100 + i * 100, 116, 116 + i * 100],
+    }));
+    const markup = ['textbox', 'drawing', 'Ink', 'drawing'].map((type, i) => ({
+      ...ai, id: `markup-${i}`, stable_id: `markup-${i}`, xref: 3000 + i,
+      type, source: 'HUMAN', content: 'Teacher markup',
+      drawing_style: i === 3 ? 'highlighter' : 'pen', rect: [20, 20 + i, 40, 40 + i],
+    }));
+    let saved = [pins[0], ...markup, ...pins.slice(1)];
+    adapter.listAnnotations.mockImplementation(async () => ({ success: true, annotations: { 0: structuredClone(saved) } }));
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await controller.loadAnnotations();
+      await vi.advanceTimersByTimeAsync(600);
+      const rows = [...document.querySelectorAll('#pdfGradedCommentsList .list-group-item')];
+      expect.soft(rows.map(row => row.querySelector('.badge').textContent)).toEqual(['1.1', '1.2', '1.3', '1.4', '1.5']);
+      for (let i = 0; i < pins.length; i++) {
+        expect.soft(document.querySelector(`[data-annotation-stable-id="pin-${i}"].annotation-marker`)?.dataset.annotationNumber).toBe(`1.${i + 1}`);
+      }
+      if (cycle === 1) saved = pins;
+    }
+  });
+
+  it.each(['textbox', 'stroke'])('FIX7: selecting %s clears pin state and pin selection clears markup', async type => {
+    const { controller, options } = await open(0);
+    const marker = document.querySelector(markerSelector);
+    marker.click();
+    expect(marker.classList.contains('annotation-marker-selected')).toBe(true);
+    controller.selectAnnotation('invalid-page', NaN);
+    expect(marker.classList.contains('annotation-marker-selected')).toBe(true);
+    const wrapper = document.querySelector('.pdf-page-wrapper');
+    const element = document.createElement('div');
+    wrapper.append(element);
+    window.PdfPreviewModalDrawingCanvas = { getStrokeBounds: () => ({ minX: 10, minY: 10, maxX: 40, maxY: 40 }) };
+    const selection = window.PdfPreviewModalMarkupSelection;
+    selection.init();
+    const entry = { element, annotationId: 'markup', points: [{ x: 10, y: 10 }, { x: 40, y: 40 }] };
+    selection.select(type, entry, 0, wrapper);
+    expect.soft(marker.classList.contains('annotation-marker-selected')).toBe(false);
+    expect.soft(document.querySelector('.list-group-item.active')).toBeNull();
+    expect.soft(options.getSelectedAnnotation()).toEqual({ pageIdx: null, identifier: null });
+    // A repaint must not restore the old pin selection.
+    controller.renderList();
+    expect.soft(document.querySelector('.list-group-item.active')).toBeNull();
+    marker.click();
+    expect.soft(selection.hasSelection()).toBe(false);
+    expect.soft(document.querySelector('.markup-selection-overlay')).toBeNull();
+    expect(marker.classList.contains('annotation-marker-selected')).toBe(true);
+    selection.select(type, entry, 0, wrapper);
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect.soft(selection.hasSelection()).toBe(false);
+    expect.soft(document.querySelector('.annotation-marker-selected')).toBeNull();
+  });
+
+  it('FIX7: pin-only Escape retains production event behaviour', async () => {
+    await open(0);
+    const marker = document.querySelector(markerSelector);
+    marker.click();
+    const modalElement = document.getElementById('pdfPreviewModal');
+    const bootstrapClose = vi.fn();
+    modalElement.addEventListener('keydown', bootstrapClose);
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    modalElement.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(bootstrapClose).toHaveBeenCalledOnce();
+    expect(marker.classList.contains('annotation-marker-selected')).toBe(true);
+  });
+
+  it.each([false, true])('FIX6: review Escape only deselects (fullscreen=%s)', async fullscreen => {
+    await open(0);
+    const element = document.createElement('div');
+    const wrapper = document.querySelector('.pdf-page-wrapper');
+    wrapper.append(element);
+    const selection = window.PdfPreviewModalMarkupSelection;
+    selection.init();
+    selection.select('textbox', { annotationId: 'selected', element }, 0, wrapper);
+    if (fullscreen) document.getElementById('pdfPreviewFullscreenToggle').click();
+    const modalElement = document.getElementById('pdfPreviewModal');
+    expect(modalElement.classList.contains('preview-fullscreen')).toBe(fullscreen);
+    // Bootstrap listens below document capture. Observe the actual dispatched event,
+    // including later capture listeners that stopPropagation alone cannot block.
+    const bootstrapClose = vi.fn();
+    const laterCapture = vi.fn();
+    modalElement.addEventListener('keydown', bootstrapClose);
+    document.addEventListener('keydown', laterCapture, { capture: true, once: true });
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    modalElement.dispatchEvent(event);
+    expect.soft(selection.hasSelection()).toBe(false);
+    expect.soft(event.defaultPrevented).toBe(true);
+    expect.soft(bootstrapClose).not.toHaveBeenCalled();
+    expect.soft(laterCapture).not.toHaveBeenCalled();
+    expect(modalElement.classList.contains('preview-fullscreen')).toBe(fullscreen);
+    document.removeEventListener('keydown', laterCapture, true);
+    // Without selection the current normal/fullscreen behavior is preserved.
+    modalElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(bootstrapClose).toHaveBeenCalledTimes(fullscreen ? 0 : 1);
+  });
+
+  async function selectedTextbox() {
+    const { options } = await open(0);
+    options.setAnnotationsData({ 0: [{ ...ai, type: 'textbox', content: 'Check units' }] });
+    const helpers = window.PdfPreviewModal.__test;
+    helpers.refreshMarkupFromAnnotations();
+    const [entry] = window.PdfPreviewModalTextbox.getPageTextboxes(0);
+    const selection = window.PdfPreviewModalMarkupSelection;
+    selection.select('textbox', entry, 0, document.querySelector('.pdf-page-wrapper'));
+    return { options, helpers, selection, entry };
+  }
+
+  it('FIX6: modal reload deselects a removed textbox', async () => {
+    const { options, helpers, selection } = await selectedTextbox();
+    options.getAnnotationsData()[0].splice(0);
+    helpers.refreshMarkupFromAnnotations();
+    expect(selection.hasSelection()).toBe(false);
+    expect(document.querySelector('.markup-selection-overlay')).toBeNull();
+  });
+
+  it('FIX6: modal defers a textbox reload until its captured pointer is released', async () => {
+    const { helpers, selection, entry } = await selectedTextbox();
+    const overlay = document.querySelector('.markup-selection-overlay');
+    overlay.setPointerCapture = vi.fn();
+    overlay.releasePointerCapture = vi.fn();
+    const pointer = (type, x = 110, y = 200) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y });
+      Object.defineProperty(event, 'pointerId', { value: 7 });
+      overlay.dispatchEvent(event);
+    };
+    pointer('pointerdown');
+    pointer('pointermove', 130, 220);
+    helpers.refreshMarkupFromAnnotations();
+    expect(overlay.isConnected).toBe(true);
+    expect(window.PdfPreviewModalTextbox.getPageTextboxes(0)[0]).toBe(entry);
+    pointer('pointerup', 130, 220);
+    await vi.advanceTimersByTimeAsync(600);
+    const live = window.PdfPreviewModalTextbox.getPageTextboxes(0)[0];
+    expect(live).not.toBe(entry);
+    expect(selection.getSelected()?.entry).toBe(live);
+    expect(overlay.releasePointerCapture).toHaveBeenCalledWith(7);
+  });
 
   it.each([0, 2])('Restore repaints a HUMAN-moved marker and card after %i reopens', async (cycles) => {
     const { options } = await open(cycles);

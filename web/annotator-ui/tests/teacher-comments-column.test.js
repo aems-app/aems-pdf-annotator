@@ -21,7 +21,7 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-it.each([false, true])('retains teacher notes and text boxes after an authoritative reload (split=%s)', async split => {
+it.each([false, true])('retains only teacher pins after an authoritative reload (split=%s)', async split => {
   let data = {};
   const controller = window.PdfPreviewModalAnnotationController.createAnnotationController({
     getAnnotationsData: () => data, setAnnotationsData: value => { data = value; },
@@ -46,16 +46,13 @@ it.each([false, true])('retains teacher notes and text boxes after an authoritat
   await controller.reload();
   controller.renderList();
   const rows = [...document.querySelectorAll('.list-group-item')];
-  expect(rows.map(row => row.querySelector('.annotation-content').textContent)).toEqual(['Teacher box', 'Teacher note']);
-  expect(rows[0].querySelector('.grader-name-badge').textContent).toBe('Teacher Example');
+  expect(rows.map(row => row.querySelector('.annotation-content').textContent)).toEqual(['Teacher note']);
   expect(rows.every(row => row.dataset.annotationSource === 'HUMAN')).toBe(true);
   expect(rows.every(row => row.querySelector('.source-human .bi-person-fill'))).toBe(true);
   controller.destroy();
 });
 
-// Luca 2026-11-08 (item b): a text box the teacher adds after the column was drawn must
-// show up on the next render, in the plain comment list and in the split review column.
-it.each([false, true])('lists a teacher text box added after the first render (split=%s)', async split => {
+it.each([false, true])('keeps a newly drawn teacher textbox out of both column modes (split=%s)', async split => {
   let data = { 0: [{ xref: 42, type: 'Text', content: 'Teacher note', source: 'HUMAN' }] };
   let boxes = [];
   const controller = window.PdfPreviewModalAnnotationController.createAnnotationController({
@@ -73,6 +70,26 @@ it.each([false, true])('lists a teacher text box added after the first render (s
   data = { 0: [...data[0], { stable_id: 'box', type: 'textbox', content: 'Added box', source: 'HUMAN' }] };
   boxes = [{ annotationId: 'box', element: document.getElementById('box') }];
   controller.renderList();
-  expect(contents().sort()).toEqual(['Added box', 'Teacher note']);
+  expect(contents()).toEqual(['Teacher note']);
   controller.destroy();
+});
+
+it.each([
+  [{ type: 'textbox', source: 'HUMAN', content: 'Box' }, false],
+  [{ kind: 'textbox', source: 'HUMAN', content: 'Box' }, false],
+  [{ type: 'textbox', content: 'Legacy teacher box without source metadata' }, false],
+  [{ type: 'textbox', source: 'AI', content: 'Existing AI feedback box' }, true],
+  [{ type: 'textbox', source: 'ai', content: 'Existing AI feedback box' }, true],
+  [{ type: 'drawing', source: 'HUMAN', drawing_style: 'pen', content: 'Ink' }, false],
+  [{ type: 'Ink', source: 'HUMAN', content: 'Ink' }, false],
+  [{ type: 'drawing', source: 'HUMAN', drawing_style: 'highlighter', content: '', _hasBeenEdited: true }, false],
+  [{ type: 'Highlight', source: 'AI', content: 'AI anchored comment', quads: [[1, 2, 3, 4]] }, true],
+  [{ type: 'Highlight', source: 'HUMAN', content: 'Edited AI comment', quads: [[1, 2, 3, 4]] }, true],
+  [{ type: 'Text', source: 'AI', content: 'AI pin' }, true],
+  [{ kind: 'text', source: 'HUMAN', content: 'Teacher pin' }, true],
+  [{ source: 'AI', content: 'Legacy comment without a type' }, true],
+])('filters stored row %j without changing its content', (row, expected) => {
+  const original = structuredClone(row);
+  expect(window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation(row, true)).toBe(expected);
+  expect(row).toEqual(original);
 });

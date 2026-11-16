@@ -252,6 +252,11 @@ window.PdfPreviewModalSidebarPanel = window.PdfPreviewModalSidebarPanel || {};
      * @returns {boolean} True if should be displayed
      */
     exports.shouldDisplayAnnotation = function shouldDisplayAnnotation(annotation, isVisible) {
+        // The markup Highlight tool stores ink (drawing_style: highlighter),
+        // not a text-anchored Highlight with a comment. Keep those AI comments.
+        var type = String(annotation.type || annotation.kind || '').toLowerCase();
+        var isAi = String(annotation.source || '').toUpperCase() === 'AI';
+        if ((type === 'textbox' && !isAi) || type === 'drawing' || type === 'ink') return false;
         if (!isVisible) {
             return false;
         }
