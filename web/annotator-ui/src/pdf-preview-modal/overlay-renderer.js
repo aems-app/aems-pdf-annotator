@@ -551,17 +551,25 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
         // Overlay double-click handler (creates annotations on empty space)
         // -----------------------------------------------------------------
 
+        function _removeOverlayCreationHandlers(overlay) {
+            [
+                ['dblclick', '_dblclickHandler'],
+                ['click', '_commentClickHandler'],
+                ['mousedown', '_commentMouseDownHandler'],
+                ['mousemove', '_commentMouseMoveHandler']
+            ].forEach(function (binding) {
+                if (overlay[binding[1]]) {
+                    overlay.removeEventListener(binding[0], overlay[binding[1]]);
+                    delete overlay[binding[1]];
+                }
+            });
+        }
+
         function _setupOverlayDoubleClickHandler(overlay, canvas, viewport, scaleX, scaleY, pageIdx) {
             // Gate behind annotationCrud capability
             if (_capabilities.annotationCrud === false) return;
 
-            // Remove existing handler if any
-            if (overlay._dblclickHandler) {
-                overlay.removeEventListener('dblclick', overlay._dblclickHandler);
-            }
-            if (overlay._commentClickHandler) {
-                overlay.removeEventListener('click', overlay._commentClickHandler);
-            }
+            _removeOverlayCreationHandlers(overlay);
 
             var handler = function (e) {
                 // Comment creates its pin on the first click of a double-click.
@@ -613,10 +621,25 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
 
             overlay.addEventListener('dblclick', handler);
             overlay._dblclickHandler = handler;
+            var mouseDown = null;
+            var dragged = false;
+            overlay._commentMouseDownHandler = function (e) {
+                mouseDown = [e.clientX, e.clientY];
+                dragged = false;
+            };
+            overlay._commentMouseMoveHandler = function (e) {
+                if (mouseDown && Math.hypot(e.clientX - mouseDown[0], e.clientY - mouseDown[1]) > 5) {
+                    dragged = true;
+                }
+            };
+            overlay.addEventListener('mousedown', overlay._commentMouseDownHandler);
+            overlay.addEventListener('mousemove', overlay._commentMouseMoveHandler);
             // Reuse the exact empty-page creation path, including PDF geometry
             // and its existing modal/controller callback. Text remains FreeText.
             overlay._commentClickHandler = function (e) {
-                if (e.detail <= 1 && DrawingCanvas && DrawingCanvas.getActiveTool() === 'comment') handler(e);
+                overlay._commentMouseMoveHandler(e);
+                mouseDown = null;
+                if (!dragged && e.detail <= 1 && DrawingCanvas && DrawingCanvas.getActiveTool() === 'comment') handler(e);
             };
             overlay.addEventListener('click', overlay._commentClickHandler);
 
@@ -731,14 +754,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                 // Remove dblclick handlers and clear overlay DOM
                 for (var i = 0; i < _trackedOverlays.length; i++) {
                     var ov = _trackedOverlays[i];
-                    if (ov._dblclickHandler) {
-                        ov.removeEventListener('dblclick', ov._dblclickHandler);
-                        delete ov._dblclickHandler;
-                    }
-                    if (ov._commentClickHandler) {
-                        ov.removeEventListener('click', ov._commentClickHandler);
-                        delete ov._commentClickHandler;
-                    }
+                    _removeOverlayCreationHandlers(ov);
                     delete ov.dataset.annotationRenderSignature;
                     _clearOverlayMarkers(ov);
                 }
