@@ -55,14 +55,14 @@ it.each([false, true])('FIX6: refresh during pointer capture preserves overlay a
   expect(selection.getSelected()?.entry).toBe(live);
 });
 
-it('FIX6: a queued rebind after cancellation cannot resurrect a selection or save a move', () => {
+it.each([false, true])('FIX6: cancellation cannot resurrect a selection or save a move (queued=%s)', queued => {
   const completed = vi.fn();
   selection.onMoveCompleted = completed;
   selection.startDrag('textbox', entry, 0, wrapper, { button: 0, target: entry.element,
     clientX: 20, clientY: 20, pointerId: 7, preventDefault() {}, stopPropagation() {} });
   const overlay = document.querySelector('.markup-selection-overlay');
   pointer(overlay, 'pointermove', 40, 40);
-  selection.refreshSelected({ ...entry }, wrapper);
+  if (queued) selection.refreshSelected({ ...entry }, wrapper);
   pointer(overlay, 'pointercancel', 40, 40);
   expect(selection.hasSelection()).toBe(false);
   expect(document.querySelector('.markup-selection-overlay')).toBeNull();

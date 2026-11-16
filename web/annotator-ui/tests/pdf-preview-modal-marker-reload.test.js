@@ -60,6 +60,7 @@ describe('real modal marker reload after Restore', () => {
     await import('../src/pdf-preview-modal/annotation-helpers.js');
     await import('../src/pdf-preview-modal/sidebar-panel.js');
     await import('../src/pdf-preview-modal/modal-state.js');
+    await import('../src/pdf-preview-modal/textbox.js');
     await import('../src/pdf-preview-modal/markup-selection.js');
     await import('../src/pdf-preview-modal/rendering.js');
     await import('../src/pdf-preview-modal/overlay-renderer.js');
@@ -188,6 +189,48 @@ describe('real modal marker reload after Restore', () => {
     // Without selection the current normal/fullscreen behavior is preserved.
     modalElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     expect(bootstrapClose).toHaveBeenCalledTimes(fullscreen ? 0 : 1);
+  });
+
+  async function selectedTextbox() {
+    const { options } = await open(0);
+    options.setAnnotationsData({ 0: [{ ...ai, type: 'textbox', content: 'Check units' }] });
+    const helpers = window.PdfPreviewModal.__test;
+    helpers.refreshMarkupFromAnnotations();
+    const [entry] = window.PdfPreviewModalTextbox.getPageTextboxes(0);
+    const selection = window.PdfPreviewModalMarkupSelection;
+    selection.select('textbox', entry, 0, document.querySelector('.pdf-page-wrapper'));
+    return { options, helpers, selection, entry };
+  }
+
+  it('FIX6: modal reload deselects a removed textbox', async () => {
+    const { options, helpers, selection } = await selectedTextbox();
+    options.getAnnotationsData()[0].splice(0);
+    helpers.refreshMarkupFromAnnotations();
+    expect(selection.hasSelection()).toBe(false);
+    expect(document.querySelector('.markup-selection-overlay')).toBeNull();
+  });
+
+  it('FIX6: modal defers a textbox reload until its captured pointer is released', async () => {
+    const { helpers, selection, entry } = await selectedTextbox();
+    const overlay = document.querySelector('.markup-selection-overlay');
+    overlay.setPointerCapture = vi.fn();
+    overlay.releasePointerCapture = vi.fn();
+    const pointer = (type, x = 110, y = 200) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y });
+      Object.defineProperty(event, 'pointerId', { value: 7 });
+      overlay.dispatchEvent(event);
+    };
+    pointer('pointerdown');
+    pointer('pointermove', 130, 220);
+    helpers.refreshMarkupFromAnnotations();
+    expect(overlay.isConnected).toBe(true);
+    expect(window.PdfPreviewModalTextbox.getPageTextboxes(0)[0]).toBe(entry);
+    pointer('pointerup', 130, 220);
+    await vi.advanceTimersByTimeAsync(600);
+    const live = window.PdfPreviewModalTextbox.getPageTextboxes(0)[0];
+    expect(live).not.toBe(entry);
+    expect(selection.getSelected()?.entry).toBe(live);
+    expect(overlay.releasePointerCapture).toHaveBeenCalledWith(7);
   });
 
   it.each([0, 2])('Restore repaints a HUMAN-moved marker and card after %i reopens', async (cycles) => {
