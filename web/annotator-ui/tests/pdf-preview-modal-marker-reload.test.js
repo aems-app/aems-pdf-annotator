@@ -24,7 +24,7 @@ describe('real modal marker reload after Restore', () => {
       if (key.startsWith('PdfPreviewModal') || key.startsWith('__pdf') || key === 'PDFViewer') delete window[key];
     }
     document.body.innerHTML = `
-      <div id="pdfPreviewModal"></div><div id="pdfPreviewStudent"></div>
+      <div id="pdfPreviewModal"><button id="pdfPreviewFullscreenToggle"></button></div><div id="pdfPreviewStudent"></div>
       <div id="pdfOriginalPane"></div><div id="pdfGradedPane"></div>
       <button id="pdfOriginalTab"></button><button id="pdfGradedTab"></button>
       <div id="pdfGradedCommentsList"></div><div id="pdfGradedAICommentsList"></div>
@@ -60,6 +60,7 @@ describe('real modal marker reload after Restore', () => {
     await import('../src/pdf-preview-modal/annotation-helpers.js');
     await import('../src/pdf-preview-modal/sidebar-panel.js');
     await import('../src/pdf-preview-modal/modal-state.js');
+    await import('../src/pdf-preview-modal/markup-selection.js');
     await import('../src/pdf-preview-modal/rendering.js');
     await import('../src/pdf-preview-modal/overlay-renderer.js');
     await import('../src/pdf-preview-modal/annotation-controller.js');
@@ -158,6 +159,36 @@ describe('real modal marker reload after Restore', () => {
     expect.soft(list.querySelector('.source-human')).toBeNull();
     expect.soft(list.querySelector('.revert-annotation-to-ai'), 'can_revert_to_ai=false removes Restore').toBeNull();
   }
+
+  it.each([false, true])('FIX6: review Escape only deselects (fullscreen=%s)', async fullscreen => {
+    await open(0);
+    const element = document.createElement('div');
+    const wrapper = document.querySelector('.pdf-page-wrapper');
+    wrapper.append(element);
+    const selection = window.PdfPreviewModalMarkupSelection;
+    selection.init();
+    selection.select('textbox', { annotationId: 'selected', element }, 0, wrapper);
+    if (fullscreen) document.getElementById('pdfPreviewFullscreenToggle').click();
+    const modalElement = document.getElementById('pdfPreviewModal');
+    expect(modalElement.classList.contains('preview-fullscreen')).toBe(fullscreen);
+    // Bootstrap listens below document capture. Observe the actual dispatched event,
+    // including later capture listeners that stopPropagation alone cannot block.
+    const bootstrapClose = vi.fn();
+    const laterCapture = vi.fn();
+    modalElement.addEventListener('keydown', bootstrapClose);
+    document.addEventListener('keydown', laterCapture, { capture: true, once: true });
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    modalElement.dispatchEvent(event);
+    expect.soft(selection.hasSelection()).toBe(false);
+    expect.soft(event.defaultPrevented).toBe(true);
+    expect.soft(bootstrapClose).not.toHaveBeenCalled();
+    expect.soft(laterCapture).not.toHaveBeenCalled();
+    expect(modalElement.classList.contains('preview-fullscreen')).toBe(fullscreen);
+    document.removeEventListener('keydown', laterCapture, true);
+    // Without selection the current normal/fullscreen behavior is preserved.
+    modalElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(bootstrapClose).toHaveBeenCalledTimes(fullscreen ? 0 : 1);
+  });
 
   it.each([0, 2])('Restore repaints a HUMAN-moved marker and card after %i reopens', async (cycles) => {
     const { options } = await open(cycles);

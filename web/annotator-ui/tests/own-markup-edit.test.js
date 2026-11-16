@@ -465,6 +465,38 @@ describe('own markup editing with real pointer and click sequences', () => {
     expect(d.querySelector('.markup-selection-overlay')).toBeNull();
   });
 
+  it('FIX6: textbox refresh during a captured review drag saves the final rect', async () => {
+    d.querySelector('.js-toggle-markup').click();
+    const entry = boxes.getPageTextboxes(0)[0];
+    pointer(entry.element, 'pointerdown');
+    const overlay = d.querySelector('.markup-selection-overlay');
+    pointer(overlay, 'pointermove', 110, 130);
+    helpers.refreshMarkupFromAnnotations();
+    expect.soft(overlay.isConnected).toBe(true);
+    expect.soft(boxes.getPageTextboxes(0)[0] === entry).toBe(true);
+    pointer(overlay, 'pointermove', 130, 150);
+    pointer(overlay, 'pointerup', 130, 150);
+    await settle();
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    expect(adapter.updateAnnotation.mock.calls[0][3].rect.slice(0, 2)).toEqual([120, 140]);
+    expect(selection.getSelected()?.entry === boxes.getPageTextboxes(0)[0]).toBe(true);
+  });
+
+  it('FIX6: persistence timeout rebinds selection to the live textbox', () => {
+    selection.select('textbox', boxes.getPageTextboxes(0)[0], 0, wrapper);
+    helpers.setPendingDrawingSaves(1);
+    // Drive the real bounded retry path synchronously; no source-only shortcut.
+    const retries = [];
+    w.setTimeout = callback => { retries.push(callback); return retries.length; };
+    helpers.refreshMarkupFromAnnotations();
+    for (let count = 0; retries.length && count < 200; count++) retries.shift()();
+    expect(helpers.getMarkupRefreshState().retryArmed).toBe(false);
+    const live = boxes.getPageTextboxes(0)[0];
+    expect.soft(selection.getSelected()?.entry === live).toBe(true);
+    expect.soft(live.element.classList.contains('selected')).toBe(true);
+    expect(d.querySelector('.markup-selection-delete')?.isConnected).toBe(true);
+  });
+
   // Luca 2026-11-08 (item a): a teacher text box is dragged in normal review mode like the
   // other comments, without reopening the markup tool first.
   describe('241a: dragging a teacher text box in normal review mode', () => {

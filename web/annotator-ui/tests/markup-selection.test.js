@@ -37,6 +37,24 @@ afterEach(() => {
   delete HTMLElement.prototype.releasePointerCapture;
 });
 
+it.each([false, true])('FIX6: refresh during pointer capture preserves drag and saves final position (moved=%s)', moved => {
+  const completed = vi.fn();
+  selection.onMoveCompleted = completed;
+  selection.startDrag('textbox', entry, 0, wrapper, { button: 0, target: entry.element,
+    clientX: 20, clientY: 20, pointerId: 7, preventDefault() {}, stopPropagation() {} });
+  const overlay = document.querySelector('.markup-selection-overlay');
+  if (moved) pointer(overlay, 'pointermove', 40, 40);
+  const live = { ...entry, element: document.createElement('div') };
+  wrapper.append(live.element);
+  selection.refreshSelected(live, wrapper);
+  expect.soft(overlay.isConnected, 'refresh must retain the captured overlay').toBe(true);
+  pointer(overlay, 'pointermove', 80, 80);
+  pointer(overlay, 'pointerup', 80, 80);
+  expect.soft(completed).toHaveBeenCalledTimes(1);
+  expect.soft(window.PdfPreviewModalTextbox.moveTextbox).toHaveBeenLastCalledWith(entry, moved ? 40 : 60, moved ? 40 : 60);
+  expect(selection.getSelected()?.entry).toBe(live);
+});
+
 it.each(['textbox', 'stroke'].flatMap(type => [false, true].map(moved => ({ type, moved }))))(
   '293d: $type selection and delete X survive pointer release (moved=$moved)', ({ type, moved }) => {
     const target = entry.element;
