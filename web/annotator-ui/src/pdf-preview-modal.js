@@ -542,6 +542,8 @@
     function buildDisplayOrderByPagePosition(pageAnnotations) {
         const ordered = (pageAnnotations || [])
             .filter((ann) => {
+                const column = window.PdfPreviewModalSidebarPanel;
+                if (column && !column.shouldDisplayAnnotation(ann, true)) return false;
                 if (isMarkupAnnotation(ann) && !String(ann.content || '').trim()) {
                     return false;
                 }
@@ -4608,6 +4610,9 @@
         }
 
         if (MarkupSelection) {
+            MarkupSelection.onSelected = function () {
+                highlightAnnotationSelection(null, null, { focusListItem: false });
+            };
             MarkupSelection.onDeleteRequested = function () {
                 var requestEpoch = currentHistoryEpoch();
                 var item = MarkupSelection.deleteSelected();
@@ -6384,12 +6389,13 @@
             return _currentAnnotationCtrl.selectAnnotation(identifierValue, pageIdx, { focusListItem });
         }
         const stableId = normalizeAnnotationIdentifierValue(identifierValue);
-        if (stableId === null || Number.isNaN(pageIdx)) {
+        if (Number.isNaN(pageIdx)) {
             return;
         }
 
         // FIX Issue #27: Store the selected annotation to preserve after scroll/re-render
         selectedAnnotation = { pageIdx: pageIdx, identifier: stableId };
+        if (stableId !== null && MarkupSelection) MarkupSelection.deselect();
 
         // Highlight markers on the PDF
         document.querySelectorAll('.annotation-marker').forEach(marker => {
@@ -10520,7 +10526,10 @@
                 getEditingAnnotationId: function () { return editingAnnotationId; },
                 setEditingAnnotationId: function (id) { editingAnnotationId = id; },
                 getSelectedAnnotation: function () { return selectedAnnotation; },
-                setSelectedAnnotation: function (sel) { selectedAnnotation = sel; },
+                setSelectedAnnotation: function (sel) {
+                    selectedAnnotation = sel;
+                    if (sel.identifier !== null && MarkupSelection) MarkupSelection.deselect();
+                },
                 getSplitPanelActive: function () { return splitPanelActive; },
                 getPreviewFullscreenActive: function () { return previewFullscreenActive; },
                 isDrawingFn: isDrawingPersistenceActive,

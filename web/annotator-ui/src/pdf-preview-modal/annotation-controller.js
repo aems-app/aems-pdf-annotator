@@ -1474,7 +1474,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             var stableId = _h.normalizeAnnotationIdentifierValue
                 ? _h.normalizeAnnotationIdentifierValue(identifierValue)
                 : identifierValue;
-            if (stableId === null || Number.isNaN(pageIdx)) {
+            if (Number.isNaN(pageIdx)) {
                 return;
             }
 

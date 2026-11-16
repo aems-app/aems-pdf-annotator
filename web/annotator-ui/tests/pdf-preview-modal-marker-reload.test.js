@@ -161,6 +161,76 @@ describe('real modal marker reload after Restore', () => {
     expect.soft(list.querySelector('.revert-annotation-to-ai'), 'can_revert_to_ai=false removes Restore').toBeNull();
   }
 
+  it('FIX7: only column comments consume numbers before and after reload/removal', async () => {
+    const { controller } = await open(0);
+    const pins = Array.from({ length: 5 }, (_, i) => ({
+      ...ai, id: `pin-${i}`, stable_id: `pin-${i}`, xref: 2000 + i,
+      rect: [100, 100 + i * 100, 116, 116 + i * 100],
+    }));
+    const markup = ['textbox', 'drawing', 'Ink', 'drawing'].map((type, i) => ({
+      ...ai, id: `markup-${i}`, stable_id: `markup-${i}`, xref: 3000 + i,
+      type, source: 'HUMAN', content: 'Teacher markup',
+      drawing_style: i === 3 ? 'highlighter' : 'pen', rect: [20, 20 + i, 40, 40 + i],
+    }));
+    let saved = [pins[0], ...markup, ...pins.slice(1)];
+    adapter.listAnnotations.mockImplementation(async () => ({ success: true, annotations: { 0: structuredClone(saved) } }));
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await controller.loadAnnotations();
+      await vi.advanceTimersByTimeAsync(600);
+      const rows = [...document.querySelectorAll('#pdfGradedCommentsList .list-group-item')];
+      expect.soft(rows.map(row => row.querySelector('.badge').textContent)).toEqual(['1.1', '1.2', '1.3', '1.4', '1.5']);
+      for (let i = 0; i < pins.length; i++) {
+        expect.soft(document.querySelector(`[data-annotation-stable-id="pin-${i}"].annotation-marker`)?.dataset.annotationNumber).toBe(`1.${i + 1}`);
+      }
+      if (cycle === 1) saved = pins;
+    }
+  });
+
+  it.each(['textbox', 'stroke'])('FIX7: selecting %s clears pin state and pin selection clears markup', async type => {
+    const { controller, options } = await open(0);
+    const marker = document.querySelector(markerSelector);
+    marker.click();
+    expect(marker.classList.contains('annotation-marker-selected')).toBe(true);
+    controller.selectAnnotation('invalid-page', NaN);
+    expect(marker.classList.contains('annotation-marker-selected')).toBe(true);
+    const wrapper = document.querySelector('.pdf-page-wrapper');
+    const element = document.createElement('div');
+    wrapper.append(element);
+    window.PdfPreviewModalDrawingCanvas = { getStrokeBounds: () => ({ minX: 10, minY: 10, maxX: 40, maxY: 40 }) };
+    const selection = window.PdfPreviewModalMarkupSelection;
+    selection.init();
+    const entry = { element, annotationId: 'markup', points: [{ x: 10, y: 10 }, { x: 40, y: 40 }] };
+    selection.select(type, entry, 0, wrapper);
+    expect.soft(marker.classList.contains('annotation-marker-selected')).toBe(false);
+    expect.soft(document.querySelector('.list-group-item.active')).toBeNull();
+    expect.soft(options.getSelectedAnnotation()).toEqual({ pageIdx: null, identifier: null });
+    // A repaint must not restore the old pin selection.
+    controller.renderList();
+    expect.soft(document.querySelector('.list-group-item.active')).toBeNull();
+    marker.click();
+    expect.soft(selection.hasSelection()).toBe(false);
+    expect.soft(document.querySelector('.markup-selection-overlay')).toBeNull();
+    expect(marker.classList.contains('annotation-marker-selected')).toBe(true);
+    selection.select(type, entry, 0, wrapper);
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect.soft(selection.hasSelection()).toBe(false);
+    expect.soft(document.querySelector('.annotation-marker-selected')).toBeNull();
+  });
+
+  it('FIX7: pin-only Escape retains production event behaviour', async () => {
+    await open(0);
+    const marker = document.querySelector(markerSelector);
+    marker.click();
+    const modalElement = document.getElementById('pdfPreviewModal');
+    const bootstrapClose = vi.fn();
+    modalElement.addEventListener('keydown', bootstrapClose);
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    modalElement.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(bootstrapClose).toHaveBeenCalledOnce();
+    expect(marker.classList.contains('annotation-marker-selected')).toBe(true);
+  });
+
   it.each([false, true])('FIX6: review Escape only deselects (fullscreen=%s)', async fullscreen => {
     await open(0);
     const element = document.createElement('div');

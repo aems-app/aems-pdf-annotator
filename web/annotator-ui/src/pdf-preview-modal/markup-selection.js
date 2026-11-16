@@ -77,6 +77,9 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
     /** @type {Function|null} Called when a move operation completes */
     exports.onMoveCompleted = null;
 
+    /** @type {Function|null} Called when markup takes the modal selection. */
+    exports.onSelected = null;
+
     // =========================================================================
     // Keyboard Handler (bound reference for cleanup)
     // =========================================================================
@@ -116,6 +119,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 
         selectedItem = { type: type, entry: entry, pageIdx: pageIdx };
         dragPageWrapper = pageWrapper;
+        if (exports.onSelected) exports.onSelected(selectedItem);
 
         // For textbox: add .selected class to the element
         if (type === 'textbox' && entry.element) {
