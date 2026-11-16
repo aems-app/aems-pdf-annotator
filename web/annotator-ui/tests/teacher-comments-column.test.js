@@ -84,6 +84,7 @@ it.each([
   [{ type: 'Highlight', source: 'HUMAN', content: 'Edited AI comment', quads: [[1, 2, 3, 4]] }, true],
   [{ type: 'Text', source: 'AI', content: 'AI pin' }, true],
   [{ kind: 'text', source: 'HUMAN', content: 'Teacher pin' }, true],
+  [{ source: 'AI', content: 'Legacy comment without a type' }, true],
 ])('filters stored row %j without changing its content', (row, expected) => {
   const original = structuredClone(row);
   expect(window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation(row, true)).toBe(expected);
