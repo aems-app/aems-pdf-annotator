@@ -438,6 +438,52 @@ describe('overlay-renderer', () => {
     expect(document.querySelector('.annotation-marker')).not.toBe(oldMarker);
   });
 
+  it('routes a Comment single click through the existing double-click creation event at the clicked point', async () => {
+    const mod = await loadOverlayRendererModule();
+    const drawing = { getActiveTool: vi.fn(() => 'comment'), ensureCanvasForPage: vi.fn() };
+    const renderer = mod.createOverlayRenderer({ helpers: { DrawingCanvas: drawing } });
+    const createTemporaryAnnotation = vi.fn();
+    renderer.onOverlayDblClicked(data => createTemporaryAnnotation(data.rect, data.pageIdx, { apiRect: data.apiRect }));
+    renderer.renderPage(1, true);
+    const overlay = document.querySelector('.pdf-annotation-overlay');
+    const click = type => overlay.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: 150, clientY: 240 }));
+    click('click');
+    expect(createTemporaryAnnotation).toHaveBeenCalledExactlyOnceWith(
+      [139, 549, 161, 571], 0, { apiRect: [139, 229, 161, 251] });
+    drawing.getActiveTool.mockReturnValue('select');
+    click('click');
+    expect(createTemporaryAnnotation).toHaveBeenCalledTimes(1);
+    click('dblclick');
+    expect(createTemporaryAnnotation).toHaveBeenCalledTimes(2);
+    expect(createTemporaryAnnotation.mock.calls[1]).toEqual(createTemporaryAnnotation.mock.calls[0]);
+    drawing.getActiveTool.mockReturnValue('comment');
+    renderer.renderPage(1, true); // Rebinding must not duplicate single-click listeners.
+    click('click');
+    expect(createTemporaryAnnotation).toHaveBeenCalledTimes(3);
+    const marker = document.createElement('div');
+    marker.className = 'annotation-marker';
+    overlay.append(marker);
+    marker.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(createTemporaryAnnotation).toHaveBeenCalledTimes(3);
+    renderer.destroy();
+    click('click');
+    expect(createTemporaryAnnotation).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not create a Comment when annotation CRUD is disabled', async () => {
+    const mod = await loadOverlayRendererModule();
+    const renderer = mod.createOverlayRenderer({
+      capabilities: { annotationCrud: false },
+      helpers: { DrawingCanvas: { getActiveTool: () => 'comment', ensureCanvasForPage() {} } },
+    });
+    const create = vi.fn();
+    renderer.onOverlayDblClicked(create);
+    renderer.renderPage(1, true);
+    document.querySelector('.pdf-annotation-overlay').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(create).not.toHaveBeenCalled();
+    renderer.destroy();
+  });
+
   it('cleans overlay DOM and handlers on destroy', async () => {
     const mod = await loadOverlayRendererModule();
     const renderer = mod.createOverlayRenderer({
