@@ -255,7 +255,8 @@ window.PdfPreviewModalSidebarPanel = window.PdfPreviewModalSidebarPanel || {};
         // The markup Highlight tool stores ink (drawing_style: highlighter),
         // not a text-anchored Highlight with a comment. Keep those AI comments.
         var type = String(annotation.type || annotation.kind || '').toLowerCase();
-        if (type === 'textbox' || type === 'drawing' || type === 'ink') return false;
+        var isAi = String(annotation.source || '').toUpperCase() === 'AI';
+        if ((type === 'textbox' && !isAi) || type === 'drawing' || type === 'ink') return false;
         if (!isVisible) {
             return false;
         }
