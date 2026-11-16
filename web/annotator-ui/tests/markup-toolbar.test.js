@@ -27,6 +27,18 @@ describe('markup-toolbar saved position handling', () => {
     expect(toolbar.style.top).toBe('');
   });
 
+  it('hides colour controls for Comment and restores them for editable markup', async () => {
+    const toolbar = await loadMarkupToolbarModule();
+    toolbar.create(document.getElementById('host'));
+    for (const tool of ['text', 'pen', 'highlighter', 'comment', 'select', 'pen']) {
+      toolbar.setActiveTool(tool);
+      const expected = ['comment', 'select'].includes(tool) ? 'none' : '';
+      expect(document.querySelector('.js-markup-colors-row').style.display).toBe(expected);
+      expect(document.querySelector('.js-markup-color-separator').style.display).toBe(expected);
+    }
+    toolbar.destroy();
+  });
+
   it('offers Select, Comment, Text, Pen, Highlight with separate N and T shortcuts', async () => {
     window.PdfPreviewModalUtils = { translateText: key => key === 'Comment' ? 'Kommentar' : key };
     const toolbar = await loadMarkupToolbarModule();

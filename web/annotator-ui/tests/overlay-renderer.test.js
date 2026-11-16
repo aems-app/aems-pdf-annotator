@@ -470,6 +470,47 @@ describe('overlay-renderer', () => {
     expect(createTemporaryAnnotation).toHaveBeenCalledTimes(3);
   });
 
+  it('creates exactly one Comment for the browser click/click/dblclick sequence', async () => {
+    const mod = await loadOverlayRendererModule();
+    const renderer = mod.createOverlayRenderer({
+      helpers: { DrawingCanvas: { getActiveTool: () => 'comment', ensureCanvasForPage() {} } },
+    });
+    const create = vi.fn();
+    renderer.onOverlayDblClicked(create);
+    renderer.renderPage(1, true);
+    const overlay = document.querySelector('.pdf-annotation-overlay');
+    for (const [type, detail] of [['click', 1], ['click', 2], ['dblclick', 2]]) {
+      overlay.dispatchEvent(new MouseEvent(type, { bubbles: true, detail, clientX: 150, clientY: 240 }));
+    }
+    expect(create).toHaveBeenCalledTimes(1);
+    renderer.destroy();
+  });
+
+  it.each([[30, 0], [0, 30], [4, 4]])('does not drop a Comment after dragging by %s,%s pixels', async (dx, dy) => {
+    const mod = await loadOverlayRendererModule();
+    const renderer = mod.createOverlayRenderer({
+      helpers: { DrawingCanvas: { getActiveTool: () => 'comment', ensureCanvasForPage() {} } },
+    });
+    const create = vi.fn();
+    renderer.onOverlayDblClicked(create);
+    renderer.renderPage(1, true);
+    const overlay = document.querySelector('.pdf-annotation-overlay');
+    const dispatch = (type, x, y) => overlay.dispatchEvent(new MouseEvent(type, {
+      bubbles: true, detail: 1, clientX: x, clientY: y,
+    }));
+    dispatch('mousedown', 150, 240);
+    dispatch('mousemove', 150 + dx, 240 + dy);
+    dispatch('mouseup', 150 + dx, 240 + dy);
+    dispatch('click', 150 + dx, 240 + dy);
+    expect(create).not.toHaveBeenCalled();
+    // Small hand jitter is still a click, and a new gesture clears drag state.
+    dispatch('mousedown', 150, 240);
+    dispatch('mouseup', 152, 241);
+    dispatch('click', 152, 241);
+    expect(create).toHaveBeenCalledTimes(1);
+    renderer.destroy();
+  });
+
   it('does not create a Comment when annotation CRUD is disabled', async () => {
     const mod = await loadOverlayRendererModule();
     const renderer = mod.createOverlayRenderer({
