@@ -6111,10 +6111,24 @@
      * because reloading it would discard a stroke whose save has not landed.
      */
     function refreshTextboxesOnly() {
+        if (MarkupSelection && MarkupSelection.deferRefresh(refreshTextboxesOnly)) return;
         var wrappers = getMarkupPageWrappers();
         if (TextboxModule) {
             TextboxModule.loadTextboxesFromAnnotations(
                 projectTextboxAnnotationsForDom(), wrappers);
+            // Reloading replaces textbox DOM entries. Both normal and timeout
+            // refreshes must attach the selection to the new live entry.
+            var selected = MarkupSelection && MarkupSelection.getSelected();
+            if (selected && selected.type === 'textbox') {
+                var liveEntry = TextboxModule.getPageTextboxes(selected.pageIdx).find(function (entry) {
+                    return entry.annotationId === selected.entry.annotationId;
+                });
+                if (liveEntry && wrappers[selected.pageIdx]) {
+                    MarkupSelection.refreshSelected(liveEntry, wrappers[selected.pageIdx]);
+                } else {
+                    MarkupSelection.deselect();
+                }
+            }
         }
     }
 
@@ -6182,22 +6196,7 @@
             });
         }
 
-        if (TextboxModule) {
-            TextboxModule.loadTextboxesFromAnnotations(projectTextboxAnnotationsForDom(), wrappers);
-            // Reloading replaces textbox DOM entries. Keep an existing selection
-            // attached to the live box so its border and delete action stay usable.
-            var selected = MarkupSelection && MarkupSelection.getSelected();
-            if (selected && selected.type === 'textbox') {
-                var liveEntry = TextboxModule.getPageTextboxes(selected.pageIdx).find(function (entry) {
-                    return entry.annotationId === selected.entry.annotationId;
-                });
-                if (liveEntry && wrappers[selected.pageIdx]) {
-                    MarkupSelection.refreshSelected(liveEntry, wrappers[selected.pageIdx]);
-                } else {
-                    MarkupSelection.deselect();
-                }
-            }
-        }
+        refreshTextboxesOnly();
         if (_currentAnnotationCtrl) _scheduleAnnotationsListRender();
     }
 
@@ -9836,6 +9835,15 @@
                 editingAnnotationId = null;
                 renderAnnotationsList();
                 renderAllAnnotations(true);
+                return;
+            }
+
+            // A selected review markup consumes Escape before modal/fullscreen
+            // handlers, including other listeners on document capture.
+            if (MarkupSelection && MarkupSelection.hasSelection()) {
+                MarkupSelection.deselect();
+                e.preventDefault();
+                e.stopImmediatePropagation();
                 return;
             }
 

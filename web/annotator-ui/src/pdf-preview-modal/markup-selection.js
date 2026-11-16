@@ -32,6 +32,9 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
     /** @type {{x: number, y: number}|null} */
     var dragStart = null;
 
+    /** Latest repaint requested while a pointer is captured. */
+    var deferredRefresh = null;
+
     /** @type {HTMLElement|null} */
     var dragPageWrapper = null;
 
@@ -125,10 +128,25 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 
     /** Rebind an existing selection after its data/DOM entry is reloaded. */
     exports.refreshSelected = function refreshSelected(entry, pageWrapper) {
+        if (!selectedItem) return;
+        if (exports.deferRefresh(function () { exports.refreshSelected(entry, pageWrapper); })) return;
         var editsTextbox = clickEditsTextbox;
         exports.select(selectedItem.type, entry, selectedItem.pageIdx, pageWrapper);
         clickEditsTextbox = editsTextbox;
     };
+
+    /** Keep the captured overlay and its underlying entry alive until release. */
+    exports.deferRefresh = function deferRefresh(refresh) {
+        if (!dragStart) return false;
+        deferredRefresh = refresh;
+        return true;
+    };
+
+    function flushDeferredRefresh() {
+        var refresh = deferredRefresh;
+        deferredRefresh = null;
+        if (refresh) refresh();
+    }
 
     /**
      * Deselect the current selection.
@@ -151,6 +169,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         isDragging = false;
         clickEditsTextbox = true;
         dragStart = null;
+        deferredRefresh = null;
         cachedPageRects = [];
         dragSourcePageIdx = null;
         dragTargetPageIdx = null;
@@ -524,7 +543,9 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
             moveSelectedItem(-appliedDrag.dx, -appliedDrag.dy);
         }
         appliedDrag = { dx: 0, dy: 0 };
+        var refresh = deferredRefresh;
         exports.deselect();
+        if (refresh) refresh();
     }
 
     /**
@@ -602,6 +623,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
             exports.deselect();
             window.PdfPreviewModalTextbox.editTextbox(clickedTextbox);
         }
+        flushDeferredRefresh();
     }
 
     // =========================================================================
