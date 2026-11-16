@@ -77,6 +77,8 @@ it.each([false, true])('keeps a newly drawn teacher textbox out of both column m
 it.each([
   [{ type: 'textbox', source: 'HUMAN', content: 'Box' }, false],
   [{ kind: 'textbox', source: 'HUMAN', content: 'Box' }, false],
+  [{ type: 'textbox', source: 'AI', content: 'Existing AI feedback box' }, true],
+  [{ type: 'textbox', source: 'ai', content: 'Existing AI feedback box' }, true],
   [{ type: 'drawing', source: 'HUMAN', drawing_style: 'pen', content: 'Ink' }, false],
   [{ type: 'Ink', source: 'HUMAN', content: 'Ink' }, false],
   [{ type: 'drawing', source: 'HUMAN', drawing_style: 'highlighter', content: '', _hasBeenEdited: true }, false],
