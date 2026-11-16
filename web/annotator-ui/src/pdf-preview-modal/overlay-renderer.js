@@ -559,6 +559,9 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             if (overlay._dblclickHandler) {
                 overlay.removeEventListener('dblclick', overlay._dblclickHandler);
             }
+            if (overlay._commentClickHandler) {
+                overlay.removeEventListener('click', overlay._commentClickHandler);
+            }
 
             var handler = function (e) {
                 // Check if click was on a marker (not empty space)
@@ -608,6 +611,12 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
 
             overlay.addEventListener('dblclick', handler);
             overlay._dblclickHandler = handler;
+            // Reuse the exact empty-page creation path, including PDF geometry
+            // and its existing modal/controller callback. Text remains FreeText.
+            overlay._commentClickHandler = function (e) {
+                if (DrawingCanvas && DrawingCanvas.getActiveTool() === 'comment') handler(e);
+            };
+            overlay.addEventListener('click', overlay._commentClickHandler);
 
             // Track for cleanup in destroy()
             if (_trackedOverlays.indexOf(overlay) === -1) {
@@ -723,6 +732,10 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
                     if (ov._dblclickHandler) {
                         ov.removeEventListener('dblclick', ov._dblclickHandler);
                         delete ov._dblclickHandler;
+                    }
+                    if (ov._commentClickHandler) {
+                        ov.removeEventListener('click', ov._commentClickHandler);
+                        delete ov._commentClickHandler;
                     }
                     delete ov.dataset.annotationRenderSignature;
                     _clearOverlayMarkers(ov);

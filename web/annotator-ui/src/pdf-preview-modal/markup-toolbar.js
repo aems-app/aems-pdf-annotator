@@ -20,6 +20,11 @@ window.PdfPreviewModalMarkupToolbar = window.PdfPreviewModalMarkupToolbar || {};
 
     var TOOLS = [
         { id: 'select', label: 'Select', icon: '\u2196', shortcut: 'V' },
+        {
+            id: 'comment', label: 'Comment', shortcut: 'N',
+            iconHtml: '<svg class="markup-toolbar-icon-svg" viewBox="0 0 24 24" aria-hidden="true">' +
+                '<path class="toolbar-icon-solid" d="M4 3h16v14H9l-5 4V3zm3 4v2h10V7H7zm0 4v2h7v-2H7z"></path></svg>'
+        },
         { id: 'text', label: 'Text', icon: 'T', shortcut: 'T' },
         { id: 'pen', label: 'Pen', icon: '\u270E', shortcut: 'P' },
         {
