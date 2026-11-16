@@ -6184,6 +6184,19 @@
 
         if (TextboxModule) {
             TextboxModule.loadTextboxesFromAnnotations(projectTextboxAnnotationsForDom(), wrappers);
+            // Reloading replaces textbox DOM entries. Keep an existing selection
+            // attached to the live box so its border and delete action stay usable.
+            var selected = MarkupSelection && MarkupSelection.getSelected();
+            if (selected && selected.type === 'textbox') {
+                var liveEntry = TextboxModule.getPageTextboxes(selected.pageIdx).find(function (entry) {
+                    return entry.annotationId === selected.entry.annotationId;
+                });
+                if (liveEntry && wrappers[selected.pageIdx]) {
+                    MarkupSelection.refreshSelected(liveEntry, wrappers[selected.pageIdx]);
+                } else {
+                    MarkupSelection.deselect();
+                }
+            }
         }
         if (_currentAnnotationCtrl) _scheduleAnnotationsListRender();
     }

@@ -92,6 +92,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         if (boundKeydownHandler) return;
         boundKeydownHandler = handleKeydown;
         document.addEventListener('keydown', boundKeydownHandler);
+        document.addEventListener('pointerdown', onOutsidePointerDown);
     };
 
     // =========================================================================
@@ -120,6 +121,13 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 
         // Create and position the selection overlay
         createSelectionOverlay(type, entry, pageWrapper);
+    };
+
+    /** Rebind an existing selection after its data/DOM entry is reloaded. */
+    exports.refreshSelected = function refreshSelected(entry, pageWrapper) {
+        var editsTextbox = clickEditsTextbox;
+        exports.select(selectedItem.type, entry, selectedItem.pageIdx, pageWrapper);
+        clickEditsTextbox = editsTextbox;
     };
 
     /**
@@ -193,7 +201,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
      * Select a markup item and begin dragging it from this pointer press, for
      * review mode outside the markup tool. Movement past the click threshold
      * moves the item and reports onMoveCompleted, like a markup-mode drag; a
-     * press without movement only clears the selection again.
+     * press without movement keeps the selection and its delete button visible.
      *
      * @param {'stroke'|'textbox'} type - The type of markup item
      * @param {Object} entry - The data entry for the item
@@ -258,6 +266,10 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
         layer.appendChild(overlay);
 
         selectionOverlay = overlay;
+
+        // The click synthesized after pointerup belongs to this selection,
+        // not the page's select/edit handler underneath it.
+        overlay.addEventListener('click', function (e) { e.stopPropagation(); });
 
         // Attach drag handlers to overlay
         attachDragHandlers(overlay);
@@ -572,8 +584,6 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 
         var clickedTextbox = !isDragging && clickEditsTextbox && selectedItem && selectedItem.type === 'textbox'
             ? selectedItem.entry : null;
-        var reviewModeDrag = !clickEditsTextbox;
-        clickEditsTextbox = true;
         isDragging = false;
         dragStart = null;
         cachedPageRects = [];
@@ -591,9 +601,6 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
             // the caret inside the contenteditable textbox.
             exports.deselect();
             window.PdfPreviewModalTextbox.editTextbox(clickedTextbox);
-        } else if (reviewModeDrag) {
-            // Outside the markup tool a selection has no further use.
-            exports.deselect();
         }
     }
 
@@ -601,11 +608,14 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
     // Keyboard Handling
     // =========================================================================
 
-    /**
-     * Handle keydown events for selection shortcuts.
-     *
-     * @param {KeyboardEvent} e
-     */
+    /** Clear selection when a pointer press begins elsewhere in the document. */
+    function onOutsidePointerDown(e) {
+        if (!selectedItem || (selectionOverlay && selectionOverlay.contains(e.target))) return;
+        if (selectedItem.type === 'textbox' && selectedItem.entry.element.contains(e.target)) return;
+        exports.deselect();
+    }
+
+    /** Handle keyboard selection shortcuts without intercepting text editing. */
     function handleKeydown(e) {
         // Don't intercept when typing in inputs
         var tag = e.target.tagName;
@@ -637,6 +647,7 @@ window.PdfPreviewModalMarkupSelection = window.PdfPreviewModalMarkupSelection ||
 
         if (boundKeydownHandler) {
             document.removeEventListener('keydown', boundKeydownHandler);
+            document.removeEventListener('pointerdown', onOutsidePointerDown);
             boundKeydownHandler = null;
         }
 

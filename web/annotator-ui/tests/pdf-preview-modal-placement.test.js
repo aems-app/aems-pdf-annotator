@@ -2087,7 +2087,7 @@ describe('pdf-preview-modal placement helpers', () => {
 
     // A selected pen stroke; deleteStroke() presses the Delete key.
     async function strokeSelected() {
-      const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
+      const selection = { deleteSelected: vi.fn(), getSelected: vi.fn(() => null), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
       window.PdfPreviewModalMarkupSelection = selection;
       const createAnnotation = vi.fn(async (_assignment, _submission, body) => ({
         success: true, annotation: { ...body, stable_id: 'stroke-2', xref: 61, etag: 'fixture-stroke-2' },
@@ -2635,7 +2635,7 @@ describe('pdf-preview-modal placement helpers', () => {
     });
 
     async function numericIdentityHarness() {
-      const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
+      const selection = { deleteSelected: vi.fn(), getSelected: vi.fn(() => null), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
       window.PdfPreviewModalMarkupSelection = selection;
       const h = await splitHarness();
       const a = {
@@ -3460,7 +3460,7 @@ describe('pdf-preview-modal placement helpers', () => {
       // Keep the fake DOM surface, but use the real shared color contract.
       await import('../src/pdf-preview-modal/textbox.js');
       const resolveColorRgb = window.PdfPreviewModalTextbox.resolveColorRgb;
-      const selection = { deleteSelected: vi.fn(), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
+      const selection = { deleteSelected: vi.fn(), getSelected: vi.fn(() => null), deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
       window.PdfPreviewModalMarkupSelection = selection;
       const canvas = {
         init: vi.fn(), destroy: vi.fn(), ensureCanvasForPage: vi.fn(), getActiveColor: vi.fn(),
