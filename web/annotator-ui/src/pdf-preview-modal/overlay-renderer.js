@@ -564,6 +564,8 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             }
 
             var handler = function (e) {
+                // Comment creates its pin on the first click of a double-click.
+                if (e.type === 'dblclick' && DrawingCanvas && DrawingCanvas.getActiveTool() === 'comment') return;
                 // Check if click was on a marker (not empty space)
                 if (e.target.classList.contains('annotation-marker') ||
                     e.target.closest('.annotation-marker')) {
@@ -614,7 +616,7 @@ window.PdfPreviewModalOverlayRenderer = window.PdfPreviewModalOverlayRenderer ||
             // Reuse the exact empty-page creation path, including PDF geometry
             // and its existing modal/controller callback. Text remains FreeText.
             overlay._commentClickHandler = function (e) {
-                if (DrawingCanvas && DrawingCanvas.getActiveTool() === 'comment') handler(e);
+                if (e.detail <= 1 && DrawingCanvas && DrawingCanvas.getActiveTool() === 'comment') handler(e);
             };
             overlay.addEventListener('click', overlay._commentClickHandler);
 
