@@ -332,8 +332,8 @@ window.PdfPreviewModalMarkupToolbar = window.PdfPreviewModalMarkupToolbar || {};
             }
         }
 
-        // Hide colors + separator when select tool is active (no drawing)
-        var showColors = toolId !== 'select';
+        // Comment pins have a fixed amber priority.
+        var showColors = toolId !== 'select' && toolId !== 'comment';
         var colorsRow = toolbarEl.querySelector('.js-markup-colors-row');
         var colorSep = toolbarEl.querySelector('.js-markup-color-separator');
         if (colorsRow) colorsRow.style.display = showColors ? '' : 'none';
