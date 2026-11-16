@@ -37,7 +37,7 @@ afterEach(() => {
   delete HTMLElement.prototype.releasePointerCapture;
 });
 
-it.each([false, true])('FIX6: refresh during pointer capture preserves drag and saves final position (moved=%s)', moved => {
+it.each([false, true])('FIX6: refresh during pointer capture preserves overlay and completion (moved=%s)', moved => {
   const completed = vi.fn();
   selection.onMoveCompleted = completed;
   selection.startDrag('textbox', entry, 0, wrapper, { button: 0, target: entry.element,
@@ -51,8 +51,46 @@ it.each([false, true])('FIX6: refresh during pointer capture preserves drag and 
   pointer(overlay, 'pointermove', 80, 80);
   pointer(overlay, 'pointerup', 80, 80);
   expect.soft(completed).toHaveBeenCalledTimes(1);
-  expect.soft(window.PdfPreviewModalTextbox.moveTextbox).toHaveBeenLastCalledWith(entry, moved ? 40 : 60, moved ? 40 : 60);
+  expect.soft(completed.mock.calls[0]?.[0].entry).toBe(entry);
   expect(selection.getSelected()?.entry).toBe(live);
+});
+
+it('FIX6: a queued rebind after cancellation cannot resurrect a selection or save a move', () => {
+  const completed = vi.fn();
+  selection.onMoveCompleted = completed;
+  selection.startDrag('textbox', entry, 0, wrapper, { button: 0, target: entry.element,
+    clientX: 20, clientY: 20, pointerId: 7, preventDefault() {}, stopPropagation() {} });
+  const overlay = document.querySelector('.markup-selection-overlay');
+  pointer(overlay, 'pointermove', 40, 40);
+  selection.refreshSelected({ ...entry }, wrapper);
+  pointer(overlay, 'pointercancel', 40, 40);
+  expect(selection.hasSelection()).toBe(false);
+  expect(document.querySelector('.markup-selection-overlay')).toBeNull();
+  expect(completed).not.toHaveBeenCalled();
+  selection.refreshSelected(entry, wrapper);
+  expect(selection.hasSelection()).toBe(false);
+});
+
+it('FIX6: release applies the latest pending refresh and destroy discards pending work', () => {
+  selection.startDrag('textbox', entry, 0, wrapper, { button: 0, target: entry.element,
+    clientX: 20, clientY: 20, pointerId: 7, preventDefault() {}, stopPropagation() {} });
+  let overlay = document.querySelector('.markup-selection-overlay');
+  const obsolete = vi.fn();
+  const latest = vi.fn();
+  expect(selection.deferRefresh(obsolete)).toBe(true);
+  expect(selection.deferRefresh(latest)).toBe(true);
+  pointer(overlay, 'pointerup');
+  expect(obsolete).not.toHaveBeenCalled();
+  expect(latest).toHaveBeenCalledTimes(1);
+  expect(selection.deferRefresh(obsolete)).toBe(false);
+  selection.startDrag('textbox', entry, 0, wrapper, { button: 0, target: entry.element,
+    clientX: 20, clientY: 20, pointerId: 7, preventDefault() {}, stopPropagation() {} });
+  overlay = document.querySelector('.markup-selection-overlay');
+  selection.deferRefresh(obsolete);
+  selection.destroy();
+  pointer(overlay, 'pointerup');
+  expect(obsolete).not.toHaveBeenCalled();
+  expect(selection.hasSelection()).toBe(false);
 });
 
 it.each(['textbox', 'stroke'].flatMap(type => [false, true].map(moved => ({ type, moved }))))(
