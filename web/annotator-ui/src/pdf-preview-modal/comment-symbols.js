@@ -348,8 +348,8 @@
                 ArrowRight: () => buttons[(index + 1) % buttons.length],
                 ArrowUp: () => vertical(-1),
                 ArrowDown: () => vertical(1),
-                Home: () => buttons[0],
-                End: () => buttons[buttons.length - 1],
+                Home: () => (event.ctrlKey ? buttons : rows[row])[0],
+                End: () => (event.ctrlKey ? buttons : rows[row]).at(-1),
             };
             if (key === 'Enter') {
                 event.preventDefault();

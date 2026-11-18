@@ -10,7 +10,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Type, Union
 
@@ -21,7 +21,6 @@ except ImportError:
         "PyMuPDF is required for PDF annotation. " "Install with: pip install pymupdf"
     )
 
-from aems_pdf_annotator._textbox_font import embed_textbox_sans, textbox_sans_font_xref
 from aems_pdf_annotator.geometry import native_point_to_pdf, pdf_point_to_native
 
 from aems_pdf_annotator.models import (
@@ -32,6 +31,15 @@ from aems_pdf_annotator.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+try:
+    from aems_pdf_annotator._textbox_font import embed_textbox_sans, textbox_sans_font_xref
+except (ImportError, AttributeError):
+    embed_textbox_sans = None
+    textbox_sans_font_xref = None
+    logger.warning("Notation painting is unavailable. Using native textbox appearances.")
+
+_TextboxDevice = getattr(fitz.mupdf, "FzDevice2", object)
 
 
 def textbox_content_error(text: str) -> Optional[str]:
@@ -52,7 +60,7 @@ def _textbox_rect_on_page(page: Any, rect: Any) -> Any:
     return fitz.Rect(left, top, left + width, top + height)
 
 
-class _TextboxInkBounds(fitz.mupdf.FzDevice2):
+class _TextboxInkBounds(_TextboxDevice):
     """Observe every glyph the native writer emits, including clipped glyphs."""
 
     def __init__(self, local: bool = False) -> None:
@@ -71,11 +79,18 @@ class _TextboxInkBounds(fitz.mupdf.FzDevice2):
         self.bounds |= fitz.Rect(box.x0, box.y0, box.x1, box.y1)
 
 
-def _textbox_ink_bounds(annot: Any) -> Any:
+class _TextboxRenderError(RuntimeError):
+    """MuPDF could not run an appearance through the measurement device."""
+
+
+def _textbox_ink_bounds(annot: Any, *, local: bool = False) -> Any:
     """Run the appearance without a raster device's clipping side effects."""
     native = fitz.mupdf
-    device = _TextboxInkBounds()
-    native.pdf_run_annot(annot.this, device, native.FzMatrix(), native.FzCookie())
+    device = _TextboxInkBounds(local=local)
+    try:
+        native.pdf_run_annot(annot.this, device, native.FzMatrix(), native.FzCookie())
+    except Exception as error:
+        raise _TextboxRenderError("Could not measure textbox ink") from error
     return device.bounds
 
 
@@ -92,10 +107,7 @@ def _contain_textbox_ink(annot: Any) -> bool:
     stream = doc.xref_stream(xref)
     if b"% AEMS ink containment\n" in stream:
         return False
-    native = fitz.mupdf
-    device = _TextboxInkBounds(local=True)
-    native.pdf_run_annot(annot.this, device, native.FzMatrix(), native.FzCookie())
-    bounds = device.bounds
+    bounds = _textbox_ink_bounds(annot, local=True)
     rect = annot.rect
     width, height = (
         (rect.height, rect.width)
@@ -129,6 +141,8 @@ def _textbox_font_size(
         raise ValueError(error)
     if rect.is_empty:
         raise ValueError("The text cannot fit inside this textbox.")
+    if _TextboxDevice is object:
+        return maximum, True
     # A disposable document avoids adding probe annotations or font resources
     # to the user's PDF. The same writer, encoding and rotation paint both.
     with fitz.open() as probe:
@@ -220,7 +234,8 @@ def _add_fitted_textbox(
     )
     _safe_set_info(annot, "content", text)
     fitz.mupdf.pdf_update_annot(annot.this)
-    _contain_textbox_ink(annot)
+    if _TextboxDevice is not object:
+        _contain_textbox_ink(annot)
     return annot
 
 
@@ -657,14 +672,15 @@ def _textbox_rotation(annot: Any) -> int:
     return value if value in (90, 180, 270) else 0
 
 
-def fit_existing_textboxes(doc: Any) -> int:
+def fit_existing_textboxes(doc: Any, *, failed_xrefs: set[int] | None = None) -> int:
     """Repair legacy plain FreeText appearances without changing review evidence.
 
     Existing valid rectangles, native font/color, identity and audit fields stay
     intact. Native font metrics also handle old blank or clipped appearances.
-    Unsupported external font metrics are left intact rather than replaced
-    with a different font.
+    Unsupported external font metrics retain their existing appearance.
     """
+    if _TextboxDevice is object:
+        return 0
     repaired = 0
     for page in doc:
         for annot in page.annots():
@@ -674,63 +690,91 @@ def fit_existing_textboxes(doc: Any) -> int:
             text = str(info.get("content") or "")
             if not text.strip():
                 continue
-            rect = _textbox_rect_on_page(page, annot.rect)
-            moved = tuple(rect) != tuple(annot.rect)
-            painted = "".join(annot.get_text().split())
-            if not moved and painted == "".join(text.split()):
-                clip = fitz.mupdf.pdf_bound_annot(annot.this)
-                clip = fitz.Rect(clip.x0, clip.y0, clip.x1, clip.y1)
-                # Bound-text adds a device unit for raster rounding; accept
-                # that padding, never an actual glyph bearing outside the clip.
-                if (clip + (-1.0001, -1.0001, 1.0001, 1.0001)).contains(
-                    _textbox_ink_bounds(annot)
-                ):
-                    continue
-            font_name, maximum, _ = _native_textbox_style(annot)
             try:
-                fitz.get_text_length("M", fontname=font_name, fontsize=1)
-            except ValueError:
+                repaired += _fit_existing_textbox(doc, page, annot, text)
+            except _TextboxRenderError:
+                if failed_xrefs is not None:
+                    failed_xrefs.add(annot.xref)
                 logger.warning(
-                    "Existing textbox font metrics unsupported; appearance retained"
+                    "Could not measure textbox xref %s. Keeping existing appearance.",
+                    annot.xref,
+                    exc_info=True,
                 )
-                continue
-            size, original_fits = _textbox_font_size(
-                page, rect, text, font_name, maximum, _textbox_rotation(annot)
-            )
-            target_size = maximum if original_fits else size * 0.95
-            original_da = doc.xref_get_key(annot.xref, "DA")
-            if moved:
-                annot.set_rect(rect)
-            da = original_da[1] if original_da[0] == "string" else ""
-            if original_da[0] == "string":
-                # Keep authored operators, replacing only the font size.
-                matches = list(
-                    re.finditer(
-                        r"/[^\s]+\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?)\s+Tf",
-                        original_da[1],
-                    )
-                )
-                if matches:
-                    match = matches[-1]
-                    da = (
-                        original_da[1][: match.start(1)]
-                        + format(target_size, ".9g")
-                        + original_da[1][match.end(1) :]
-                    )
-                else:
-                    da += f" /{font_name} {target_size:.9g} Tf"
-            else:
-                da = f"/{font_name} {target_size:.9g} Tf"
-            doc.xref_set_key(annot.xref, "DA", fitz.get_pdf_str(da))
-            # PyMuPDF 1.25's high-level update rewrites an absolute native
-            # Form stream into local coordinates without matching its BBox.
-            # MuPDF regenerates the whole appearance consistently, including
-            # the authored rotation, font, color and existing annotation xref.
-            fitz.mupdf.pdf_dirty_annot(annot.this)
-            fitz.mupdf.pdf_update_annot(annot.this)
-            _contain_textbox_ink(annot)
-            repaired += 1
     return repaired
+
+
+def _fit_existing_textbox(doc: Any, page: Any, annot: Any, text: str) -> bool:
+    rect = _textbox_rect_on_page(page, annot.rect)
+    moved = tuple(rect) != tuple(annot.rect)
+    painted = "".join(annot.get_text().split())
+    if not moved and painted == "".join(text.split()):
+        clip = fitz.mupdf.pdf_bound_annot(annot.this)
+        clip = fitz.Rect(clip.x0, clip.y0, clip.x1, clip.y1)
+        # Bound-text adds a device unit for raster rounding; accept
+        # that padding, never an actual glyph bearing outside the clip.
+        if (clip + (-1.0001, -1.0001, 1.0001, 1.0001)).contains(
+            _textbox_ink_bounds(annot)
+        ):
+            return False
+    font_name, maximum, _ = _native_textbox_style(annot)
+    try:
+        fitz.get_text_length("M", fontname=font_name, fontsize=1)
+    except ValueError:
+        logger.warning(
+            "Existing textbox font metrics unsupported; appearance retained"
+        )
+        return False
+    size, original_fits = _textbox_font_size(
+        page, rect, text, font_name, maximum, _textbox_rotation(annot)
+    )
+    target_size = maximum if original_fits else size * 0.95
+    original_da = doc.xref_get_key(annot.xref, "DA")
+    # The native update can overwrite the current Form in place. Capture it
+    # before making changes so a failed containment measurement can roll back.
+    original_annot = doc.xref_object(annot.xref)
+    ap_kind, ap_ref = doc.xref_get_key(annot.xref, "AP/N")
+    if ap_kind == "xref":
+        ap_xref = int(ap_ref.split()[0])
+        original_ap = doc.xref_object(ap_xref)
+        original_stream = doc.xref_stream(ap_xref)
+    if moved:
+        annot.set_rect(rect)
+    da = original_da[1] if original_da[0] == "string" else ""
+    if original_da[0] == "string":
+        # Keep authored operators, replacing only the font size.
+        matches = list(
+            re.finditer(
+                r"/[^\s]+\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?)\s+Tf",
+                original_da[1],
+            )
+        )
+        if matches:
+            match = matches[-1]
+            da = (
+                original_da[1][: match.start(1)]
+                + format(target_size, ".9g")
+                + original_da[1][match.end(1) :]
+            )
+        else:
+            da += f" /{font_name} {target_size:.9g} Tf"
+    else:
+        da = f"/{font_name} {target_size:.9g} Tf"
+    doc.xref_set_key(annot.xref, "DA", fitz.get_pdf_str(da))
+    # PyMuPDF 1.25's high-level update rewrites an absolute native
+    # Form stream into local coordinates without matching its BBox.
+    # MuPDF regenerates the whole appearance consistently, including
+    # the authored rotation, font, color and existing annotation xref.
+    fitz.mupdf.pdf_dirty_annot(annot.this)
+    fitz.mupdf.pdf_update_annot(annot.this)
+    try:
+        _contain_textbox_ink(annot)
+    except _TextboxRenderError:
+        doc.update_object(annot.xref, original_annot)
+        if ap_kind == "xref":
+            doc.update_object(ap_xref, original_ap)
+            doc.update_stream(ap_xref, original_stream)
+        raise
+    return True
 
 
 def _legacy_subject_id(metadata: Dict[str, Any]) -> Optional[str]:
@@ -2641,30 +2685,29 @@ class PDFAnnotator:
         # Ensure output directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        document = self.doc
-
-        @cache
-        def notation_font_xref(font: fitz.Font) -> int:
-            return textbox_sans_font_xref(document, font)
-
         try:
             _validate_unique_annotation_ids(self.doc)
-            fit_existing_textboxes(self.doc)
-            for page in self.doc:
-                for annot in page.annots(types=(fitz.PDF_ANNOT_FREE_TEXT,)):
-                    da = self.doc.xref_get_key(annot.xref, "DA")[1]
-                    if re.search(r"/(?:Helv|Helvetica)\s", da, re.IGNORECASE):
-                        try:
-                            embed_textbox_sans(
-                                annot, annot.info.get("content", ""), notation_font_xref
-                            )
-                        except Exception:
-                            logger.warning(
-                                "Could not embed notation font for textbox xref %s. "
-                                "Keeping native appearance.",
-                                annot.xref,
-                                exc_info=True,
-                            )
+            failed_xrefs: set[int] = set()
+            fit_existing_textboxes(self.doc, failed_xrefs=failed_xrefs)
+            if embed_textbox_sans is not None and textbox_sans_font_xref is not None:
+                notation_font_xref = cache(partial(textbox_sans_font_xref, self.doc))
+                for page in self.doc:
+                    for annot in page.annots(types=(fitz.PDF_ANNOT_FREE_TEXT,)):
+                        if annot.xref in failed_xrefs:
+                            continue
+                        da = self.doc.xref_get_key(annot.xref, "DA")[1]
+                        if re.search(r"/(?:Helv|Helvetica)\s", da, re.IGNORECASE):
+                            try:
+                                embed_textbox_sans(
+                                    annot, annot.info.get("content", ""), notation_font_xref
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "Could not embed notation font for textbox xref %s. "
+                                    "Keeping native appearance.",
+                                    annot.xref,
+                                    exc_info=True,
+                                )
             _scale_note_icons(self.doc)
             output_resolved = output_path.resolve()
             source_resolved = self.pdf_path.resolve()

@@ -137,13 +137,17 @@ describe('symbol popover', () => {
         expect(press(toggle, 'Escape')).toBe(true);
     });
 
-    it.each([['End', -1], ['Home', 0]])('%s focuses the end or start of the picker', (key, index) => {
+    it.each([['End', 2, -1], ['Home', 0, 0]])('%s moves within the row or across the grid with Ctrl', (key, group, index) => {
         const { panel, toggle } = setup();
         toggle.click();
-        const buttons = [...panel.querySelectorAll('button')];
-        buttons[6].focus();
-        expect(press(buttons[6], key)).toBe(false);
-        expect(document.activeElement).toBe(buttons.at(index));
+        const rows = [...panel.children].map(row => [...row.querySelectorAll('button')]);
+        const initial = rows[1][3];
+        initial.focus();
+        expect(press(initial, key)).toBe(false);
+        expect(document.activeElement).toBe(rows[1].at(index));
+        initial.focus();
+        expect(press(initial, key, { ctrlKey: true })).toBe(false);
+        expect(document.activeElement).toBe(rows[group].at(index));
     });
 
     it('keeps keyboard events inside the picker so review tool shortcuts cannot run', () => {
