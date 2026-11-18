@@ -20,6 +20,7 @@ except ImportError:
         "PyMuPDF is required for PDF annotation. " "Install with: pip install pymupdf"
     )
 
+from aems_pdf_annotator._textbox_font import embed_textbox_sans
 from aems_pdf_annotator.geometry import native_point_to_pdf, pdf_point_to_native
 
 from aems_pdf_annotator.models import (
@@ -2642,6 +2643,11 @@ class PDFAnnotator:
         try:
             _validate_unique_annotation_ids(self.doc)
             fit_existing_textboxes(self.doc)
+            for page in self.doc:
+                for annot in page.annots(types=(fitz.PDF_ANNOT_FREE_TEXT,)):
+                    da = self.doc.xref_get_key(annot.xref, "DA")[1]
+                    if re.search(r"/(?:Helv|Helvetica)\s", da, re.IGNORECASE):
+                        embed_textbox_sans(annot, annot.info.get("content", ""))
             _scale_note_icons(self.doc)
             output_resolved = output_path.resolve()
             source_resolved = self.pdf_path.resolve()
