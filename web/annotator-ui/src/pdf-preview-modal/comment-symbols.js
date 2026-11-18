@@ -1,32 +1,39 @@
 (function (exports) {
     'use strict';
 
-    const greek = 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega'.split(' ');
-    const lower = [...'αβγδεζηθικλμνξοπρστυφχψω'].map((glyph, index) => [greek[index], glyph]);
-    const visibleCapitals = 'ΓΔΘΛΞΠΣΦΨΩ';
-    const capitals = [...'ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ'].map((glyph, index) => {
-        const name = greek[index];
-        const hidden = !visibleCapitals.includes(glyph);
-        return [name[0].toUpperCase() + name.slice(1), glyph, hidden ? name : undefined, hidden];
-    });
-    // The shortcut name, Unicode text, optional spoken label and palette visibility.
-    const groups = [
-        ['Greek lowercase', [...lower, ['varphi', 'ϕ', 'variant phi'], ['vartheta', 'ϑ', 'variant theta']]],
-        ['Greek uppercase', capitals],
-        ['Math symbols', [
-            ['pm', '±', 'plus-minus'], ['times', '×', 'multiplication'], ['cdot', '·', 'middle dot'],
-            ['div', '÷', 'division'], ['deg', '°', 'degree'], ['approx', '≈', 'approximately equal'],
-            ['ne', '≠', 'not equal'], ['le', '≤', 'less than or equal'], ['ge', '≥', 'greater than or equal'],
-            ['inf', '∞', 'infinity'], ['sqrt', '√', 'square root'], ['partial', '∂', 'partial derivative'],
-            ['nabla', '∇', 'nabla'], ['sum', '∑', 'summation'], ['int', '∫', 'integral'],
-            ['to', '→', 'right arrow'], ['implies', '⇒', 'implies'], ['propto', '∝', 'proportional to'],
-            ['prime', '′', 'prime'], ['dprime', '″', 'double prime'], ['sup2', '²', 'superscript two'],
-            ['sup3', '³', 'superscript three'], ['inv', '⁻¹', 'superscript minus one'],
-            ['sub0', '₀', 'subscript zero'], ['sub1', '₁', 'subscript one'], ['sub2', '₂', 'subscript two'],
-            ['subx', 'ₓ', 'subscript x'], ['suby', 'ᵧ', 'subscript y'],
+    // Shortcut, Unicode text, optional spoken label and hidden flag.
+    // Keep the entries JSON-compatible so the Python paint and Unicode tests read the same map.
+    const commentSymbolGroups = [
+        ["Greek lowercase", [
+            ["alpha", "α"], ["beta", "β"], ["gamma", "γ"],
+            ["delta", "δ"], ["epsilon", "ε"], ["zeta", "ζ"],
+            ["eta", "η"], ["theta", "θ"], ["iota", "ι"],
+            ["kappa", "κ"], ["lambda", "λ"], ["mu", "μ"],
+            ["nu", "ν"], ["xi", "ξ"], ["omicron", "ο"],
+            ["pi", "π"], ["rho", "ρ"], ["sigma", "σ"],
+            ["tau", "τ"], ["upsilon", "υ"], ["phi", "ϕ"],
+            ["chi", "χ"], ["psi", "ψ"], ["omega", "ω"],
+            ["varphi", "φ", "variant phi"], ["vartheta", "ϑ", "variant theta"]
         ]],
+        ["Greek uppercase", [
+            ["Gamma", "Γ"], ["Delta", "Δ"], ["Theta", "Θ"],
+            ["Lambda", "Λ"], ["Xi", "Ξ"], ["Pi", "Π"],
+            ["Sigma", "Σ"], ["Upsilon", "Υ", "upsilon", true], ["Phi", "Φ"],
+            ["Psi", "Ψ"], ["Omega", "Ω"]
+        ]],
+        ["Math symbols", [
+            ["pm", "±", "plus-minus"], ["times", "×", "multiplication"], ["cdot", "·", "middle dot"],
+            ["div", "÷", "division"], ["deg", "°", "degree"], ["approx", "≈", "approximately equal"],
+            ["ne", "≠", "not equal"], ["le", "≤", "less than or equal"], ["ge", "≥", "greater than or equal"],
+            ["inf", "∞", "infinity"], ["sqrt", "√", "square root"], ["partial", "∂", "partial derivative"],
+            ["nabla", "∇", "nabla"], ["sum", "∑", "summation"], ["int", "∫", "integral"],
+            ["to", "→", "right arrow"], ["implies", "⇒", "implies"], ["propto", "∝", "proportional to"],
+            ["prime", "′", "prime"], ["dprime", "″", "double prime"], ["sup2", "²", "superscript two"],
+            ["sup3", "³", "superscript three"], ["inv", "⁻¹", "superscript minus one"], ["sub0", "₀", "subscript zero"],
+            ["sub1", "₁", "subscript one"], ["sub2", "₂", "subscript two"], ["subx", "ₓ", "subscript x"]
+        ]]
     ];
-    const symbols = new Map(groups.flatMap(([, entries]) => entries.map(
+    const symbols = new Map(commentSymbolGroups.flatMap(([, entries]) => entries.map(
         ([name, glyph, label = name, hidden = false]) => [name, { glyph, label, hidden }],
     )));
     const storageKey = 'aems.annotation.recentSymbols';
@@ -34,9 +41,24 @@
 
     function shortcutAt(value, start, end) {
         if (start !== end) return null;
-        const token = value.slice(0, start).match(/(?<!\\)\\([a-z][a-z0-9]*)$/i);
-        if (!token || !symbols.has(token[1])) return null;
-        return { start: token.index, name: token[1] };
+        const token = value.slice(0, start).match(/(?:^|[\s\p{Ps}<])(\\([a-z][a-z0-9]*))$/iu);
+        if (!token || !symbols.has(token[2])) return null;
+        return { start: start - token[1].length, name: token[2] };
+    }
+
+    function shortcutAtSelection(editor, value, selection) {
+        const { start, end, range } = selection;
+        const shortcut = shortcutAt(value, start, end);
+        if (shortcut || !range?.collapsed) return shortcut;
+        const node = range.endContainer;
+        // Range.toString() omits line breaks represented by editable HTML.
+        if (node.nodeType !== 3) return null;
+        const block = node.parentElement;
+        const startsLine = node.previousSibling?.nodeName === 'BR'
+            || (block !== editor && node === block.firstChild && block.matches('div, p'));
+        if (!startsLine) return null;
+        const local = shortcutAt(node.data, range.endOffset, range.endOffset);
+        return local && { ...local, start: end - range.endOffset + local.start };
     }
 
     function textOffset(editor, node, offset) {
@@ -48,16 +70,16 @@
 
     function editableRange(editor, start, end) {
         const document = editor.ownerDocument;
-        function locate(offset) {
+        function locate(offset, preferNext = false) {
             const walker = document.createTreeWalker(editor, document.defaultView.NodeFilter.SHOW_TEXT);
             for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-                if (offset <= node.length) return [node, offset];
+                if (offset < node.length || (offset === node.length && !preferNext)) return [node, offset];
                 offset -= node.length;
             }
             return [editor, editor.childNodes.length];
         }
         const range = document.createRange();
-        range.setStart(...locate(start));
+        range.setStart(...locate(start, start !== end));
         range.setEnd(...locate(end));
         return range;
     }
@@ -82,7 +104,7 @@
         return editor.tagName === 'TEXTAREA' ? editor.value : editor.textContent;
     }
 
-    function replaceSelection(editor, value, selection, inputType = 'insertText') {
+    function replaceSelection(editor, value, selection, inputType = 'insertText', notifyChange = true) {
         const document = editor.ownerDocument;
         const { start, end } = selection;
         editor.focus({ preventScroll: true });
@@ -115,7 +137,7 @@
                 bubbles: true, data: value, inputType,
             }));
         }
-        editor.dispatchEvent(new document.defaultView.Event('change', { bubbles: true }));
+        if (notifyChange) editor.dispatchEvent(new document.defaultView.Event('change', { bubbles: true }));
         return native;
     }
 
@@ -138,20 +160,25 @@
         toggle.textContent = 'Ω';
         toggle.title = translate('Insert symbol');
         toggle.setAttribute('aria-label', toggle.title);
+        toggle.setAttribute('aria-haspopup', 'dialog');
         toggle.setAttribute('aria-expanded', 'false');
         const panel = document.createElement('div');
         panel.className = 'comment-symbol-panel';
-        panel.setAttribute('role', 'group');
+        panel.setAttribute('role', 'dialog');
         panel.setAttribute('aria-label', toggle.title);
         panel.hidden = true;
         // The top layer avoids clipping by the PDF viewport and scrolling sidebar.
-        const anchored = panel.showPopover && document.defaultView.CSS?.supports('position-area: block-end span-inline-end');
-        if (anchored) panel.popover = 'manual';
+        const view = document.defaultView;
+        const topLayer = typeof panel.showPopover === 'function';
+        if (topLayer) panel.setAttribute('popover', 'manual');
         root.append(toggle, panel);
         editor.after(root);
 
         let recent = [];
-        let undo;
+        let history;
+        let nativeConversion;
+        let suppressed;
+        let positionListeners;
         let rows;
         let savedSelection;
 
@@ -174,18 +201,56 @@
             }
         }
 
+        function positionPanel() {
+            if (!root.isConnected) {
+                close();
+                return;
+            }
+            const anchor = toggle.getBoundingClientRect();
+            const { width, height } = panel.getBoundingClientRect();
+            const viewportWidth = document.documentElement.clientWidth;
+            const viewportHeight = document.documentElement.clientHeight;
+            const gap = 4;
+            const below = anchor.bottom + gap;
+            const above = anchor.top - height - gap;
+            panel.style.left = Math.max(gap, Math.min(anchor.left, viewportWidth - width - gap)) + 'px';
+            panel.style.top = Math.max(gap, below + height <= viewportHeight - gap ? below : above) + 'px';
+        }
+
         function close() {
-            if (anchored && panel.matches(':popover-open')) panel.hidePopover();
+            if (panel.hidden) return;
+            positionListeners.abort();
+            if (topLayer) panel.hidePopover();
             panel.hidden = true;
             toggle.setAttribute('aria-expanded', 'false');
         }
 
-        function insert(name, selection, suffix = '') {
+        function insert(name, selection, trigger) {
             const { start, end } = selection;
+            const glyph = symbols.get(name).glyph;
             const original = editorText(editor).slice(start, end);
-            const text = symbols.get(name).glyph + suffix;
-            const native = replaceSelection(editor, text, selection);
-            if (!native) undo = { start, end: start + text.length, original, value: editorText(editor) };
+            const delimiter = trigger === 'Tab' ? '\t' : ' ';
+            const converted = glyph + (trigger === ' ' ? delimiter : '');
+            let typed = original;
+            let replaceThrough = end;
+            if (trigger !== undefined) {
+                // Put the actual typed delimiter into the browser history before
+                // replacing the complete token. Native Undo then restores both.
+                // Chrome can generate a styled HTML span for a Tab in a
+                // contenteditable. Insert that delimiter as plain text.
+                const inputType = trigger === 'Tab' && selection.caret ? 'insertReplacementText' : 'insertText';
+                replaceSelection(editor, delimiter, { start: end, end, range: selection.caret }, inputType, false);
+                typed += delimiter;
+                replaceThrough += delimiter.length;
+            }
+            const typedValue = editorText(editor);
+            const native = replaceSelection(editor, converted, { ...selection, end: replaceThrough });
+            const token = trigger === undefined ? undefined : original;
+            if (native) {
+                if (token !== undefined) nativeConversion = { start, token, typedValue };
+            } else {
+                history = { start, typed, converted, token, value: editorText(editor), undone: false };
+            }
             remember(name);
         }
 
@@ -205,7 +270,14 @@
                     const cell = document.createElement('button');
                     cell.type = 'button';
                     cell.tabIndex = -1;
-                    cell.textContent = glyph;
+                    if (/^(?:sub|sup)|^(?:inv|d?prime)$/.test(name)) {
+                        const visual = document.createElement('span');
+                        visual.className = 'comment-symbol-small-glyph';
+                        visual.textContent = glyph;
+                        cell.append(visual);
+                    } else {
+                        cell.textContent = glyph;
+                    }
                     cell.setAttribute('aria-label', spoken);
                     cell.title = spoken + ' (\\' + name + ')';
                     cell.addEventListener('click', () => {
@@ -232,11 +304,16 @@
             rows = [];
             panel.replaceChildren();
             if (recent.length) addGroup('Recently used symbols', recent);
-            groups.forEach(([label, entries]) => {
+            commentSymbolGroups.forEach(([label, entries]) => {
                 addGroup(label, entries.map(([name]) => name).filter(name => !symbols.get(name).hidden));
             });
             panel.hidden = false;
-            if (anchored) panel.showPopover({ source: toggle });
+            if (topLayer) panel.showPopover();
+            positionListeners = new view.AbortController();
+            positionPanel();
+            const { signal } = positionListeners;
+            view.addEventListener('resize', positionPanel, { signal });
+            view.addEventListener('scroll', positionPanel, { signal, capture: true });
             toggle.setAttribute('aria-expanded', 'true');
             rows[0][0].focus({ preventScroll: true });
         });
@@ -272,32 +349,55 @@
                 ArrowRight: () => buttons[(index + 1) % buttons.length],
                 ArrowUp: () => vertical(-1),
                 ArrowDown: () => vertical(1),
-                Enter: () => target,
             };
-            if (!Object.hasOwn(moves, key)) return;
-            event.preventDefault();
-            if (key === 'Enter') target.click();
-            else moves[key]().focus({ preventScroll: true });
+            if (key === 'Enter') {
+                event.preventDefault();
+                target.click();
+            } else if (Object.hasOwn(moves, key)) {
+                event.preventDefault();
+                moves[key]().focus({ preventScroll: true });
+            }
         });
 
         editor.addEventListener('focus', () => { savedSelection = undefined; });
         editor.addEventListener('blur', () => { savedSelection = readSelection(editor); });
-        editor.addEventListener('input', () => { undo = undefined; });
+        editor.addEventListener('input', event => {
+            history = undefined;
+            const value = editorText(editor);
+            if (suppressed && value.slice(suppressed.start, suppressed.end) !== suppressed.token) {
+                suppressed = undefined;
+            }
+            if (event.inputType === 'historyUndo' && nativeConversion?.typedValue === value) {
+                const { start, token } = nativeConversion;
+                suppressed = { start, end: start + token.length, token };
+            }
+        });
         editor.addEventListener('keydown', event => {
-            if (event.isComposing || event.altKey || event.shiftKey) return;
+            if (event.isComposing || event.altKey) return;
             const modified = event.ctrlKey || event.metaKey;
             const value = editorText(editor);
-            if (undo && value === undo.value && modified && event.key.toLowerCase() === 'z') {
-                event.preventDefault();
-                replaceSelection(editor, undo.original, undo, 'historyUndo');
-                return;
+            const key = event.key.toLowerCase();
+            if (history && value === history.value && modified) {
+                const undo = key === 'z' && !event.shiftKey && !history.undone;
+                const redo = (key === 'y' || (key === 'z' && event.shiftKey)) && history.undone;
+                if (undo || redo) {
+                    event.preventDefault();
+                    const entry = history;
+                    const { start, typed, converted, token } = entry;
+                    replaceSelection(editor, undo ? typed : converted, {
+                        start, end: start + (undo ? converted : typed).length,
+                    }, undo ? 'historyUndo' : 'historyRedo');
+                    history = { ...entry, value: editorText(editor), undone: undo };
+                    if (undo && token !== undefined) suppressed = { start, end: start + token.length, token };
+                    return;
+                }
             }
-            if (modified || (event.key !== ' ' && event.key !== 'Tab')) return;
+            if (event.shiftKey || modified || (event.key !== ' ' && event.key !== 'Tab')) return;
             const selection = readSelection(editor);
-            const shortcut = selection && shortcutAt(value, selection.start, selection.end);
-            if (!shortcut) return;
+            const shortcut = selection && shortcutAtSelection(editor, value, selection);
+            if (!shortcut || (suppressed?.start === shortcut.start && suppressed.end === selection.end)) return;
             event.preventDefault();
-            insert(shortcut.name, { start: shortcut.start, end: selection.end }, event.key === ' ' ? ' ' : '');
+            insert(shortcut.name, { start: shortcut.start, end: selection.end, caret: selection.range }, event.key);
         });
 
         return root;

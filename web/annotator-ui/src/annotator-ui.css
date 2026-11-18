@@ -457,25 +457,18 @@
 }
 
 .comment-symbol-panel {
-    position: absolute;
+    position: fixed;
+    inset: auto;
     z-index: 10;
-    top: calc(100% + 0.2rem);
-    left: 0;
+    margin: 0;
+    max-width: calc(100vw - 8px);
+    max-height: calc(100dvh - 8px);
+    overflow: auto;
     padding: 0.35rem;
     border: 1px solid var(--bs-border-color, #d5dbe3);
     border-radius: 0.4rem;
     background: var(--bs-body-bg, #fff);
     box-shadow: 0 4px 12px rgb(0 0 0 / 14%);
-}
-
-.comment-symbol-panel[popover] {
-    position: fixed;
-    inset: auto;
-    position-area: block-end span-inline-end;
-    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
-    margin: 0.2rem 0;
-    max-height: 85dvh;
-    overflow: auto;
 }
 
 .comment-symbol-group + .comment-symbol-group {
@@ -492,6 +485,13 @@
 
 .comment-symbol-row button {
     height: 1.55rem;
+    display: grid;
+    place-items: center;
+}
+
+.comment-symbol-small-glyph {
+    font-size: 1.55rem;
+    line-height: 1;
 }
 
 .markup-textbox > .comment-symbol-picker {

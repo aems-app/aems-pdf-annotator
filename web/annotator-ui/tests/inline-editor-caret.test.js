@@ -93,9 +93,11 @@ describe('inline editor opening caret', () => {
     expect(keydown(delimiter), 'a known shortcut consumes the delimiter').toBe(false);
     expect(textarea.value).toBe('stress: ' + symbol);
     expect(keydown('z', { ctrlKey: true })).toBe(false);
-    expect(textarea.value).toBe('stress: \\alpha');
-    expect(keydown('Tab')).toBe(false);
-    typeText(textarea, ' \\unknown');
+    expect(textarea.value).toBe('stress: \\alpha' + (delimiter === 'Tab' ? '\t' : ' '));
+    textarea.setSelectionRange(14, 14);
+    expect(keydown('Tab')).toBe(true);
+    expect(keydown('y', { ctrlKey: true })).toBe(false);
+    typeText(textarea, (delimiter === 'Tab' ? ' ' : '') + '\\unknown');
     expect(keydown('Tab')).toBe(true);
     expect(textarea.value).toBe('stress: α \\unknown');
   });

@@ -22,16 +22,16 @@ describe('shortcut lookup', () => {
     it.each([
         ['alpha', 'α'], ['Delta', 'Δ'], ['tau', 'τ'], ['sigma', 'σ'],
         ['pm', '±'], ['deg', '°'], ['approx', '≈'], ['le', '≤'], ['ge', '≥'],
-        ['inf', '∞'], ['sqrt', '√'], ['times', '×'], ['varphi', 'ϕ'],
-        ['vartheta', 'ϑ'], ['Omicron', 'Ο'], ['omega', 'ω'],
+        ['inf', '∞'], ['sqrt', '√'], ['times', '×'], ['phi', 'ϕ'], ['varphi', 'φ'],
+        ['vartheta', 'ϑ'], ['Upsilon', 'Υ'], ['omega', 'ω'],
     ])('recognizes %s at the caret and inserts %s', (name, glyph) => {
         const { textarea } = setup();
-        const command = 'x=\\' + name;
+        const command = 'x(\\' + name;
         textarea.value = command + ', trailing text';
         textarea.setSelectionRange(command.length, command.length);
         expect(shortcutAt(textarea.value, command.length, command.length)).toEqual({ start: 2, name });
         expect(press(textarea, 'Tab')).toBe(false);
-        expect(textarea.value).toBe('x=' + glyph + ', trailing text');
+        expect(textarea.value).toBe('x(' + glyph + ', trailing text');
         expect(textarea.selectionStart).toBe(3);
     });
 
@@ -76,9 +76,20 @@ describe('shortcut lookup', () => {
         try {
             textarea.value = '\\alpha';
             expect(press(textarea, 'Tab')).toBe(false);
-            expect(native).toHaveBeenCalledWith('insertText', false, 'α');
-            expect(input).toHaveBeenCalledOnce();
+            expect(native.mock.calls).toEqual([
+                ['insertText', false, '\t'],
+                ['insertText', false, 'α'],
+            ]);
+            expect(input).toHaveBeenCalledTimes(2);
             expect(press(textarea, 'z', { ctrlKey: true })).toBe(true);
+            textarea.value = '\\alpha\t';
+            textarea.setSelectionRange(6, 6);
+            textarea.dispatchEvent(new InputEvent('input', { inputType: 'historyUndo' }));
+            expect(press(textarea, 'Tab')).toBe(true);
+            textarea.value = '\\beta';
+            textarea.dispatchEvent(new InputEvent('input', { inputType: 'insertText' }));
+            expect(press(textarea, 'Tab')).toBe(false);
+            expect(textarea.value).toBe('β');
         } finally {
             delete document.execCommand;
         }
@@ -95,9 +106,9 @@ describe('symbol popover', () => {
         const groups = [...panel.children];
         expect(groups.map(group => [...group.querySelectorAll('button')].map(button => button.textContent).join(' ')))
             .toEqual([
-                'α β γ δ ε ζ η θ ι κ λ μ ν ξ ο π ρ σ τ υ φ χ ψ ω ϕ ϑ',
+                'α β γ δ ε ζ η θ ι κ λ μ ν ξ ο π ρ σ τ υ ϕ χ ψ ω φ ϑ',
                 'Γ Δ Θ Λ Ξ Π Σ Φ Ψ Ω',
-                '± × · ÷ ° ≈ ≠ ≤ ≥ ∞ √ ∂ ∇ ∑ ∫ → ⇒ ∝ ′ ″ ² ³ ⁻¹ ₀ ₁ ₂ ₓ ᵧ',
+                '± × · ÷ ° ≈ ≠ ≤ ≥ ∞ √ ∂ ∇ ∑ ∫ → ⇒ ∝ ′ ″ ² ³ ⁻¹ ₀ ₁ ₂ ₓ',
             ]);
         expect(panel.querySelector('[aria-label="sv-plus-minus"]').textContent).toBe('±');
         expect(panel.querySelector('[aria-label="sv-Delta"]').textContent).toBe('Δ');
@@ -112,11 +123,11 @@ describe('symbol popover', () => {
         toggle.click();
         const active = () => document.activeElement;
         expect(press(active(), 'ArrowLeft')).toBe(false);
-        expect(active().textContent).toBe('ᵧ');
+        expect(active().textContent).toBe('ₓ');
         expect(press(active(), 'ArrowUp')).toBe(false);
-        expect(active().textContent).toBe('∝');
+        expect(active().textContent).toBe('⇒');
         expect(press(active(), 'ArrowDown')).toBe(false);
-        expect(active().textContent).toBe('ᵧ');
+        expect(active().textContent).toBe('ₓ');
         expect(press(active(), 'F8')).toBe(true);
         expect(press(active(), 'ArrowRight')).toBe(false);
         expect(active().textContent).toBe('α');
@@ -155,10 +166,10 @@ describe('symbol popover', () => {
     it('names Greek capitals in the recent row even if omitted from the main palette', () => {
         const { textarea, panel, toggle } = setup(undefined, (key, params) =>
             params ? 'Stort ' + params.letter : key);
-        textarea.value = '\\Omicron';
+        textarea.value = '\\Upsilon';
         press(textarea, 'Tab');
         toggle.click();
-        expect(panel.querySelector('[aria-label="Stort omicron"]').textContent).toBe('Ο');
+        expect(panel.querySelector('[aria-label="Stort upsilon"]').textContent).toBe('Υ');
     });
 
     it.each(['malformed JSON', '{}', '["missing","alpha","alpha",42]'])('can insert with stored value %s', stored => {
@@ -180,28 +191,35 @@ describe('symbol popover', () => {
         expect(document.activeElement.textContent).toBe('⁻¹');
     });
 
-    it('uses the top layer when anchor positioning is available', () => {
-        vi.stubGlobal('CSS', { supports: () => true });
-        let shown = false;
-        const show = vi.fn(() => { shown = true; });
-        const hide = vi.fn(() => { shown = false; });
+    it('anchors a top-layer dialog without native CSS anchors or a showPopover source', () => {
+        const show = vi.fn();
+        const hide = vi.fn();
         Object.defineProperties(HTMLElement.prototype, {
             showPopover: { configurable: true, value: show },
             hidePopover: { configurable: true, value: hide },
         });
         try {
             const { panel, toggle } = setup();
-            vi.spyOn(panel, 'matches').mockImplementation(selector => selector === ':popover-open' && shown);
-            expect(panel.popover).toBe('manual');
+            vi.spyOn(document.documentElement, 'clientWidth', 'get').mockReturnValue(400);
+            vi.spyOn(document.documentElement, 'clientHeight', 'get').mockReturnValue(300);
+            const anchor = vi.spyOn(toggle, 'getBoundingClientRect')
+                .mockReturnValue({ top: 265, bottom: 290, left: 355 });
+            vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({ width: 200, height: 120 });
+            expect(panel.getAttribute('popover')).toBe('manual');
             toggle.click();
-            expect(show).toHaveBeenCalledExactlyOnceWith({ source: toggle });
+            expect(show).toHaveBeenCalledExactlyOnceWith();
+            expect(panel.style.left).toBe('196px');
+            expect(panel.style.top).toBe('141px');
+            anchor.mockReturnValue({ top: 25, bottom: 50, left: 12 });
+            window.dispatchEvent(new Event('scroll'));
+            expect(panel.style.left).toBe('12px');
+            expect(panel.style.top).toBe('54px');
             press(document.activeElement, 'Escape');
             expect(hide).toHaveBeenCalledOnce();
             expect(panel.hidden).toBe(true);
         } finally {
             delete HTMLElement.prototype.showPopover;
             delete HTMLElement.prototype.hidePopover;
-            vi.unstubAllGlobals();
         }
     });
 
@@ -235,5 +253,108 @@ describe('symbol popover', () => {
         picker.querySelector('[aria-label="alpha"]').click();
         expect(editor.textContent).toBe('α');
         expect(document.activeElement).toBe(editor);
+    });
+});
+
+describe('round-one review regressions', () => {
+    it.each(['C:\\data\\to', 'x\\alpha', '=\\alpha', '\\suby', '\\Alpha', '\\Beta', '\\Epsilon', '\\Zeta', '\\Eta', '\\Iota', '\\Kappa', '\\Mu', '\\Nu', '\\Omicron', '\\Rho', '\\Tau', '\\Chi'])(
+        'leaves %s literal', text => {
+            const { textarea } = setup();
+            textarea.value = text;
+            expect(press(textarea, ' ')).toBe(true);
+            expect(textarea.value).toBe(text);
+        },
+    );
+
+    it.each(['', 'x ', 'x\t', 'x\n', '(', '[', '{'])('converts a token after %j', prefix => {
+        const { textarea } = setup();
+        textarea.value = prefix + '\\alpha';
+        expect(press(textarea, ' ')).toBe(false);
+        expect(textarea.value).toBe(prefix + 'α ');
+    });
+
+    it.each([[' ', ' '], ['Tab', '\t']])('restores the typed delimiter %j and suppresses the undone token',
+        (trigger, delimiter) => {
+            const { textarea } = setup();
+            textarea.value = '\\alpha, tail';
+            textarea.setSelectionRange(6, 6);
+            expect(press(textarea, trigger)).toBe(false);
+            expect(press(textarea, 'z', { ctrlKey: true })).toBe(false);
+            expect(textarea.value).toBe('\\alpha' + delimiter + ', tail');
+            expect(textarea.selectionStart).toBe(7);
+            textarea.setSelectionRange(6, 6);
+            expect(press(textarea, trigger)).toBe(true);
+            expect(textarea.value).toBe('\\alpha' + delimiter + ', tail');
+        },
+    );
+
+
+    it.each([['y', { ctrlKey: true }], ['Z', { metaKey: true, shiftKey: true }]])(
+        'reapplies a fallback conversion with %s after restoring the literal token', (key, options) => {
+            const { textarea } = setup();
+            textarea.value = '\\alpha';
+            expect(press(textarea, ' ')).toBe(false);
+            expect(press(textarea, 'z', { ctrlKey: true })).toBe(false);
+            expect(textarea.value).toBe('\\alpha ');
+            expect(press(textarea, key, options)).toBe(false);
+            expect(textarea.value).toBe('α ');
+        },
+    );
+
+    it('inserts on Enter and supports fallback Undo of a picker selection', () => {
+        const { textarea, toggle } = setup();
+        textarea.value = 'existing';
+        textarea.focus();
+        textarea.setSelectionRange(0, 8);
+        toggle.focus();
+        toggle.click();
+        expect(press(document.activeElement, 'Enter')).toBe(false);
+        expect(textarea.value).toBe('α');
+        expect(press(textarea, 'z', { ctrlKey: true })).toBe(false);
+        expect(textarea.value).toBe('existing');
+    });
+
+    it.each(['div', 'br'])('starts a token on a new contenteditable line made with %s', tag => {
+        const editor = document.createElement('div');
+        editor.tabIndex = 0;
+        editor.contentEditable = 'true';
+        const breakElement = document.createElement(tag);
+        const token = document.createTextNode('\\alpha');
+        const prefix = document.createTextNode('Prior line');
+        editor.append(prefix, breakElement);
+        if (tag === 'div') breakElement.append(token);
+        else editor.append(token);
+        document.body.append(editor);
+        attach(editor);
+        editor.focus();
+        getSelection().collapse(token, token.length);
+        expect(press(editor, ' ')).toBe(false);
+        expect(prefix.textContent).toBe('Prior line');
+        expect(editor.textContent).toBe('Prior lineα ');
+        expect(press(editor, 'z', { ctrlKey: true })).toBe(false);
+        expect(editor.textContent).toBe('Prior line\\alpha ');
+    });
+
+    it('cleans up positioning if an open editor is detached', () => {
+        const { picker, toggle, panel } = setup();
+        toggle.click();
+        picker.remove();
+        window.dispatchEvent(new Event('resize'));
+        expect(panel.hidden).toBe(true);
+    });
+
+    it('advertises a dialog and enlarges only the small notation glyphs', () => {
+        const { panel, toggle } = setup();
+        expect(toggle.getAttribute('aria-haspopup')).toBe('dialog');
+        expect(toggle.getAttribute('aria-expanded')).toBe('false');
+        toggle.click();
+        expect(panel.getAttribute('role')).toBe('dialog');
+        expect(toggle.getAttribute('aria-expanded')).toBe('true');
+        for (const label of ['prime', 'double prime', 'superscript two', 'subscript x', 'superscript minus one']) {
+            expect(panel.querySelector('[aria-label="' + label + '"] span').classList.contains('comment-symbol-small-glyph')).toBe(true);
+        }
+        expect(panel.querySelector('[aria-label="alpha"] span')).toBeNull();
+        press(document.activeElement, 'Escape');
+        expect(toggle.getAttribute('aria-expanded')).toBe('false');
     });
 });
