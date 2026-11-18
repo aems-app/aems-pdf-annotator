@@ -26,6 +26,9 @@ describe('annotator-ui bundle export surface', () => {
       <div id="pdfModelBCommentsList"></div>
       <div id="pdfGradedContainer"></div>
       <div id="pdfOriginalContainer"></div>
+      <div id="addCommentModal"><form id="addCommentForm">
+        <textarea id="addCommentText"></textarea>
+      </form></div>
     `;
     window.bootstrap = {
       Modal: {
@@ -41,6 +44,20 @@ describe('annotator-ui bundle export surface', () => {
     expect(typeof window.AEMSPdfAnnotator.createAnnotatorModal).toBe('function');
     expect(typeof window.AEMSPdfAnnotator.ensureModalPdfViewers).toBe('function');
     expect(typeof window.PdfPreviewModal.createPdfPreviewModal).toBe('function');
+  });
+
+  it('wires symbol insertion into the bundled new-comment form', async () => {
+    await import(new URL(BUNDLE_PATH, import.meta.url));
+    const editor = document.getElementById('addCommentText');
+    editor.value = 'x = ';
+    editor.focus();
+    editor.setSelectionRange(4, 4);
+    const picker = editor.nextElementSibling;
+    expect(picker?.querySelector('[aria-label="Insert symbol"]'), 'the new-comment editor exposes a symbol button').toBeTruthy();
+    picker.querySelector('[aria-label="Insert symbol"]').click();
+    picker.querySelector('[aria-label="square root"]').click();
+    expect(editor.value).toBe('x = √');
+    expect(document.activeElement).toBe(editor);
   });
 
   it('maps hostApi to the underlying modal modeAdapter contract', async () => {

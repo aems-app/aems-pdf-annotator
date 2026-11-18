@@ -27,6 +27,7 @@ describe('inline editor opening caret', () => {
       callback();
       return 1;
     });
+    await import('../src/pdf-preview-modal/comment-symbols.js');
     await import('../src/pdf-preview-modal.js');
     helpers = window.PdfPreviewModal.__test;
     label = document.querySelector('.annotation-label');
@@ -38,6 +39,7 @@ describe('inline editor opening caret', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    localStorage.clear();
     document.body.innerHTML = '';
   });
 
@@ -48,6 +50,55 @@ describe('inline editor opening caret', () => {
     expect(textarea).not.toBeNull();
     return textarea;
   }
+
+  it('opens a symbol palette by keyboard, navigates it, and replaces the selected text', () => {
+    const textarea = openEditor('Stress = sigma');
+    textarea.setSelectionRange(9, 14);
+    const input = vi.fn();
+    const change = vi.fn();
+    textarea.addEventListener('input', input);
+    textarea.addEventListener('change', change);
+    const toggle = label.querySelector('button[aria-label="Insert symbol"]');
+    expect(toggle, 'the inline editor exposes a symbol button').not.toBeNull();
+    expect(toggle.textContent).toBe('Ω');
+    toggle.focus();
+    toggle.click();
+    expect(document.activeElement.getAttribute('aria-label')).toBe('alpha');
+    vi.advanceTimersByTime(150);
+    expect(textarea.isConnected).toBe(true);
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(document.activeElement.getAttribute('aria-label')).toBe('beta');
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(textarea.value).toBe('Stress = β');
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([10, 10]);
+    expect(document.activeElement).toBe(textarea);
+    expect(input).toHaveBeenCalledOnce();
+    expect(change).toHaveBeenCalledOnce();
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    toggle.click();
+    expect(document.activeElement.getAttribute('aria-label')).toBe('beta');
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(document.activeElement).toBe(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(textarea.isConnected).toBe(true);
+  });
+
+  it.each([[' ', 'α '], ['Tab', 'α']])('converts a supported name on %s and undoes the conversion', (delimiter, symbol) => {
+    const textarea = openEditor('stress: ');
+    textarea.setSelectionRange(8, 8);
+    typeText(textarea, '\\alpha');
+    const keydown = (key, options = {}) => textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key, bubbles: true, cancelable: true, ...options,
+    }));
+    expect(keydown(delimiter), 'a known shortcut consumes the delimiter').toBe(false);
+    expect(textarea.value).toBe('stress: ' + symbol);
+    expect(keydown('z', { ctrlKey: true })).toBe(false);
+    expect(textarea.value).toBe('stress: \\alpha');
+    expect(keydown('Tab')).toBe(false);
+    typeText(textarea, ' \\unknown');
+    expect(keydown('Tab')).toBe(true);
+    expect(textarea.value).toBe('stress: α \\unknown');
+  });
 
   it('keeps typing across the 50 ms opening deadline in the intended order', () => {
     const textarea = openEditor();

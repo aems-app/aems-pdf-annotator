@@ -39,6 +39,7 @@ const orderedSources = [
     'pdf-preview-modal/annotation-helpers.js',
     'pdf-preview-modal/annotation-state.js',
     'pdf-preview-modal/inline-editor.js',
+    'pdf-preview-modal/comment-symbols.js',
     'pdf-preview-modal/sidebar-panel.js',
     'pdf-preview-modal/rendering.js',
     'pdf-preview-modal/annotation-controller.js',

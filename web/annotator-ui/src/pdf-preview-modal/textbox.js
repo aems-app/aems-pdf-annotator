@@ -354,6 +354,10 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
         entry.element.classList.toggle('editing', !!editing);
         if (contentEl) {
             contentEl.contentEditable = editing ? 'true' : 'false';
+            const picker = editing
+                ? window.PdfCommentSymbols?.attach(contentEl)
+                : window.PdfCommentSymbols?.pickerFor(contentEl.nextElementSibling);
+            if (picker) picker.hidden = !editing;
         }
     }
 
@@ -402,8 +406,14 @@ window.PdfPreviewModalTextbox = window.PdfPreviewModalTextbox || {};
             syncTextboxSize(entry);
         });
 
-        contentEl.addEventListener('blur', function () {
+        function commitOnExit(event) {
+            const picker = window.PdfCommentSymbols?.pickerFor(contentEl.nextElementSibling);
+            if (event.relatedTarget === contentEl || picker?.contains(event.relatedTarget)) return;
             commitTextbox(entry.pageIdx, entry);
+        }
+        contentEl.addEventListener('blur', commitOnExit);
+        entry.element.addEventListener('focusout', function (event) {
+            if (window.PdfCommentSymbols?.pickerFor(event.target)) commitOnExit(event);
         });
 
         contentEl.addEventListener('keydown', function (e) {

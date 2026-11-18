@@ -48,6 +48,7 @@ describe('real modal sidebar controller lifecycle', () => {
     await import('../src/pdf-preview-modal/annotation-helpers.js');
     await import('../src/pdf-preview-modal/sidebar-panel.js');
     await import('../src/pdf-preview-modal/modal-state.js');
+    await import('../src/pdf-preview-modal/comment-symbols.js');
     // Visibility is orthogonal to dispatch; render a real card without a PDF canvas.
     window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation = () => true;
     await import('../src/pdf-preview-modal/annotation-controller.js');
@@ -84,6 +85,7 @@ describe('real modal sidebar controller lifecycle', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    localStorage.clear();
   });
 
   async function createModal() {
@@ -111,6 +113,31 @@ describe('real modal sidebar controller lifecycle', () => {
       }
     }
   }
+
+  it('preserves the sidebar draft while the palette has focus, then saves and renders the symbol', async () => {
+    const current = await createModal();
+    current.controller.beginEdit(0, 'Q1-04', list.querySelector('.list-group-item').dataset.annotationId);
+    const textarea = list.querySelector('textarea');
+    expect(textarea).not.toBeNull();
+    textarea.focus();
+    textarea.setSelectionRange(0, textarea.value.length);
+    const toggle = list.querySelector('[aria-label="Insert symbol"]');
+    expect(toggle, 'sidebar editing exposes a symbol button').not.toBeNull();
+    toggle.focus();
+    toggle.click();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+    list.querySelector('[aria-label="Delta"]').click();
+    expect(textarea.value).toBe('Δ');
+    expect(document.activeElement).toBe(textarea);
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    outside.focus();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(adapter.updateAnnotation).toHaveBeenCalledOnce();
+    expect(adapter.updateAnnotation.mock.calls[0][3]).toMatchObject({ content: 'Δ' });
+    expect(list.querySelector('.annotation-content').textContent).toBe('Δ');
+  });
 
   async function reopen(cycles = 2, replacements = 0) {
     for (let i = 0; i < cycles; i++) {
@@ -305,10 +332,14 @@ describe('real modal sidebar controller lifecycle', () => {
     }
     expect(activeBindings.length, 'listener ownership must stay constant as rows are replaced').toBeLessThanOrEqual(initialCount);
     expect(activeBindings.filter(({ element }) => !element.isConnected), 'no detached child may retain an owned sidebar listener').toEqual([]);
-    expect(activeBindings.every(({ element }) => element === list), 'owned listeners belong only to the persistent list').toBe(true);
-    expect(new Set(activeBindings.map(({ type }) => type)).size, 'each event type is delegated once').toBe(activeBindings.length);
+    const delegated = activeBindings.filter(({ element }) => element === list);
+    const editor = list.querySelector('.auto-resize-textarea');
+    const picker = editor?.nextElementSibling;
+    expect(activeBindings.every(({ element }) => element === list || element === editor || picker?.contains(element)),
+      'only the live editor and its picker may own child listeners').toBe(true);
+    expect(new Set(delegated.map(({ type }) => type)).size, 'each event type is delegated once').toBe(delegated.length);
     current.modal.destroy();
-    expect(activeBindings, 'destroy must release every owned listener').toEqual([]);
+    expect(activeBindings.filter(({ element }) => element === list), 'destroy releases every delegated listener').toEqual([]);
   });
 
   it('destroy removes only its own listeners after 50 replacements and clears the persistent binding flag', async () => {

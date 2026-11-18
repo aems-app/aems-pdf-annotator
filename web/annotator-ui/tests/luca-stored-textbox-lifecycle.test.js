@@ -16,6 +16,7 @@ beforeEach(async () => {
         }
         return original.call(this);
     });
+    await import('../src/pdf-preview-modal/comment-symbols.js');
     await import('../src/pdf-preview-modal/textbox.js');
     textbox = window.PdfPreviewModalTextbox;
 });
@@ -54,6 +55,29 @@ function loaded(width = 617, height = 482, text = feedback) {
 function dimensions(element) {
     return { width: parseFloat(element.style.width), height: parseFloat(element.style.height) };
 }
+
+it('inserts symbols into a selected native textbox range and commits the resulting Unicode', () => {
+    const { entry } = loaded(617, 482, 'Stress: sigma');
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    textbox.onTextboxCommitted = vi.fn();
+    entry.contentElement.tabIndex = 0;
+    textbox.editTextbox(entry);
+    const selection = getSelection();
+    selection.setBaseAndExtent(entry.contentElement.firstChild, 8, entry.contentElement.firstChild, 13);
+    const toggle = entry.element.querySelector('[aria-label="Insert symbol"]');
+    expect(toggle, 'native PDF textbox editing exposes a symbol button').not.toBeNull();
+    toggle.focus();
+    toggle.click();
+    entry.element.querySelector('[aria-label="sigma"]').click();
+    expect(textbox.onTextboxCommitted).not.toHaveBeenCalled();
+    expect(entry.contentElement.textContent).toBe('Stress: σ');
+    expect(document.activeElement).toBe(entry.contentElement);
+    outside.focus();
+    expect(textbox.onTextboxCommitted).toHaveBeenCalledOnce();
+    expect(entry.content).toBe('Stress: σ');
+    expect(toggle.parentElement.hidden).toBe(true);
+});
 
 it.each(['edit', 'input', 'commit', 'page move', 'resize then input'])(
     'does not remeasure a stored box into a narrow column during %s', operation => {

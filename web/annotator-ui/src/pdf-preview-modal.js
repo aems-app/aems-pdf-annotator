@@ -881,6 +881,7 @@
         // BIDIRECTIONAL SYNC: Add input handlers to sidebar textareas for syncing to inline editor
         listEl.querySelectorAll('.auto-resize-textarea').forEach(sidebarTextarea => {
             if (!sidebarTextarea.id) return;
+            window.PdfCommentSymbols?.attach(sidebarTextarea, t);
 
             // Sync sidebar → inline on input
             sidebarTextarea.addEventListener('input', () => {
@@ -3515,14 +3516,15 @@
             const item = control?.closest('.list-group-item');
             return !!item?.querySelector(`#${CSS.escape('edit-annotation-text-' + currentIdentifier())}`);
         };
-        textarea.addEventListener('blur', (event) => {
-            if (isOwnControl(event.relatedTarget) || label._savePromise || isAnnotationContentSaveInFlight(currentIdentifier())) return;
+        function onEditorBlur(event) {
+            if (event.relatedTarget === textarea || symbolPicker?.contains(event.relatedTarget) ||
+                isOwnControl(event.relatedTarget) || label._savePromise || isAnnotationContentSaveInFlight(currentIdentifier())) return;
             // Small delay to check if clicking on another element within the label
             setTimeout(async () => {
                 if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 if (shouldIgnoreDetachedInlineBlur(textarea, label) ||
                     label.querySelector('.inline-annotation-editor') !== textarea ||
-                    isOwnControl(document.activeElement) || label._savePromise ||
+                    symbolPicker?.contains(document.activeElement) || isOwnControl(document.activeElement) || label._savePromise ||
                     isAnnotationContentSaveInFlight(currentIdentifier())) {
                     return;
                 }
@@ -3551,14 +3553,15 @@
                     if (!isCurrentHistoryEpoch(requestEpoch)) return;
                 }
             }, 100);
-        });
+        }
+        textarea.addEventListener('blur', onEditorBlur);
 
 
 
         // CRITICAL: Use capture phase keydown listener - same pattern as sidebar
         // This must be registered on document level like preventModalCloseOnEscape
         const escapeHandler = async (e) => {
-            if (!isCurrentHistoryEpoch(requestEpoch)) return;
+            if (!isCurrentHistoryEpoch(requestEpoch) || window.PdfCommentSymbols?.hasOpenPicker(e.target)) return;
             if (e.key === 'Escape' && label.classList.contains('label-editing')) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -3668,6 +3671,8 @@
         // Add strip and textarea to label
         label.appendChild(priorityStrip);
         label.appendChild(textarea);
+        const symbolPicker = window.PdfCommentSymbols?.attach(textarea, t);
+        symbolPicker?.addEventListener('focusout', onEditorBlur);
         repositionInlineLabel(label);
 
         // The editor is attached: initialise focus and selection before user input
@@ -9418,6 +9423,7 @@
     const addCommentForm = document.getElementById('addCommentForm');
     const addCommentSpinner = document.getElementById('addCommentSpinner');
     const addCommentText = document.getElementById('addCommentText');
+    if (addCommentText) window.PdfCommentSymbols?.attach(addCommentText, t);
     const addCommentPriority = document.getElementById('addCommentPriority');
     const addCommentType = document.getElementById('addCommentType');
     const addCommentPageLabel = document.getElementById('addCommentPage');
@@ -9680,7 +9686,7 @@
         // Attach to document with capture phase to intercept BEFORE browser's fullscreen handler
         const preventModalCloseOnEscape = async (e) => {
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
-            if (e.key !== 'Escape') return;
+            if (e.key !== 'Escape' || window.PdfCommentSymbols?.hasOpenPicker(e.target)) return;
 
             // Case 0: INLINE editing (on PDF) -> save and exit inline edit (stay in fullscreen/modal)
             if (inlineEditingLabel !== null && inlineEditingLabel.classList.contains('label-editing')) {
@@ -9891,7 +9897,7 @@
                 const isEditableNode = !!target?.isContentEditable;
                 // Keep native undo/redo inside real text editors, but still allow
                 // modal-wide undo/redo when focus is on the page-number navigator.
-                if (isTextInput || isTextarea || isEditableNode) {
+                if (isTextInput || isTextarea || isEditableNode || window.PdfCommentSymbols?.pickerFor(target)) {
                     return;
                 }
 
