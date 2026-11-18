@@ -1427,7 +1427,8 @@ describe('pdf-preview-modal placement helpers', () => {
 
   it.each([false, true])('FIX7: fallback pin selection and clearing work with markup module=%s', async markupAvailable => {
     const deselect = vi.fn();
-    if (markupAvailable) window.PdfPreviewModalMarkupSelection = { deselect };
+    const destroy = vi.fn();
+    if (markupAvailable) window.PdfPreviewModalMarkupSelection = { deselect, destroy };
     else delete window.PdfPreviewModalMarkupSelection;
     const h = await createUndoHarness();
     const { marker } = createMarker();
@@ -1442,6 +1443,7 @@ describe('pdf-preview-modal placement helpers', () => {
     expect(h.getSelectedAnnotation()).toEqual({ pageIdx: null, identifier: null });
     expect(deselect).toHaveBeenCalledTimes(markupAvailable ? 1 : 0);
     h.handle.destroy();
+    expect(destroy).toHaveBeenCalledTimes(markupAvailable ? 1 : 0);
     delete window.PdfPreviewModalMarkupSelection;
   });
 
