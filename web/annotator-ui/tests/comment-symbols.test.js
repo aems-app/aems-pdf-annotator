@@ -23,7 +23,7 @@ describe('shortcut lookup', () => {
         ['alpha', 'α'], ['Delta', 'Δ'], ['tau', 'τ'], ['sigma', 'σ'],
         ['pm', '±'], ['deg', '°'], ['approx', '≈'], ['le', '≤'], ['ge', '≥'],
         ['inf', '∞'], ['sqrt', '√'], ['times', '×'], ['phi', 'ϕ'], ['varphi', 'φ'],
-        ['vartheta', 'ϑ'], ['Upsilon', 'Υ'], ['omega', 'ω'],
+        ['vartheta', 'ϑ'], ['omega', 'ω'],
     ])('recognizes %s at the caret and inserts %s', (name, glyph) => {
         const { textarea } = setup();
         const command = 'x(\\' + name;
@@ -35,7 +35,7 @@ describe('shortcut lookup', () => {
         expect(textarea.selectionStart).toBe(3);
     });
 
-    it.each(['\\unknown', 'alpha', '\\\\alpha'])('leaves %s alone', text => {
+    it.each(['\\unknown', 'alpha', '\\\\alpha', '\\Upsilon'])('leaves %s alone', text => {
         expect(shortcutAt(text, text.length, text.length)).toBeNull();
     });
 
@@ -102,6 +102,7 @@ describe('symbol popover', () => {
         const { panel, picker, textarea, toggle } = setup(undefined, translate);
         expect(attach(textarea, translate)).toBe(picker);
         expect(toggle.getAttribute('aria-label')).toBe('sv-Insert symbol');
+        expect(toggle.title).toBe('sv-Insert symbol (Shift+Space to skip shortcut conversion)');
         toggle.click();
         const groups = [...panel.children];
         expect(groups.map(group => [...group.querySelectorAll('button')].map(button => button.textContent).join(' ')))
@@ -136,6 +137,15 @@ describe('symbol popover', () => {
         expect(press(toggle, 'Escape')).toBe(true);
     });
 
+    it.each([['End', -1], ['Home', 0]])('%s focuses the end or start of the picker', (key, index) => {
+        const { panel, toggle } = setup();
+        toggle.click();
+        const buttons = [...panel.querySelectorAll('button')];
+        buttons[6].focus();
+        expect(press(buttons[6], key)).toBe(false);
+        expect(document.activeElement).toBe(buttons.at(index));
+    });
+
     it('keeps keyboard events inside the picker so review tool shortcuts cannot run', () => {
         const { toggle } = setup();
         const toolbarShortcut = vi.fn();
@@ -163,13 +173,12 @@ describe('symbol popover', () => {
         expect([...recents.querySelectorAll('button')].map(cell => cell.textContent)).toEqual(['ε', 'ι', 'θ', 'η', 'ζ', 'δ', 'γ', 'β']);
     });
 
-    it('names Greek capitals in the recent row even if omitted from the main palette', () => {
-        const { textarea, panel, toggle } = setup(undefined, (key, params) =>
-            params ? 'Stort ' + params.letter : key);
-        textarea.value = '\\Upsilon';
-        press(textarea, 'Tab');
+    it('filters the removed Upsilon shortcut out of stored recents', () => {
+        const storage = { getItem: () => '["Upsilon","alpha"]' };
+        const { panel, toggle } = setup(() => storage);
         toggle.click();
-        expect(panel.querySelector('[aria-label="Stort upsilon"]').textContent).toBe('Υ');
+        const recents = panel.querySelector('[aria-label="Recently used symbols"]');
+        expect([...recents.querySelectorAll('button')].map(cell => cell.textContent)).toEqual(['\u03b1']);
     });
 
     it.each(['malformed JSON', '{}', '["missing","alpha","alpha",42]'])('can insert with stored value %s', stored => {

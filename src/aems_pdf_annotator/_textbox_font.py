@@ -1,5 +1,7 @@
 """Embed a single sans face when Helvetica needs fallback glyphs."""
 
+import re
+from collections.abc import Callable
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -59,7 +61,30 @@ class _PositionedSansText(fitz.mupdf.FzDevice2):
             span = span.next
 
 
-def embed_textbox_sans(annot: fitz.Annot, text: str) -> None:
+def textbox_sans_font_xref(doc: fitz.Document, font: fitz.Font) -> int:
+    """Reuse a complete Identity-H font with the packaged font's glyph IDs."""
+    for xref in range(1, doc.xref_length()):
+        if doc.xref_get_key(xref, "BaseFont") != ("name", "/" + font.name):
+            continue
+        if doc.xref_get_key(xref, "Encoding") != ("name", "/Identity-H"):
+            continue
+        children = doc.xref_get_key(xref, "DescendantFonts")[1]
+        child = re.fullmatch(r"\[\s*(\d+)\s+\d+\s+R\s*\]", children)
+        if child is None:
+            continue
+        glyph_map = doc.xref_get_key(int(child[1]), "CIDToGIDMap")
+        if glyph_map not in (("null", "null"), ("name", "/Identity")):
+            continue
+        if doc.extract_font(xref)[3] == font.buffer:
+            return xref
+    return fitz.mupdf.pdf_add_cid_font(fitz._as_pdf_document(doc), font.this).pdf_to_num()
+
+
+def embed_textbox_sans(
+    annot: fitz.Annot,
+    text: str,
+    font_xref: Callable[[fitz.Font], int] | None = None,
+) -> None:
     """Replace only text glyphs in a native Helvetica FreeText appearance."""
     codepoints = {ord(char) for char in text if not char.isspace()}
     helvetica, font = textbox_fonts()
@@ -88,7 +113,14 @@ def embed_textbox_sans(annot: fitz.Annot, text: str) -> None:
     native.pdf_run_annot(annot.this, device, native.FzMatrix(), native.FzCookie())
     if device.unsupported or not device.commands or next(device.remaining, None) is not None:
         return
-    font_ref = native.pdf_add_cid_font(fitz._as_pdf_document(doc), font.this)
-    doc.xref_set_key(xref, "Resources/Font", f"<< /AEMSSans {font_ref.pdf_to_num()} 0 R >>")
+    font_ref = textbox_sans_font_xref(doc, font) if font_xref is None else font_xref(font)
     replacement = ("BT\n/AEMSSans 1 Tf\n" + "\n".join(device.commands) + "\nET\n").encode("ascii")
-    doc.update_stream(xref, before + replacement + after)
+    original_fonts = doc.xref_get_key(xref, "Resources/Font")[1]
+    try:
+        doc.xref_set_key(xref, "Resources/Font", f"<< /AEMSSans {font_ref} 0 R >>")
+        doc.update_stream(xref, before + replacement + after)
+    except Exception:
+        doc.xref_set_key(xref, "Resources/Font", original_fonts)
+        if doc.xref_stream(xref) != stream:
+            doc.update_stream(xref, stream)
+        raise

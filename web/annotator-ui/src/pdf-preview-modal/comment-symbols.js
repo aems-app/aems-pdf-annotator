@@ -1,7 +1,7 @@
 (function (exports) {
     'use strict';
 
-    // Shortcut, Unicode text, optional spoken label and hidden flag.
+    // Shortcut, Unicode text, optional spoken label.
     // Keep the entries JSON-compatible so the Python paint and Unicode tests read the same map.
     const commentSymbolGroups = [
         ["Greek lowercase", [
@@ -18,7 +18,7 @@
         ["Greek uppercase", [
             ["Gamma", "Γ"], ["Delta", "Δ"], ["Theta", "Θ"],
             ["Lambda", "Λ"], ["Xi", "Ξ"], ["Pi", "Π"],
-            ["Sigma", "Σ"], ["Upsilon", "Υ", "upsilon", true], ["Phi", "Φ"],
+            ["Sigma", "Σ"], ["Phi", "Φ"],
             ["Psi", "Ψ"], ["Omega", "Ω"]
         ]],
         ["Math symbols", [
@@ -34,7 +34,7 @@
         ]]
     ];
     const symbols = new Map(commentSymbolGroups.flatMap(([, entries]) => entries.map(
-        ([name, glyph, label = name, hidden = false]) => [name, { glyph, label, hidden }],
+        ([name, glyph, label = name]) => [name, { glyph, label }],
     )));
     const storageKey = 'aems.annotation.recentSymbols';
     const columns = 10;
@@ -158,14 +158,15 @@
         toggle.type = 'button';
         toggle.className = 'comment-symbol-toggle';
         toggle.textContent = 'Ω';
-        toggle.title = translate('Insert symbol');
-        toggle.setAttribute('aria-label', toggle.title);
+        const pickerLabel = translate('Insert symbol');
+        toggle.title = translate('Insert symbol (Shift+Space to skip shortcut conversion)');
+        toggle.setAttribute('aria-label', pickerLabel);
         toggle.setAttribute('aria-haspopup', 'dialog');
         toggle.setAttribute('aria-expanded', 'false');
         const panel = document.createElement('div');
         panel.className = 'comment-symbol-panel';
         panel.setAttribute('role', 'dialog');
-        panel.setAttribute('aria-label', toggle.title);
+        panel.setAttribute('aria-label', pickerLabel);
         panel.hidden = true;
         // The top layer avoids clipping by the PDF viewport and scrolling sidebar.
         const view = document.defaultView;
@@ -263,10 +264,8 @@
                 const row = document.createElement('div');
                 row.className = 'comment-symbol-row';
                 const buttons = names.slice(offset, offset + columns).map(name => {
-                    const { glyph, label, hidden } = symbols.get(name);
-                    const spoken = hidden
-                        ? translate('Uppercase %(letter)s', { letter: translate(label) })
-                        : translate(label);
+                    const { glyph, label } = symbols.get(name);
+                    const spoken = translate(label);
                     const cell = document.createElement('button');
                     cell.type = 'button';
                     cell.tabIndex = -1;
@@ -305,7 +304,7 @@
             panel.replaceChildren();
             if (recent.length) addGroup('Recently used symbols', recent);
             commentSymbolGroups.forEach(([label, entries]) => {
-                addGroup(label, entries.map(([name]) => name).filter(name => !symbols.get(name).hidden));
+                addGroup(label, entries.map(([name]) => name));
             });
             panel.hidden = false;
             if (topLayer) panel.showPopover();
@@ -349,6 +348,8 @@
                 ArrowRight: () => buttons[(index + 1) % buttons.length],
                 ArrowUp: () => vertical(-1),
                 ArrowDown: () => vertical(1),
+                Home: () => buttons[0],
+                End: () => buttons[buttons.length - 1],
             };
             if (key === 'Enter') {
                 event.preventDefault();

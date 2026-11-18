@@ -10,6 +10,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from functools import cache
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Type, Union
 
@@ -20,7 +21,7 @@ except ImportError:
         "PyMuPDF is required for PDF annotation. " "Install with: pip install pymupdf"
     )
 
-from aems_pdf_annotator._textbox_font import embed_textbox_sans
+from aems_pdf_annotator._textbox_font import embed_textbox_sans, textbox_sans_font_xref
 from aems_pdf_annotator.geometry import native_point_to_pdf, pdf_point_to_native
 
 from aems_pdf_annotator.models import (
@@ -2640,6 +2641,12 @@ class PDFAnnotator:
         # Ensure output directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        document = self.doc
+
+        @cache
+        def notation_font_xref(font: fitz.Font) -> int:
+            return textbox_sans_font_xref(document, font)
+
         try:
             _validate_unique_annotation_ids(self.doc)
             fit_existing_textboxes(self.doc)
@@ -2647,7 +2654,17 @@ class PDFAnnotator:
                 for annot in page.annots(types=(fitz.PDF_ANNOT_FREE_TEXT,)):
                     da = self.doc.xref_get_key(annot.xref, "DA")[1]
                     if re.search(r"/(?:Helv|Helvetica)\s", da, re.IGNORECASE):
-                        embed_textbox_sans(annot, annot.info.get("content", ""))
+                        try:
+                            embed_textbox_sans(
+                                annot, annot.info.get("content", ""), notation_font_xref
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Could not embed notation font for textbox xref %s. "
+                                "Keeping native appearance.",
+                                annot.xref,
+                                exc_info=True,
+                            )
             _scale_note_icons(self.doc)
             output_resolved = output_path.resolve()
             source_resolved = self.pdf_path.resolve()
@@ -2659,7 +2676,7 @@ class PDFAnnotator:
                     encryption=fitz.PDF_ENCRYPT_KEEP,
                 )
             else:
-                self.doc.save(str(output_path))
+                self.doc.save(str(output_path), garbage=1, deflate=True)
 
             logger.info(f"Saved annotated PDF: {output_path}")
             return output_path

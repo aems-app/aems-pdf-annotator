@@ -73,7 +73,7 @@ def test_picker_shortcuts_and_labels_match_unicode_names() -> None:
         "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi "
         "omicron pi rho sigma tau upsilon phi chi psi omega"
     ).split()
-    capitals = "Gamma Delta Theta Lambda Xi Pi Sigma Upsilon Phi Psi Omega".split()
+    capitals = "Gamma Delta Theta Lambda Xi Pi Sigma Phi Psi Omega".split()
     unicode_names = {"lambda": "LAMDA"}
     expected = {
         shortcut: (
@@ -85,7 +85,7 @@ def test_picker_shortcuts_and_labels_match_unicode_names() -> None:
     expected.update(
         {
             shortcut: (
-                "upsilon" if shortcut == "Upsilon" else shortcut,
+                shortcut,
                 "GREEK CAPITAL LETTER " + unicode_names.get(shortcut.lower(), shortcut.upper()),
             )
             for shortcut in capitals
@@ -274,3 +274,165 @@ def test_unrecognized_textbox_appearance_is_left_intact(alteration: str) -> None
         embed_textbox_sans(annotation, text)
         assert document.xref_stream(xref) == before
         assert document.xref_get_key(xref, "Resources/Font/AEMSSans")[0] == "null"
+
+
+def _embedded_fonts(path: Path) -> list[str]:
+    with fitz.open(path) as document:
+        return [
+            document.xref_get_key(xref, "FontName")[1]
+            for xref in range(1, document.xref_length())
+            if document.xref_get_key(xref, "Type") == ("name", "/FontDescriptor")
+            for key in ("FontFile", "FontFile2", "FontFile3")
+            if document.xref_get_key(xref, key)[0] == "xref"
+        ]
+
+
+@pytest.fixture
+def notation_source(tmp_path: Path) -> Path:
+    path = tmp_path / "blank.pdf"
+    with fitz.open() as document:
+        document.new_page()
+        document.new_page()
+        document.save(path)
+    return path
+
+
+def _add_notation(writer: PDFAnnotator) -> None:
+    for page in (0, 1):
+        assert writer.add_annotation(
+            PDFAnnotation(
+                id=f"notation-{page}",
+                page_index=page,
+                kind=AnnotationType.TEXTBOX,
+                color=AnnotationColor.RED,
+                source="HUMAN",
+                grader_name="fixture-teacher",
+                comment="Check \u0394x\u2080 \u2264 \u221e",
+                bbox=BBox(x0=30, y0=30, x1=270, y1=90),
+            )
+        )
+
+
+def test_full_save_removes_unused_font_files(notation_source: Path, tmp_path: Path) -> None:
+    first = tmp_path / "first.pdf"
+    edited = tmp_path / "edited.pdf"
+    with PDFAnnotator(notation_source) as writer:
+        _add_notation(writer)
+        writer.save(first)
+    assert _embedded_fonts(first) == ["/DejaVu Sans Book"]
+    assert first.stat().st_size < 320_000
+    with PDFAnnotator(first) as writer:
+        for page in (0, 1):
+            assert writer.update_annotation(f"notation-{page}", new_content="\u0394x\u2081")
+        writer.save(edited)
+    assert _embedded_fonts(edited) == ["/DejaVu Sans Book"]
+    assert edited.stat().st_size < 320_000
+
+
+def _add_unusable_fonts_with_the_same_name(path: Path) -> None:
+    with fitz.open(path) as doc:
+        xref = doc.get_new_xref()
+        doc.update_object(xref, "<< /Type /Font /Subtype /CIDFontType2 /CIDToGIDMap /Other >>")
+        missing_file = doc.get_new_xref()
+        doc.update_object(missing_file, "<< /Type /Font /Subtype /CIDFontType2 >>")
+        for encoding, children in (
+            ("Identity-V", "[]"),
+            ("Identity-H", "[]"),
+            ("Identity-H", f"[{xref} 0 R]"),
+            ("Identity-H", f"[{missing_file} 0 R]"),
+        ):
+            doc.update_object(
+                doc.get_new_xref(),
+                "<< /Type /Font /Subtype /Type0 /BaseFont /DejaVu#20Sans#20Book "
+                f"/Encoding /{encoding} /DescendantFonts {children} >>",
+            )
+        doc.saveIncr()
+
+
+@pytest.mark.parametrize("same_name_fonts", [False, True])
+def test_in_place_edits_reuse_the_embedded_notation_font(
+    notation_source: Path, same_name_fonts: bool,
+) -> None:
+    if same_name_fonts:
+        _add_unusable_fonts_with_the_same_name(notation_source)
+    with PDFAnnotator(notation_source) as writer:
+        _add_notation(writer)
+        writer.save()
+    assert _embedded_fonts(notation_source).count("/DejaVu Sans Book") == 1
+    first_size = notation_source.stat().st_size
+
+    # Regenerate every appearance before opening the save pass.
+    with PDFAnnotator(notation_source) as writer:
+        for page in (0, 1):
+            assert writer.update_annotation(f"notation-{page}", new_content="\u0394x\u2081")
+        writer.save()
+    assert _embedded_fonts(notation_source).count("/DejaVu Sans Book") == 1
+    assert notation_source.stat().st_size - first_size < 400_000
+    with fitz.open(notation_source) as document:
+        for page in document:
+            assert next(page.annots()).get_text().strip() == "\u0394x\u2081"
+
+
+def test_notation_embed_error_keeps_native_appearance(
+    notation_source: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aems_pdf_annotator import core
+
+    native_appearances: list[bytes] = []
+
+    def fail(annot: fitz.Annot, _text: str, *args: object) -> None:
+        document = annot.parent.parent
+        xref = int(document.xref_get_key(annot.xref, "AP/N")[1].split()[0])
+        native_appearances.append(document.xref_stream(xref))
+        raise RuntimeError("font backend unavailable")
+
+    monkeypatch.setattr(core, "embed_textbox_sans", fail)
+    saved = tmp_path / "native.pdf"
+    with PDFAnnotator(notation_source) as writer:
+        _add_notation(writer)
+        writer.save(saved)
+    assert len(native_appearances) == 2
+    with fitz.open(saved) as document:
+        for page, native in zip(document, native_appearances, strict=True):
+            annot = next(page.annots())
+            xref = int(document.xref_get_key(annot.xref, "AP/N")[1].split()[0])
+            assert document.xref_stream(xref) == native
+    warnings = [record.message for record in caplog.records if record.levelname == "WARNING"]
+    assert len(warnings) == 2
+    assert all("Keeping native appearance" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize("after_write", [False, True])
+def test_notation_stream_failure_restores_native_font_resources(
+    notation_source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, after_write: bool,
+) -> None:
+    original_update = fitz.Document.update_stream
+    native_appearances: list[bytes] = []
+
+    def fail_notation_stream(
+        doc: fitz.Document, xref: int, stream: bytes, *args: object, **kwargs: object,
+    ) -> None:
+        if b"/AEMSSans 1 Tf" in stream:
+            native_appearances.append(doc.xref_stream(xref))
+            if after_write:
+                original_update(doc, xref, stream, *args, **kwargs)
+            raise RuntimeError("cannot replace appearance stream")
+        original_update(doc, xref, stream, *args, **kwargs)
+
+    monkeypatch.setattr(fitz.Document, "update_stream", fail_notation_stream)
+    saved = tmp_path / "native.pdf"
+    with PDFAnnotator(notation_source) as writer:
+        _add_notation(writer)
+        writer.save(saved)
+    assert len(native_appearances) == 2
+    with fitz.open(saved) as document:
+        for page, stream in zip(document, native_appearances, strict=True):
+            annot = next(page.annots())
+            xref = int(document.xref_get_key(annot.xref, "AP/N")[1].split()[0])
+            assert document.xref_stream(xref) == stream
+            fonts = document.xref_get_key(xref, "Resources/Font")[1]
+            assert "/AEMSSans" not in fonts
+            assert annot.get_text().startswith("Check ")
