@@ -206,6 +206,20 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
         return annotation._hasBeenEdited === true || annotation._priorityChanged === true;
     }
 
+    function draftHelpers() {
+        return window.PdfPreviewModalAnnotationHelpers || {};
+    }
+
+    function isNewDraft(annotation) {
+        var fn = draftHelpers().isNewDraft;
+        return fn ? fn(annotation) : false;
+    }
+
+    function isNeverTypedDraft(annotation, text) {
+        var fn = draftHelpers().isNeverTypedDraft;
+        return fn ? fn(annotation, text) : false;
+    }
+
     function isTemporary(annotation) {
         return annotation && annotation._isTemporary === true;
     }
@@ -213,6 +227,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
     function enhanceAfterSave(annotation) {
         var enhanced = Object.assign({}, annotation);
         delete enhanced._isTemporary;
+        delete enhanced._newDraft;
         enhanced._originalContent = enhanced.content || '';
         return enhanced;
     }
@@ -1835,7 +1850,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     : annotation.content)) || '';
                 originalContent = String(originalContent || '').trim();
                 var textarea = document.getElementById('edit-annotation-text-' + identifier);
-                var isTemporary = annotation && annotation._isTemporary === true;
+                var isTemporary = isNewDraft(annotation);
                 var originalIsPlaceholder = PLACEHOLDER_STRINGS.indexOf(originalContent) !== -1;
                 var hasOnlyPriorityChange = annotation && annotation._priorityChanged === true && !annotation._hasBeenEdited;
 
@@ -2504,6 +2519,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 };
 
             optimisticAnnotation._isTemporary = true;
+            optimisticAnnotation._newDraft = true;
             optimisticAnnotation._isOptimistic = true;
             optimisticAnnotation._createdAtSession = true;
             optimisticAnnotation._tempXref = tempXref;
@@ -2609,18 +2625,12 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
 
                         var currentContent = textarea.value.trim();
                         var originalContent = (optimisticAnnotation.content || '').trim();
-                        var isPlaceholder = currentContent === '' ||
-                            currentContent === 'New comment...' ||
-                            currentContent === 'New comment';
-                        var neverEdited = originalContent === 'New comment...' ||
-                            originalContent === 'New comment' ||
-                            originalContent === '';
                         var contentWasEdited = currentContent !== originalContent;
-                        var hasEditedFlags = optimisticAnnotation._hasBeenEdited === true || optimisticAnnotation._priorityChanged === true;
 
                         // A recolour (_priorityChanged) is not text the teacher wrote: an untouched
                         // placeholder draft is discarded whatever its flags say (MASTER 539a).
-                        if (optimisticAnnotation._isTemporary && !contentWasEdited && (neverEdited || isPlaceholder)) {
+                        var liveDraft = (_h.findAnnotationEntry && _h.findAnnotationEntry(targetPage, identifier)) || optimisticAnnotation;
+                        if (isNeverTypedDraft(liveDraft, currentContent) || isNeverTypedDraft(optimisticAnnotation, currentContent)) {
                             var requestId = optimisticAnnotation.requestIdentifier || identifier;
                             await deleteAnnotationSilently(targetPage, requestId);
                             if (!_isCurrentEpoch(requestEpoch)) return;
@@ -2719,6 +2729,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         optimisticAnnotation.content = draftContent;
                     }
                     optimisticAnnotation._isTemporary = true;
+                    optimisticAnnotation._newDraft = true;
                     optimisticAnnotation._createdAtSession = true;
                     optimisticAnnotation._isOptimistic = false;
                     optimisticAnnotation._tempXref = tempXref;
@@ -2901,8 +2912,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     existingXref = originalAnn.xref ? String(originalAnn.xref) : null;
                 }
                 // Same rule as Escape: flags from a recolour never keep an untouched new draft.
-                var untouchedNewDraft = !!(originalAnn && originalAnn._isTemporary);
-                if ((newContent === '' || isPlaceholderContent(newContent)) && (!hasEditedFlags || untouchedNewDraft)) {
+                if (isNeverTypedDraft(originalAnn, newContent) ||
+                    ((newContent === '' || isPlaceholderContent(newContent)) && !hasEditedFlags)) {
                     if (textarea._escapeHandler) {
                         textarea.removeEventListener('keydown', textarea._escapeHandler, true);
                     }
@@ -3304,7 +3315,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             Object.entries(_getAnnotationsData()).forEach(function (entry) {
                 var pageIdx = Number(entry[0]);
                 entry[1].forEach(function (annotation) {
-                    if (!annotation._isTemporary) return;
+                    if (!isNewDraft(annotation)) return;
                     var id = _h.resolveAnnotationIdentifierValue(annotation);
                     if (keep && keep.pageIdx === pageIdx &&
                         (!keep.identifier || String(keep.identifier) === String(id))) return;
@@ -3656,6 +3667,7 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
     exports.isMarkupType = isMarkupType;
     exports.isValidPriority = isValidPriority;
     exports.isPlaceholderContent = isPlaceholderContent;
+    exports.isNeverTypedDraft = isNeverTypedDraft;
     exports.buildAnnotationUrl = buildAnnotationUrl;
     exports.buildAnnotationsListUrl = buildAnnotationsListUrl;
     exports.buildContentUpdateBody = buildContentUpdateBody;

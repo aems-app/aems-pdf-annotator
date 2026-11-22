@@ -426,6 +426,19 @@ window.PdfPreviewModalAnnotationHelpers = window.PdfPreviewModalAnnotationHelper
         return ann.is_system_generated !== false ? 'AI' : 'HUMAN';
     };
 
+    // MASTER 539a: ONE rule for "a comment the teacher created in this session and never gave text".
+    // _newDraft survives the priority/verdict/move rewrites that strip _isTemporary; it is dropped
+    // when a save returns the server copy (which carries no client flags).
+    const DRAFT_PLACEHOLDERS = ['', 'New comment...', 'New comment'];
+
+    exports.isNewDraft = function isNewDraft(ann) {
+        return !!ann && (ann._isTemporary === true || ann._newDraft === true);
+    };
+
+    exports.isNeverTypedDraft = function isNeverTypedDraft(ann, text) {
+        return exports.isNewDraft(ann) && DRAFT_PLACEHOLDERS.includes(String(text == null ? '' : text).trim());
+    };
+
 })(window.PdfPreviewModalAnnotationHelpers);
 
 // Export constants for testing

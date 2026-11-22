@@ -113,6 +113,35 @@ describe('write of a comment that carries no etag', () => {
     expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
     expect(adapter.updateAnnotation.mock.calls[0][4]).toEqual({ offline: false });
   });
+  it('refuses when a colleague changed only the colour, since a colour write would silently win', async () => {
+    Object.assign(stored.get(ids[0]), { etag: 'server-v2', color: 'red' });
+    await saveWithText('New text');
+    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+    expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('could not be saved safely'));
+    expect(stored.get(ids[0]).color).toBe('red');
+  });
+  it('refuses when a colleague moved the comment, since a move or delete would silently win', async () => {
+    Object.assign(stored.get(ids[0]), { etag: 'server-v2', rect: [300, 300, 400, 320] });
+    await saveWithText('New text');
+    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+    expect(toasts).toHaveBeenCalledWith('error', expect.stringContaining('could not be saved safely'));
+  });
+  it('adopts the tag when colour and position also match what the page saw (sub-pixel rect noise)', async () => {
+    Object.assign(stored.get(ids[0]), { etag: 'server-v3', rect: [50.001, 50, 150, 69.999] });
+    await saveWithText('New text');
+    expect(adapter.updateAnnotation.mock.calls[0][4]).toEqual({ offline: false, ifMatch: 'server-v3' });
+  });
+  it('a retry after a failed lookup looks the copy up again and sends If-Match', async () => {
+    // Production entries always carry the text the host delivered (enhanceAnnotationEntry).
+    options.getAnnotationsData()[0][0]._originalContent = stored.get(ids[0]).content;
+    adapter.listAnnotations.mockRejectedValueOnce(new Error('offline'));
+    await saveWithText('New text');
+    expect(adapter.updateAnnotation).not.toHaveBeenCalled();
+    stored.get(ids[0]).etag = 'server-v1';
+    await saveWithText('New text');
+    expect(adapter.updateAnnotation).toHaveBeenCalledTimes(1);
+    expect(adapter.updateAnnotation.mock.calls[0][4]).toEqual({ offline: false, ifMatch: 'server-v1' });
+  });
   it('keeps the tag-less protocol of a host that issues no tags, looking the copy up once', async () => {
     await saveWithText('First');
     await saveWithText('Second');

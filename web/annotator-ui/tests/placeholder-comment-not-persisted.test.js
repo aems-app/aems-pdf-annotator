@@ -8,10 +8,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const MODULE_PATH = '../src/pdf-preview-modal/annotation-controller.js';
 
-async function setup({ recolour }) {
+async function setup({ recolour, stripTemporary = false }) {
   document.body.innerHTML = '<div id="pdfGradedContainer"></div><div id="pdfGradedCommentsList"></div>';
   window.__pdfGradedViewer = { pdf: {}, currentPage: 1 };
   window.PdfPreviewModalSidebarPanel.shouldDisplayAnnotation = () => true;
+  await import('../src/pdf-preview-modal/annotation-helpers.js');
   await import(new URL(MODULE_PATH, import.meta.url));
   let data = {};
   let editingId = null;
@@ -54,6 +55,8 @@ async function setup({ recolour }) {
   if (recolour) {
     // Exactly what the priority strip does to the entry (pdf-preview-modal.js, mousedown handler).
     Object.assign(data[0][0], { color: 'red', _priorityChanged: true, _hasBeenEdited: true });
+    // updateAnnotationPriority replaces the entry and deletes _isTemporary (pdf-preview-modal.js).
+    if (stripTemporary) delete data[0][0]._isTemporary;
   }
   return { controller, helpers, textarea, identifier: data[0][0].stable_id };
 }
@@ -90,6 +93,19 @@ describe('untouched placeholder comment is never persisted', () => {
     expect(helpers.updateAnnotationRequest).not.toHaveBeenCalled();
   });
 
+  it.each(['Escape', 'Save'])('draft whose _isTemporary was stripped by updateAnnotationPriority is discarded on %s', async (action) => {
+    const { controller, helpers, textarea, identifier } = await setup({ recolour: true, stripTemporary: true });
+    if (action === 'Escape') {
+      textarea.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    } else {
+      textarea.value = 'New comment...';
+      await controller.saveAnnotationEdit(identifier);
+    }
+    await vi.advanceTimersByTimeAsync(350);
+    expect(helpers.deleteAnnotationRequest).toHaveBeenCalledOnce();
+    expect(helpers.updateAnnotationRequest).not.toHaveBeenCalled();
+  });
+
   it('recoloured draft with real typed text is still saved, not discarded', async () => {
     const { controller, helpers, textarea, identifier } = await setup({ recolour: true });
     textarea.value = 'Check the units';
@@ -98,5 +114,28 @@ describe('untouched placeholder comment is never persisted', () => {
     expect(helpers.deleteAnnotationRequest).not.toHaveBeenCalled();
     expect(helpers.updateAnnotationRequest).toHaveBeenCalledWith(
       expect.anything(), expect.objectContaining({ content: 'Check the units' }));
+  });
+});
+
+describe('isNeverTypedDraft predicate', () => {
+  let rule;
+  beforeEach(async () => {
+    vi.resetModules();
+    delete window.PdfPreviewModalAnnotationHelpers;
+    await import('../src/pdf-preview-modal/annotation-helpers.js');
+    rule = window.PdfPreviewModalAnnotationHelpers.isNeverTypedDraft;
+  });
+  it.each([
+    [{ _newDraft: true }, '', true],
+    [{ _newDraft: true }, ' New comment... ', true],
+    [{ _newDraft: true }, 'New comment', true],
+    [{ _isTemporary: true }, null, true],
+    [{ _newDraft: true, _priorityChanged: true, _hasBeenEdited: true }, '', true],
+    [{ _newDraft: true }, 'Check the units', false],
+    [{}, '', false],
+    [{ _newDraft: false, _isTemporary: false }, 'New comment', false],
+    [null, '', false],
+  ])('%j with text %j -> %s', (ann, text, expected) => {
+    expect(rule(ann, text)).toBe(expected);
   });
 });
