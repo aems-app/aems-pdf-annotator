@@ -1855,6 +1855,33 @@
         return etag ? { offline, ifMatch: etag } : { offline };
     }
 
+    // A comment the host delivered without a tag would be written with no If-Match, which the hosted server
+    // refuses (428). Ask the host's own load path for the current copy once and adopt its tag, but only when
+    // that copy still has the text this page last saw: a changed copy means the page is stale, so the write
+    // is refused instead of silently replacing it. A comment the host no longer lists is written as before. A host that issues no tags at all (desktop agents) answers
+    // without one and keeps its existing protocol.
+    async function fetchMissingAnnotationEtag(annotationId, epoch) {
+        const local = findLocalAnnotation(annotationId);
+        if (!local || local._etagLookedUp || typeof _annotationAdapter?.listAnnotations !== 'function') return undefined;
+        local._etagLookedUp = true;
+        const unsafe = () => new Error(t('This comment could not be saved safely. Copy your text and reload the document.'));
+        let data;
+        try {
+            data = await listAnnotationsRequest();
+        } catch (_error) {
+            throw unsafe();
+        }
+        if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+        const current = data?.success && data.annotations && Object.values(data.annotations).flat().find((ann) =>
+            buildApiAnnotationIdentifier({ identifier: ann.stable_id || ann.id, canonicalStableId: ann.stable_id ?? ann.stableId, xref: ann.xref }) === annotationId);
+        // Not listed: it was deleted, which the write's own refusal reports through the existing deleted-comment flow.
+        if (!current || !current.etag) return undefined;
+        const seen = local._originalContent !== undefined ? local._originalContent : local.content;
+        if ((current.content || '') !== (seen || '')) throw unsafe();
+        local.etag = current.etag;
+        return current.etag;
+    }
+
     function chainAnnotationWrite(writes, annotationId, epoch, send) {
         const completeMutation = captureAnnotationMutation();
         const previous = writes.tail;
@@ -1863,8 +1890,9 @@
             const dataBefore = previous ? await previous : null; // A refusal cancels queued writes.
             if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
             if (deletedAnnotationIdentities.has(String(annotationId))) throw CANCELED_ANNOTATION_WRITE;
-            const options = annotationWriteOptions(previous ? dataBefore?.annotation?.etag : displayedEtag,
-                _isOfflineMode(), Boolean(previous && displayedEtag));
+            const etag = previous ? dataBefore?.annotation?.etag
+                : (displayedEtag || await fetchMissingAnnotationEtag(annotationId, epoch));
+            const options = annotationWriteOptions(etag, _isOfflineMode(), Boolean(previous && displayedEtag));
             const data = await completeMutation(() => send(options));
             if (isCurrentHistoryEpoch(epoch)) rememberAnnotationEtag(annotationId, data);
             return data;

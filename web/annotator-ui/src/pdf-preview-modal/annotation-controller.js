@@ -2618,7 +2618,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                         var contentWasEdited = currentContent !== originalContent;
                         var hasEditedFlags = optimisticAnnotation._hasBeenEdited === true || optimisticAnnotation._priorityChanged === true;
 
-                        if (optimisticAnnotation._isTemporary && !hasEditedFlags && !contentWasEdited && (neverEdited || isPlaceholder)) {
+                        // A recolour (_priorityChanged) is not text the teacher wrote: an untouched
+                        // placeholder draft is discarded whatever its flags say (MASTER 539a).
+                        if (optimisticAnnotation._isTemporary && !contentWasEdited && (neverEdited || isPlaceholder)) {
                             var requestId = optimisticAnnotation.requestIdentifier || identifier;
                             await deleteAnnotationSilently(targetPage, requestId);
                             if (!_isCurrentEpoch(requestEpoch)) return;
@@ -2898,7 +2900,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                     requestIdentifier = originalAnn.requestIdentifier || stableIdentifier;
                     existingXref = originalAnn.xref ? String(originalAnn.xref) : null;
                 }
-                if ((newContent === '' || isPlaceholderContent(newContent)) && !hasEditedFlags) {
+                // Same rule as Escape: flags from a recolour never keep an untouched new draft.
+                var untouchedNewDraft = !!(originalAnn && originalAnn._isTemporary);
+                if ((newContent === '' || isPlaceholderContent(newContent)) && (!hasEditedFlags || untouchedNewDraft)) {
                     if (textarea._escapeHandler) {
                         textarea.removeEventListener('keydown', textarea._escapeHandler, true);
                     }
