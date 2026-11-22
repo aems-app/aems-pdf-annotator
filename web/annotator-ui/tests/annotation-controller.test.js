@@ -12,6 +12,8 @@ const HELPERS_MODULE_PATH = '../src/pdf-preview-modal/annotation-helpers.js';
 const UTILS_MODULE_PATH = '../src/pdf-preview-modal/utils.js';
 
 const loadAnnotationControllerModule = async () => {
+  // The bundle loads the helpers (the shared new-draft rule) before the controller.
+  await import(new URL(HELPERS_MODULE_PATH, import.meta.url));
   await import(new URL(MODULE_PATH, import.meta.url));
   return window.PdfPreviewModalAnnotationController;
 };
