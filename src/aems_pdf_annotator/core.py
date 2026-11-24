@@ -384,6 +384,39 @@ def _original_source_after_edit(
     return original
 
 
+def _update_source(metadata: Dict[str, Any], new_source: Optional[str]) -> Optional[str]:
+    """The ``new_source`` an update may apply, given the marker's RECORDED provenance.
+
+    An update never makes an existing marker AI-created: AI markers are created AI. So an
+    ``AI`` sent for a marker that records no provenance is an echo of a defaulted value (an
+    older read path, a UI undo/redo or verdict toggle), not provenance, and is dropped.
+    """
+    if (
+        str(new_source or "").upper() == "AI"
+        and not metadata.get("original_source")
+        and not metadata.get("source")
+    ):
+        return None
+    return new_source
+
+
+def _current_markup_rgb(annot: Any, metadata: Dict[str, Any]) -> Optional[List[int]]:
+    """The 0-255 RGB a drawing or textbox currently shows (recorded, else native)."""
+    recorded = metadata.get("stroke_color_rgb") or metadata.get("textbox_color_rgb")
+    if recorded:
+        return [int(component) for component in recorded]
+    try:
+        if annot.type[0] == fitz.PDF_ANNOT_FREE_TEXT:
+            native: Any = _native_textbox_color(annot)
+        else:
+            native = (annot.colors or {}).get("stroke")
+    except Exception:
+        return None
+    if not native or len(native) != 3:
+        return None
+    return [int(round(float(component) * 255)) for component in native]
+
+
 def _format_pdf_datetime(value: Optional[datetime] = None) -> str:
     """Format datetime to PDF date string: D:YYYYMMDDHHmmSS+HH'mm'."""
     dt = value or datetime.now(timezone.utc)
@@ -793,7 +826,7 @@ def _legacy_subject_id(metadata: Dict[str, Any]) -> Optional[str]:
 
 def _encode_replacement_subject(
     original: Any, replacement: Any, info: Dict[str, Any],
-    metadata: Dict[str, Any], source: str, **fields: Any,
+    metadata: Dict[str, Any], source: Optional[str], **fields: Any,
 ) -> str:
     """Preserve native identities and the legacy implicit subject namespace."""
     legacy_id = _legacy_subject_id(metadata)
@@ -837,7 +870,7 @@ def _validate_unique_annotation_ids(doc: Any) -> None:
 
 def _encode_subject_metadata(
     stable_id: str,
-    source: str,
+    source: Optional[str],
     *,
     check_id: Optional[str] = None,
     original_source: Optional[str] = None,
@@ -851,8 +884,12 @@ def _encode_subject_metadata(
     anchor_text: Optional[str] = None,
     legacy_subject: bool = False,
 ) -> str:
-    """Encode stable ID and metadata into the PDF annotation subject field."""
-    tokens = [source]
+    """Encode stable ID and metadata into the PDF annotation subject field.
+
+    A ``source`` of ``None`` (no recorded provenance) is stored as an empty token and read
+    back as ``None``; it is never defaulted.
+    """
+    tokens = [source or ""]
     metadata_tokens: List[str] = []
     if is_verdict:
         metadata_tokens.append("V")
@@ -882,9 +919,11 @@ def _encode_subject_metadata(
         tokens.append(original_source or "")
     tokens.extend(metadata_tokens)
 
+    # An all-empty payload would decode as "no payload" and drop the explicit-id flag.
+    payload = "|".join(tokens) or "|"
     if legacy_subject:
-        return f"{stable_id}|" + "|".join(tokens)
-    encoded_payload = base64.b64encode("|".join(tokens).encode("utf-8")).decode("ascii")
+        return f"{stable_id}|" + payload
+    encoded_payload = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     return f"{stable_id}#{encoded_payload}"
 
 
@@ -1313,7 +1352,7 @@ class PDFAnnotator:
             new_annot.set_border(width=stroke_width)
             new_annot.set_opacity(stroke_opacity)
 
-            effective_source = new_source or metadata.get("source") or "AI"
+            effective_source = new_source or metadata.get("source")
             original_source_to_store = _original_source_after_edit(
                 metadata, effective_source
             )
@@ -1437,7 +1476,7 @@ class PDFAnnotator:
             new_annot = page.add_highlight_annot(quad_rects)
             new_annot.set_colors(stroke=stroke_rgb)
 
-            effective_source = new_source or metadata.get("source") or "AI"
+            effective_source = new_source or metadata.get("source")
             original_source_to_store = _original_source_after_edit(
                 metadata, effective_source
             )
@@ -1537,7 +1576,7 @@ class PDFAnnotator:
                 )
                 new_annot.set_opacity(0.9)
 
-            effective_source = new_source or metadata.get("source") or "AI"
+            effective_source = new_source or metadata.get("source")
             original_source_to_store = _original_source_after_edit(
                 metadata, effective_source
             )
@@ -1881,13 +1920,18 @@ class PDFAnnotator:
             logger.error("Refusing annotation update with an unencodable legacy identity")
             return False
 
+        new_source = _update_source(
+            _decode_subject_metadata((annot.info or {}).get("subject", "")), new_source
+        )
+
         # Auto-transfer ownership from AI to HUMAN if any field ACTUALLY changes
-        # This ensures any human modification takes ownership
+        # This ensures any human modification takes ownership. A marker that records no
+        # source transfers too; it records HUMAN with no invented original_source.
         if new_source is None:
             info = annot.info or {}
             subject_metadata = _decode_subject_metadata(info.get("subject", ""))
-            current_source = subject_metadata.get("source") or "AI"
-            if current_source == "AI":
+            current_source = subject_metadata.get("source")
+            if current_source in (None, "AI"):
                 # Read current values to compare
                 old_content = info.get("content", "")
                 old_rect = (
@@ -1940,6 +1984,9 @@ class PDFAnnotator:
 
                 quads_changed = new_quads is not None
                 anchor_changed = new_anchor_text is not None
+                rgb_changed = new_stroke_color_rgb is not None and [
+                    int(component) for component in new_stroke_color_rgb
+                ] != _current_markup_rgb(annot, subject_metadata)
 
                 # Transfer ownership if ANY field actually changed
                 if (
@@ -1950,12 +1997,13 @@ class PDFAnnotator:
                     or points_changed
                     or quads_changed
                     or anchor_changed
+                    or rgb_changed
                 ):
                     new_source = "HUMAN"
                     logger.info(
                         "Auto-transferring ownership to HUMAN for annotation %s "
                         "(content=%s, color=%s, position=%s, page=%s, points=%s, "
-                        "quads=%s, anchor=%s)",
+                        "quads=%s, anchor=%s, rgb=%s)",
                         annotation_identifier,
                         content_changed,
                         color_changed,
@@ -1964,6 +2012,7 @@ class PDFAnnotator:
                         points_changed,
                         quads_changed,
                         anchor_changed,
+                        rgb_changed,
                     )
 
         # Defensive: a same-page rect update on a multi-line text-anchored
@@ -2179,7 +2228,7 @@ class PDFAnnotator:
                     source_to_store = (
                         new_source
                         if new_source is not None
-                        else subject_metadata.get("source") or "AI"
+                        else subject_metadata.get("source")
                     )
                     original_source_to_store = _original_source_after_edit(
                         subject_metadata, source_to_store
@@ -2231,10 +2280,10 @@ class PDFAnnotator:
                                 list(info_after.keys()),
                             )
                             # Verify source was actually set
-                            if source_from_subject != new_source:
+                            if source_from_subject != source_to_store:
                                 logger.error(
                                     "CRITICAL: Source not set correctly! Expected %s, got %s (from subject: %s)",
-                                    new_source,
+                                    source_to_store,
                                     source_from_subject,
                                     str(info_after.get("subject", ""))[:50] or "None",
                                 )
@@ -2504,11 +2553,7 @@ class PDFAnnotator:
             try:
                 if not preserved_id:
                     preserved_id = str(uuid.uuid4())
-                source_to_set = (
-                    new_source
-                    if new_source
-                    else (subject_metadata.get("source") or "AI")
-                )
+                source_to_set = new_source or subject_metadata.get("source")
                 original_source_to_set = subject_metadata.get("original_source")
                 if new_source == "HUMAN" and not original_source_to_set:
                     original_source_to_set = subject_metadata.get("source")
@@ -2843,8 +2888,9 @@ class PDFAnnotator:
                         and not is_annotation_type_name(stable_id)
                     ),  # Expose raw stable ID for direct lookup
                     "grader_name": grader_name,
-                    "source": subject_metadata.get("source")
-                    or "AI",  # Extract from subject field, default to AI
+                    # Recorded provenance only: an unrecorded source is reported as None,
+                    # never defaulted to "AI" (a client would echo it back as provenance).
+                    "source": subject_metadata.get("source"),
                     "original_source": subject_metadata.get("original_source"),
                     "is_verdict": bool(subject_metadata.get("is_verdict")),
                     **extra_fields,
