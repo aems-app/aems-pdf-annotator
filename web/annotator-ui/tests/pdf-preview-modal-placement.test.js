@@ -2109,7 +2109,7 @@ describe('pdf-preview-modal placement helpers', () => {
     }
 
     // A selected pen stroke; deleteStroke() presses the Delete key.
-    async function strokeSelected() {
+    async function strokeSelected({ source = 'HUMAN' } = {}) {
       const selection = { deleteSelected: vi.fn(), getSelected: vi.fn(() => null), deferRefresh: () => false, deselect: vi.fn(), destroy: vi.fn(), init: vi.fn() };
       window.PdfPreviewModalMarkupSelection = selection;
       const createAnnotation = vi.fn(async (_assignment, _submission, body) => ({
@@ -2121,7 +2121,10 @@ describe('pdf-preview-modal placement helpers', () => {
         deleteAnnotation,
         visibilityController: {}, // the undo and the redo re-render the page overlay
         annotations: {
-          0: [{ stable_id: 'stroke-1', xref: 60, page_index: 0, type: 'drawing', content: '', source: 'HUMAN', etag: 'fixture-stroke-1' }],
+          0: [{
+            stable_id: 'stroke-1', xref: 60, page_index: 0, type: 'drawing', content: '', etag: 'fixture-stroke-1',
+            ...(source ? { source } : {}),
+          }],
         },
       });
       selection.deleteSelected.mockReturnValue({
@@ -2139,8 +2142,8 @@ describe('pdf-preview-modal placement helpers', () => {
 
     // A pen stroke deleted with the Delete key, then (unless undo is false) its undo, which recreates it as
     // stroke-2.
-    async function strokeDeletedThenRestored({ undo = true } = {}) {
-      const { h, createAnnotation, deleteAnnotation, deleteStroke } = await strokeSelected();
+    async function strokeDeletedThenRestored({ undo = true, source = 'HUMAN' } = {}) {
+      const { h, createAnnotation, deleteAnnotation, deleteStroke } = await strokeSelected({ source });
       deleteStroke();
       await vi.waitFor(() => expect(h.getUndoStacks().local).toHaveLength(1));
       expect(h.handle.getAnnotations()).toEqual({});
@@ -2181,6 +2184,19 @@ describe('pdf-preview-modal placement helpers', () => {
       await vi.waitFor(() => expect(createAnnotation).toHaveBeenCalledTimes(2));
       expect(createAnnotation.mock.calls[1]).toEqual(createAnnotation.mock.calls[0]);
       await vi.waitFor(() => h.expectBucket('AI'));
+      h.handle.destroy();
+    });
+
+    // H1-r2: recreating a deleted legacy stroke (no recorded source) must not name the displayed
+    // "AI" default, or the stroke comes back as an AI marker authored "AEMS".
+    it.each([
+      ['legacy (unrecorded)', null, undefined],
+      ['teacher', 'HUMAN', 'HUMAN'],
+    ])('undo of a deleted %s pen stroke recreates it with source %s', async (_name, source, expected) => {
+      const { h, createAnnotation } = await strokeDeletedThenRestored({ source });
+      const body = createAnnotation.mock.calls[0][2];
+      expect(body.source).toBe(expected);
+      expect('source' in body).toBe(expected !== undefined);
       h.handle.destroy();
     });
 
