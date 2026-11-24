@@ -1059,28 +1059,21 @@
     border-left: 2px solid var(--bs-purple, #6f42c1);
 }
 
-.annotation-marker.source-ai {
+/* ONE comment style (MASTER 547a): a teacher-created comment looks exactly like an AI one.
+   The source-ai / source-human classes stay for logic and the list badge, not for styling. */
+.annotation-marker.source-ai,
+.annotation-marker.source-human {
     box-shadow: 0 0 0 2px rgba(21, 101, 192, 0.3);
 }
 
-.annotation-marker.source-ai .annotation-label {
-    border-left: 3px solid #1565c0;
-}
-
-.annotation-marker.source-human {
-    box-shadow: 0 0 0 2px rgba(230, 81, 0, 0.3);
-}
-
+.annotation-marker.source-ai .annotation-label,
 .annotation-marker.source-human .annotation-label {
-    border-left: 3px solid #e65100;
-}
-
-.list-group-item.source-ai {
     border-left: 3px solid #1565c0;
 }
 
+.list-group-item.source-ai,
 .list-group-item.source-human {
-    border-left: 3px solid #e65100;
+    border-left: 3px solid #1565c0;
 }
 
 .annotation-marker.ownership-transferred {
