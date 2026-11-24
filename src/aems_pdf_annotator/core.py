@@ -334,6 +334,30 @@ def _normalize_pdf_author_name(grader_name: str) -> str:
 
 
 
+#: PDF ``/T`` (author) of every AI-created marker. A product name, deliberately not localised:
+#: generated text must not read as personally written by the grading account.
+AI_MARKER_AUTHOR = "AEMS"
+
+
+def _marker_author(
+    grader_name: Optional[str],
+    existing_title: Optional[str],
+    *,
+    origin: Optional[str],
+) -> str:
+    """The author string to store on a marker, from explicit provenance.
+
+    ``origin`` is the marker's ORIGINAL source (``original_source``, else ``source``). An
+    AI-created marker is always ``AEMS``, including after a teacher edits it (its ``source``
+    becomes HUMAN, its origin does not). Anything else is the modifier's name, falling back to
+    the author it already has. Provenance is never inferred from the comment text.
+    """
+    if str(origin or "").upper() == "AI":
+        return AI_MARKER_AUTHOR
+    name = grader_name or existing_title
+    return _normalize_pdf_author_name(str(name)) if name else ""
+
+
 def _format_pdf_datetime(value: Optional[datetime] = None) -> str:
     """Format datetime to PDF date string: D:YYYYMMDDHHmmSS+HH'mm'."""
     dt = value or datetime.now(timezone.utc)
@@ -1113,10 +1137,16 @@ class PDFAnnotator:
                         source_error,
                     )
 
-            # Store grader name in "title" field (this is what PDF viewers display as author)
-            if grader_name:
+            # Store the author in the "title" field (what PDF viewers display as author)
+            created_origin = getattr(annotation, "original_source", None) or annotation_source
+            author_title = _marker_author(
+                grader_name,
+                None,
+                origin=getattr(created_origin, "value", created_origin),
+            )
+            if author_title:
                 try:
-                    grader_name_str = _normalize_pdf_author_name(str(grader_name))
+                    grader_name_str = author_title
                     _safe_set_info(annot, "title", grader_name_str)
                     logger.debug(
                         "Stored grader_name in PDF annotation title field: '%s'",
@@ -1257,18 +1287,18 @@ class PDFAnnotator:
             new_annot.set_border(width=stroke_width)
             new_annot.set_opacity(stroke_opacity)
 
-            effective_grader_name = grader_name or info.get("title")
-            if effective_grader_name:
-                _safe_set_info(
-                    new_annot,
-                    "title",
-                    _normalize_pdf_author_name(str(effective_grader_name)),
-                )
-
             effective_source = new_source or metadata.get("source") or "AI"
             original_source_to_store = metadata.get("original_source")
             if effective_source == "HUMAN" and not original_source_to_store:
                 original_source_to_store = metadata.get("source") or "AI"
+
+            author_title = _marker_author(
+                grader_name,
+                info.get("title"),
+                origin=original_source_to_store or effective_source,
+            )
+            if author_title:
+                _safe_set_info(new_annot, "title", author_title)
 
             subject_value = _encode_replacement_subject(
                 annot, new_annot, info, metadata,
@@ -1381,18 +1411,18 @@ class PDFAnnotator:
             new_annot = page.add_highlight_annot(quad_rects)
             new_annot.set_colors(stroke=stroke_rgb)
 
-            effective_grader_name = grader_name or info.get("title")
-            if effective_grader_name:
-                _safe_set_info(
-                    new_annot,
-                    "title",
-                    _normalize_pdf_author_name(str(effective_grader_name)),
-                )
-
             effective_source = new_source or metadata.get("source") or "AI"
             original_source_to_store = metadata.get("original_source")
             if effective_source == "HUMAN" and not original_source_to_store:
                 original_source_to_store = metadata.get("source") or "AI"
+
+            author_title = _marker_author(
+                grader_name,
+                info.get("title"),
+                origin=original_source_to_store or effective_source,
+            )
+            if author_title:
+                _safe_set_info(new_annot, "title", author_title)
 
             anchor_to_store = (
                 new_anchor_text
@@ -1481,18 +1511,18 @@ class PDFAnnotator:
                 )
                 new_annot.set_opacity(0.9)
 
-            effective_grader_name = grader_name or info.get("title")
-            if effective_grader_name:
-                _safe_set_info(
-                    new_annot,
-                    "title",
-                    _normalize_pdf_author_name(str(effective_grader_name)),
-                )
-
             effective_source = new_source or metadata.get("source") or "AI"
             original_source_to_store = metadata.get("original_source")
             if effective_source == "HUMAN" and not original_source_to_store:
                 original_source_to_store = metadata.get("source") or "AI"
+
+            author_title = _marker_author(
+                grader_name,
+                info.get("title"),
+                origin=original_source_to_store or effective_source,
+            )
+            if author_title:
+                _safe_set_info(new_annot, "title", author_title)
 
             subject_value = _encode_replacement_subject(
                 annot, new_annot, info, metadata,
@@ -2076,11 +2106,24 @@ class PDFAnnotator:
                         "Unknown color '%s', skipping color update", new_color
                     )
 
-            # Retag annotation with modifier's grader name
+            # Retag annotation with modifier's grader name (AI markers stay "AEMS")
             if grader_name is not None:
                 try:
+                    retag_metadata = _decode_subject_metadata(
+                        (annot.info or {}).get("subject", "")
+                    )
                     _safe_set_info(
-                        annot, "title", _normalize_pdf_author_name(str(grader_name))
+                        annot,
+                        "title",
+                        _marker_author(
+                            grader_name,
+                            None,
+                            origin=(
+                                retag_metadata.get("original_source")
+                                or retag_metadata.get("source")
+                                or "AI"
+                            ),
+                        ),
                     )
                     annot.update()
                     logger.info(
@@ -2488,12 +2531,15 @@ class PDFAnnotator:
                 )
                 return (False, None, None)
 
-            # Store grader_name in "title" field
-            if grader_name:
+            # Store the author in the "title" field (AI markers stay "AEMS")
+            moved_title = _marker_author(
+                grader_name,
+                None,
+                origin=original_source_to_set or source_to_set,
+            )
+            if moved_title:
                 try:
-                    _safe_set_info(
-                        new_annot, "title", _normalize_pdf_author_name(str(grader_name))
-                    )
+                    _safe_set_info(new_annot, "title", moved_title)
                 except Exception as e:
                     logger.error(
                         "Failed to set grader_name on moved annotation: %s",
