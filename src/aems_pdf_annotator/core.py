@@ -358,6 +358,32 @@ def _marker_author(
     return _normalize_pdf_author_name(str(name)) if name else ""
 
 
+def _recorded_origin(
+    metadata: Dict[str, Any], explicit_source: Optional[str] = None
+) -> Optional[str]:
+    """A marker's provenance as RECORDED (or explicitly given), never defaulted.
+
+    ``original_source`` wins, then the stored ``source``, then a source the caller passes
+    explicitly. A marker that records none (a pre-provenance PDF, an external viewer) has no
+    origin: it is not assumed AI-created, so its author is never rewritten to ``AEMS``.
+    """
+    return metadata.get("original_source") or metadata.get("source") or explicit_source or None
+
+
+def _original_source_after_edit(
+    metadata: Dict[str, Any], source_to_store: Optional[str]
+) -> Optional[str]:
+    """``original_source`` to store when a marker's source becomes ``source_to_store``.
+
+    The first HUMAN edit records the marker's previous RECORDED source; it never invents
+    ``AI`` for a marker that had none (that would make the next edit relabel it ``AEMS``).
+    """
+    original = metadata.get("original_source")
+    if source_to_store == "HUMAN" and not original:
+        original = metadata.get("source")
+    return original
+
+
 def _format_pdf_datetime(value: Optional[datetime] = None) -> str:
     """Format datetime to PDF date string: D:YYYYMMDDHHmmSS+HH'mm'."""
     dt = value or datetime.now(timezone.utc)
@@ -1288,14 +1314,14 @@ class PDFAnnotator:
             new_annot.set_opacity(stroke_opacity)
 
             effective_source = new_source or metadata.get("source") or "AI"
-            original_source_to_store = metadata.get("original_source")
-            if effective_source == "HUMAN" and not original_source_to_store:
-                original_source_to_store = metadata.get("source") or "AI"
+            original_source_to_store = _original_source_after_edit(
+                metadata, effective_source
+            )
 
             author_title = _marker_author(
                 grader_name,
                 info.get("title"),
-                origin=original_source_to_store or effective_source,
+                origin=_recorded_origin(metadata, new_source),
             )
             if author_title:
                 _safe_set_info(new_annot, "title", author_title)
@@ -1412,14 +1438,14 @@ class PDFAnnotator:
             new_annot.set_colors(stroke=stroke_rgb)
 
             effective_source = new_source or metadata.get("source") or "AI"
-            original_source_to_store = metadata.get("original_source")
-            if effective_source == "HUMAN" and not original_source_to_store:
-                original_source_to_store = metadata.get("source") or "AI"
+            original_source_to_store = _original_source_after_edit(
+                metadata, effective_source
+            )
 
             author_title = _marker_author(
                 grader_name,
                 info.get("title"),
-                origin=original_source_to_store or effective_source,
+                origin=_recorded_origin(metadata, new_source),
             )
             if author_title:
                 _safe_set_info(new_annot, "title", author_title)
@@ -1512,14 +1538,14 @@ class PDFAnnotator:
                 new_annot.set_opacity(0.9)
 
             effective_source = new_source or metadata.get("source") or "AI"
-            original_source_to_store = metadata.get("original_source")
-            if effective_source == "HUMAN" and not original_source_to_store:
-                original_source_to_store = metadata.get("source") or "AI"
+            original_source_to_store = _original_source_after_edit(
+                metadata, effective_source
+            )
 
             author_title = _marker_author(
                 grader_name,
                 info.get("title"),
-                origin=original_source_to_store or effective_source,
+                origin=_recorded_origin(metadata, new_source),
             )
             if author_title:
                 _safe_set_info(new_annot, "title", author_title)
@@ -2118,11 +2144,7 @@ class PDFAnnotator:
                         _marker_author(
                             grader_name,
                             None,
-                            origin=(
-                                retag_metadata.get("original_source")
-                                or retag_metadata.get("source")
-                                or "AI"
-                            ),
+                            origin=_recorded_origin(retag_metadata, new_source),
                         ),
                     )
                     annot.update()
@@ -2159,11 +2181,9 @@ class PDFAnnotator:
                         if new_source is not None
                         else subject_metadata.get("source") or "AI"
                     )
-                    original_source_to_store = subject_metadata.get("original_source")
-                    if source_to_store == "HUMAN" and not original_source_to_store:
-                        original_source_to_store = (
-                            subject_metadata.get("source") or "AI"
-                        )
+                    original_source_to_store = _original_source_after_edit(
+                        subject_metadata, source_to_store
+                    )
                     is_verdict_to_store = (
                         bool(subject_metadata.get("is_verdict"))
                         if new_is_verdict is None
@@ -2491,7 +2511,7 @@ class PDFAnnotator:
                 )
                 original_source_to_set = subject_metadata.get("original_source")
                 if new_source == "HUMAN" and not original_source_to_set:
-                    original_source_to_set = subject_metadata.get("source") or "AI"
+                    original_source_to_set = subject_metadata.get("source")
 
                 effective_stroke_color_rgb = (
                     (new_stroke_color_rgb or subject_metadata.get("stroke_color_rgb"))
@@ -2534,8 +2554,8 @@ class PDFAnnotator:
             # Store the author in the "title" field (AI markers stay "AEMS")
             moved_title = _marker_author(
                 grader_name,
-                None,
-                origin=original_source_to_set or source_to_set,
+                info.get("title"),
+                origin=_recorded_origin(subject_metadata, new_source),
             )
             if moved_title:
                 try:
