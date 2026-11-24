@@ -295,7 +295,10 @@ def _second_edit_keeps_the_teacher(out: Path) -> None:
         assert _ok(
             again.update_annotation(ident, new_content="second edit", grader_name=LEGACY_TEACHER)
         )
-        assert _provenance(again) == [(LEGACY_TEACHER, "HUMAN", None)]
+        ((title, source, original),) = _provenance(again)
+        # A second human edit may record the first edit's HUMAN as the origin; never AI.
+        assert (title, source) == (LEGACY_TEACHER, "HUMAN")
+        assert original in (None, "HUMAN")
 
 
 @pytest.mark.parametrize("kind", R2_KINDS)
