@@ -170,3 +170,19 @@ def test_highlight_quad_replacement_authorship(pdf: Path, human: bool, expected:
         )
         assert result[0] if isinstance(result, tuple) else result
         assert titles(annotator) == [expected]
+
+
+def _legacy(annotator: PDFAnnotator, ident: str) -> None:
+    annot = annotator.doc[0].add_text_annot((60, 60), "legacy")
+    annot.set_info(title="Legacy Teacher", subject="", content="legacy")
+    annot.set_name(ident)
+    annot.update()
+
+
+def test_marker_without_provenance_is_retagged_not_renamed_aems(pdf: Path) -> None:
+    """Legacy markers carry no provenance; AEMS is never inferred for them (ASTRA_DEC_1124 Q1)."""
+    with PDFAnnotator(pdf) as annotator:
+        _legacy(annotator, "legacy-1")
+        annotator.update_annotation("legacy-1", grader_name=OTHER_TEACHER)
+        assert titles(annotator) == [OTHER_TEACHER]
+

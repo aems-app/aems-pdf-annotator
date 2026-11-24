@@ -2121,7 +2121,6 @@ class PDFAnnotator:
                             origin=(
                                 retag_metadata.get("original_source")
                                 or retag_metadata.get("source")
-                                or "AI"
                             ),
                         ),
                     )
@@ -2535,7 +2534,7 @@ class PDFAnnotator:
             moved_title = _marker_author(
                 grader_name,
                 None,
-                origin=original_source_to_set or source_to_set,
+                origin=original_source_to_set or subject_metadata.get("source"),
             )
             if moved_title:
                 try:
