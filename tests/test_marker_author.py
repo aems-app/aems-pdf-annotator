@@ -157,3 +157,16 @@ def test_edit_without_grader_name_keeps_existing_author(pdf: Path) -> None:
         annotator.add_annotation(make(AnnotationType.TEXT, "t-keep", human=True, grader=TEACHER))
         annotator.update_annotation("t-keep", new_content="x")
         assert titles(annotator) == [TEACHER]
+
+
+@pytest.mark.parametrize("human, expected", [(False, "AEMS"), (True, OTHER_TEACHER)])
+def test_highlight_quad_replacement_authorship(pdf: Path, human: bool, expected: str) -> None:
+    with PDFAnnotator(pdf) as annotator:
+        annotator.add_annotation(
+            make(AnnotationType.HIGHLIGHT, "hl-q", human=human, grader=TEACHER)
+        )
+        result = annotator.update_annotation(
+            "hl-q", new_quads=[[50, 50, 180, 75]], grader_name=OTHER_TEACHER
+        )
+        assert result[0] if isinstance(result, tuple) else result
+        assert titles(annotator) == [expected]
