@@ -170,3 +170,107 @@ def test_highlight_quad_replacement_authorship(pdf: Path, human: bool, expected:
         )
         assert result[0] if isinstance(result, tuple) else result
         assert titles(annotator) == [expected]
+
+
+# --- Markers with no recorded provenance (H1, astra review round 1) -------------------------
+#
+# Defect class: inferred authorship. A marker whose subject carries no ``source`` /
+# ``original_source`` (a pre-provenance AEMS PDF, an external viewer, an imported PDF) was
+# treated as AI-created, so any edit, retag, move or replacement rewrote the teacher's ``/T``
+# to "AEMS". Provenance must be explicit: with none recorded, the existing author stays, and a
+# retag uses the modifier's name -- never "AEMS". Comments stay under their original author.
+
+LEGACY_TEACHER = "Legacy Teacher"
+LEGACY_ID = "legacy-1"
+
+_LEGACY_EDITS: dict[str, dict[str, Any]] = {
+    "content": {"new_content": "Teacher's own note, edited"},
+    "move_rect": {"new_rect": (120, 200, 320, 240)},
+    "cross_page": {"new_page_index": 1},
+    "quads": {"new_quads": [[60, 60, 200, 80]]},
+    "points": {"new_points": [[60.0, 300.0], [90.0, 330.0]]},
+}
+_LEGACY_CASES = [
+    ("text", "content"), ("text", "move_rect"), ("text", "cross_page"),
+    ("freetext", "content"), ("freetext", "move_rect"), ("freetext", "cross_page"),
+    ("highlight", "content"), ("highlight", "quads"), ("highlight", "cross_page"),
+    ("ink", "content"), ("ink", "points"), ("ink", "cross_page"),
+]
+
+
+def _add_legacy(annotator: PDFAnnotator, kind: str) -> None:
+    page = annotator.doc[0]
+    if kind == "text":
+        annot = page.add_text_annot((100, 100), "Teacher's own note")
+    elif kind == "freetext":
+        annot = page.add_freetext_annot(fitz.Rect(100, 100, 300, 140), "Teacher's own note")
+    elif kind == "highlight":
+        annot = page.add_highlight_annot(fitz.Rect(70, 60, 250, 76))
+    else:
+        annot = page.add_ink_annot([[(50.0, 300.0), (120.0, 340.0), (150.0, 310.0)]])
+    annot.set_info(title=LEGACY_TEACHER, subject="", content="Teacher's own note")
+    annot.set_name(LEGACY_ID)
+    annot.update()
+
+
+def _all_titles(annotator: PDFAnnotator) -> list[str]:
+    return [a.info.get("title", "") for p in annotator.doc for a in p.annots()]
+
+
+def _ok(result: Any) -> bool:
+    return bool(result[0] if isinstance(result, tuple) else result)
+
+
+@pytest.mark.parametrize("kind, edit", _LEGACY_CASES, ids=lambda v: str(v))
+@pytest.mark.parametrize(
+    "grader, new_source, expected",
+    [
+        (None, None, LEGACY_TEACHER),
+        (LEGACY_TEACHER, "HUMAN", LEGACY_TEACHER),
+        (OTHER_TEACHER, "HUMAN", OTHER_TEACHER),
+        (OTHER_TEACHER, None, OTHER_TEACHER),
+    ],
+    ids=["keep", "human-same", "retag-human", "retag"],
+)
+def test_marker_without_provenance_is_never_relabelled_aems(
+    pdf: Path,
+    tmp_path: Path,
+    kind: str,
+    edit: str,
+    grader: str | None,
+    new_source: str | None,
+    expected: str,
+) -> None:
+    with PDFAnnotator(pdf) as annotator:
+        _add_legacy(annotator, kind)
+        first = annotator.update_annotation(
+            LEGACY_ID, grader_name=grader, new_source=new_source, **_LEGACY_EDITS[edit]
+        )
+        assert _ok(first)
+        assert _all_titles(annotator) == [expected]
+        out = reopened(annotator, tmp_path)
+    # A second, plain edit must not turn the first edit's stored metadata into "AI" authorship.
+    with PDFAnnotator(out) as again:
+        (row,) = [r for p in range(2) for r in again.get_annotations_on_page(p)]
+        ident = row.get("id") or row.get("annotation_id")
+        assert _ok(again.update_annotation(ident, new_content="second edit", grader_name=expected))
+        assert _all_titles(again) == [expected]
+        assert "AEMS" not in _all_titles(again)
+
+
+def test_marker_without_provenance_retag_only_uses_the_modifier(pdf: Path) -> None:
+    with PDFAnnotator(pdf) as annotator:
+        _add_legacy(annotator, "text")
+        assert _ok(annotator.update_annotation(LEGACY_ID, grader_name=OTHER_TEACHER))
+        assert _all_titles(annotator) == [OTHER_TEACHER]
+
+
+def test_explicit_ai_source_on_a_marker_without_provenance_reads_aems(pdf: Path) -> None:
+    """Explicit provenance still wins: AEMS writing ``new_source="AI"`` is an AI marker."""
+    with PDFAnnotator(pdf) as annotator:
+        _add_legacy(annotator, "freetext")
+        result = annotator.update_annotation(
+            LEGACY_ID, new_content="generated", new_source="AI", grader_name=TEACHER
+        )
+        assert _ok(result)
+        assert _all_titles(annotator) == ["AEMS"]
