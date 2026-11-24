@@ -5514,16 +5514,17 @@
 
     // The create request that rebuilds a pen stroke or text box as the page shows it now, which can differ from
     // when it was created (a text box's text, a moved stroke). A stored rect is top-left; the request takes PDF
-    // space, while drawing points are stored in PDF space already. The source is named, so the markup keeps
-    // its ownership.
+    // space, while drawing points are stored in PDF space already. A RECORDED source is named, so the markup
+    // keeps its ownership; an unrecorded one is not invented (the displayed 'AI' default is not provenance).
     async function markupCreateRequest(annotation, pageIdx) {
         const body = {
             page_index: pageIdx,
             content: annotation.content || '',
             type: annotation.type,
             color: deriveAnnotationPriority(annotation) || 'amber',
-            source: resolveAnnotationSource(annotation),
         };
+        const recordedSource = recordedAnnotationSource(annotation);
+        if (recordedSource) body.source = recordedSource;
         const authorName = annotation.grader_name || annotation.author_name;
         if (authorName) body.author_name = authorName;
         if (annotation.stroke_color_rgb) body.stroke_color_rgb = annotation.stroke_color_rgb;
@@ -5770,6 +5771,25 @@
             return ann.source;
         }
         return ann.is_system_generated !== false ? 'AI' : 'HUMAN';
+    }
+
+    /** The source the server recorded ('AI' | 'HUMAN'), or null; the only source the UI may send back. */
+    function recordedAnnotationSource(ann) {
+        if (_helpers.recordedAnnotationSource) {
+            return _helpers.recordedAnnotationSource(ann);
+        }
+        const source = ann && ann.source;
+        return source === 'AI' || source === 'HUMAN' ? source : null;
+    }
+
+    function verdictToggleBody(ann, isVerdict) {
+        if (_helpers.verdictToggleBody) {
+            return _helpers.verdictToggleBody(ann, isVerdict);
+        }
+        const body = { is_verdict: isVerdict };
+        const source = recordedAnnotationSource(ann);
+        if (source) body.source = source;
+        return body;
     }
 
     function resolveAnnotationIdentifierValue(entry) {
@@ -8017,8 +8037,8 @@
             return;
         }
 
-        const currentSource = resolveAnnotationSource(ann);
-        const newVerdict = !ann.is_verdict;
+        const toggleBody = verdictToggleBody(ann, !ann.is_verdict);
+        const newVerdict = toggleBody.is_verdict;
 
         // Optimistic update
         ann.is_verdict = newVerdict;
@@ -8044,9 +8064,10 @@
         }) || stableIdentifier;
 
         try {
-            // Preserve existing source explicitly. Verdict toggling should not reclassify AI comments as HUMAN.
+            // Preserve the RECORDED source so a verdict toggle never reclassifies the marker; an unrecorded
+            // source is not sent (echoing the displayed 'AI' default would relabel a teacher marker).
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
-            const data = await updateAnnotationRequest(requestId, { is_verdict: newVerdict, source: currentSource });
+            const data = await updateAnnotationRequest(requestId, toggleBody);
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (!data.success) {
                 throw new Error(data.error || t('Failed to toggle verdict'));

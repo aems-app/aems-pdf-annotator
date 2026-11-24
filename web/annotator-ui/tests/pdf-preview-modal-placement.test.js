@@ -3758,6 +3758,28 @@ describe('pdf-preview-modal placement helpers', () => {
       expect(pageMarkup(m)).toEqual([]);
     });
 
+    // H1-r2: the redo of an undone stroke recreates it from markupCreateRequest. It names the RECORDED source
+    // only; for a stroke that records none it must not name the displayed 'AI' default, or the stroke comes
+    // back as an AI marker authored "AEMS".
+    it.each([
+      ['unrecorded', null, undefined],
+      ['teacher', 'HUMAN', 'HUMAN'],
+      ['AI', 'AI', 'AI'],
+    ])('the redo of an undone %s pen stroke recreates it with source %s', async (_name, recorded, expected) => {
+      const m = await markupHarness();
+      await drawStroke(m);
+      const [entry] = m.h.getAnnotationsData()[0];
+      entry.source = recorded;
+      m.h.dispatchUndo();
+      await vi.waitFor(() => expect(m.server.deleteAnnotation).toHaveBeenCalledTimes(1));
+      await settle();
+      m.h.dispatchRedo();
+      await vi.waitFor(() => expect(m.server.createAnnotation).toHaveBeenCalledTimes(2));
+      const body = m.server.createAnnotation.mock.calls[1][2];
+      expect(body.source).toBe(expected);
+      expect('source' in body).toBe(expected !== undefined);
+    });
+
     it('a refused redo of a created pen stroke recreates nothing and can be retried', async () => {
       vi.spyOn(console, 'error').mockImplementation(() => {});
       const m = await markupHarness();
