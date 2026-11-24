@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from aems_pdf_annotator._fitz import fitz
-from aems_pdf_annotator.core import PDFAnnotator
+from aems_pdf_annotator.core import PDFAnnotator, _decode_subject_metadata
 from aems_pdf_annotator.models import (
     AnnotationColor,
     AnnotationSource,
@@ -265,12 +265,147 @@ def test_marker_without_provenance_retag_only_uses_the_modifier(pdf: Path) -> No
         assert _all_titles(annotator) == [OTHER_TEACHER]
 
 
-def test_explicit_ai_source_on_a_marker_without_provenance_reads_aems(pdf: Path) -> None:
-    """Explicit provenance still wins: AEMS writing ``new_source="AI"`` is an AI marker."""
-    with PDFAnnotator(pdf) as annotator:
-        _add_legacy(annotator, "freetext")
-        result = annotator.update_annotation(
-            LEGACY_ID, new_content="generated", new_source="AI", grader_name=TEACHER
+# --- A defaulted source is never stored, reported or echoed back (H1, astra review round 2) --
+#
+# Defect class: inferred authorship through a defaulted source. The read path reported an
+# unrecorded source as "AI"; the review UI echoed that value back as explicit provenance on a
+# verdict toggle (and on undo/redo), and the writers stored the same default on a verdict-only
+# or colour-only edit. Either way a legacy teacher marker read "AEMS" after one click, or after
+# the next edit. An update can never make an existing marker AI-created: AI markers are created
+# AI, so an "AI" sent for a marker that records no provenance is an echo, not provenance.
+
+R2_KINDS = ["text", "freetext", "highlight", "ink"]
+
+
+def _provenance(annotator: PDFAnnotator) -> list[tuple[str, Any, Any]]:
+    rows = []
+    for page in annotator.doc:
+        for annot in page.annots():
+            meta = _decode_subject_metadata(annot.info.get("subject", ""))
+            rows.append((annot.info.get("title", ""), meta["source"], meta["original_source"]))
+    return rows
+
+
+def _second_edit_keeps_the_teacher(out: Path) -> None:
+    """Reopen, edit again as the teacher: the marker still reads the teacher, never AEMS."""
+    with PDFAnnotator(out) as again:
+        (row,) = [r for p in range(2) for r in again.get_annotations_on_page(p)]
+        assert row["source"] in (None, "HUMAN")
+        ident = row.get("id") or row.get("annotation_id")
+        assert _ok(
+            again.update_annotation(ident, new_content="second edit", grader_name=LEGACY_TEACHER)
         )
-        assert _ok(result)
-        assert _all_titles(annotator) == ["AEMS"]
+        assert _provenance(again) == [(LEGACY_TEACHER, "HUMAN", None)]
+
+
+@pytest.mark.parametrize("kind", R2_KINDS)
+@pytest.mark.parametrize("grader", [None, LEGACY_TEACHER], ids=["no-grader", "grader"])
+def test_verdict_only_toggle_on_a_marker_without_provenance_stores_no_source(
+    pdf: Path, tmp_path: Path, kind: str, grader: str | None
+) -> None:
+    with PDFAnnotator(pdf) as annotator:
+        _add_legacy(annotator, kind)
+        assert _ok(annotator.update_annotation(LEGACY_ID, new_is_verdict=True, grader_name=grader))
+        assert _provenance(annotator) == [(LEGACY_TEACHER, None, None)]
+        (row,) = annotator.get_annotations_on_page(0)
+        assert row["is_verdict"] is True
+        out = reopened(annotator, tmp_path)
+    _second_edit_keeps_the_teacher(out)
+
+
+@pytest.mark.parametrize("kind", ["ink", "freetext"])
+def test_colour_only_change_on_a_marker_without_provenance_keeps_the_teacher(
+    pdf: Path, tmp_path: Path, kind: str
+) -> None:
+    """A colour change is a human edit: it transfers to HUMAN, recording no invented origin."""
+    with PDFAnnotator(pdf) as annotator:
+        _add_legacy(annotator, kind)
+        assert _ok(annotator.update_annotation(LEGACY_ID, new_stroke_color_rgb=[0, 0, 255]))
+        assert _provenance(annotator) == [(LEGACY_TEACHER, "HUMAN", None)]
+        out = reopened(annotator, tmp_path)
+    _second_edit_keeps_the_teacher(out)
+
+
+@pytest.mark.parametrize("kind", R2_KINDS)
+def test_read_path_reports_no_source_for_a_marker_without_provenance(pdf: Path, kind: str) -> None:
+    with PDFAnnotator(pdf) as annotator:
+        _add_legacy(annotator, kind)
+        (row,) = annotator.get_annotations_on_page(0)
+        assert row["source"] is None
+        assert row["original_source"] is None
+
+
+@pytest.mark.parametrize("kind", R2_KINDS)
+@pytest.mark.parametrize("echoed", ["read-path", "stale-ai"])
+def test_echoed_source_on_a_verdict_toggle_keeps_the_teacher(
+    pdf: Path, tmp_path: Path, kind: str, echoed: str
+) -> None:
+    """The UI sends back the source it was shown (or a stale "AI" from an older client)."""
+    with PDFAnnotator(pdf) as annotator:
+        _add_legacy(annotator, kind)
+        (row,) = annotator.get_annotations_on_page(0)
+        source = row["source"] if echoed == "read-path" else "AI"
+        assert _ok(
+            annotator.update_annotation(
+                LEGACY_ID, new_is_verdict=True, new_source=source, grader_name=LEGACY_TEACHER
+            )
+        )
+        assert _provenance(annotator) == [(LEGACY_TEACHER, None, None)]
+        out = reopened(annotator, tmp_path)
+    _second_edit_keeps_the_teacher(out)
+
+
+@pytest.mark.parametrize("kind", R2_KINDS)
+def test_echoed_ai_source_on_an_edit_of_a_marker_without_provenance_keeps_the_teacher(
+    pdf: Path, tmp_path: Path, kind: str
+) -> None:
+    """An undo/redo replays the stale "AI" together with a real edit: still a human edit."""
+    with PDFAnnotator(pdf) as annotator:
+        _add_legacy(annotator, kind)
+        assert _ok(
+            annotator.update_annotation(
+                LEGACY_ID, new_content="restored", new_source="AI", grader_name=LEGACY_TEACHER
+            )
+        )
+        assert _all_titles(annotator) == [LEGACY_TEACHER]
+        out = reopened(annotator, tmp_path)
+    _second_edit_keeps_the_teacher(out)
+
+
+def test_explicit_ai_source_on_a_recorded_ai_marker_still_reads_aems(pdf: Path) -> None:
+    """Reverting a teacher-edited AI marker to AI (recorded origin AI) stays AEMS."""
+    with PDFAnnotator(pdf) as annotator:
+        annotator.add_annotation(make(AnnotationType.TEXT, "ai-rev", human=False, grader=None))
+        assert _ok(annotator.update_annotation("ai-rev", new_content="edited", grader_name=TEACHER))
+        assert _provenance(annotator) == [("AEMS", "HUMAN", "AI")]
+        assert _ok(annotator.update_annotation("ai-rev", new_content="feedback", new_source="AI"))
+        assert _provenance(annotator) == [("AEMS", "AI", "AI")]
+
+
+@pytest.mark.parametrize(
+    "kind", [AnnotationType.DRAWING, AnnotationType.TEXTBOX], ids=lambda k: k.name
+)
+def test_colour_only_change_on_an_ai_marker_transfers_ownership(
+    pdf: Path, kind: AnnotationType
+) -> None:
+    """Pre-existing gap: an RGB-only recolour was not a human edit, so ownership never moved."""
+    with PDFAnnotator(pdf) as annotator:
+        annotator.add_annotation(make(kind, "ai-rgb", human=False, grader=TEACHER))
+        assert _ok(
+            annotator.update_annotation(
+                "ai-rgb", new_stroke_color_rgb=[0, 0, 255], grader_name=TEACHER
+            )
+        )
+        assert _provenance(annotator) == [("AEMS", "HUMAN", "AI")]
+
+
+@pytest.mark.parametrize(
+    "kind", [AnnotationType.DRAWING, AnnotationType.TEXTBOX], ids=lambda k: k.name
+)
+def test_same_colour_rgb_on_an_ai_marker_is_not_an_edit(pdf: Path, kind: AnnotationType) -> None:
+    rgb = [0, 0, 255]
+    with PDFAnnotator(pdf) as annotator:
+        annotator.add_annotation(make(kind, "ai-same", human=False, grader=TEACHER))
+        assert _ok(annotator.update_annotation("ai-same", new_stroke_color_rgb=rgb, new_source="AI"))
+        assert _ok(annotator.update_annotation("ai-same", new_stroke_color_rgb=rgb))
+        assert _provenance(annotator) == [("AEMS", "AI", "AI")]
