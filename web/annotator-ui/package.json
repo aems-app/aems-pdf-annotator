@@ -6,6 +6,7 @@
   "scripts": {
     "build": "rollup -c",
     "test": "vitest run",
+    "test:browser": "playwright test -c playwright.component.config.js",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix"
   },

@@ -2169,7 +2169,8 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
                 if (event.target.matches('.list-group-item')) {
                     event.target.classList.remove('item-focused', 'active');
                 }
-                var textarea = event.target;
+                var picker = window.PdfCommentSymbols?.pickerFor(event.target);
+                var textarea = picker ? picker.previousElementSibling : event.target;
                 if (!textarea.matches('.auto-resize-textarea')) return;
                 var item = textarea.closest('.list-group-item');
                 var saveButton = item && item.querySelector('.save-annotation-btn');
@@ -2306,6 +2307,9 @@ window.PdfPreviewModalCrud = window.PdfPreviewModalCrud || {};
             }
 
             _attachSidebarEventHandlers(listEl);
+            listEl.querySelectorAll('.auto-resize-textarea').forEach(function (textarea) {
+                window.PdfCommentSymbols?.attach(textarea, t);
+            });
 
             var selected = _getSelectedAnnotation();
             if (selected.identifier && selected.pageIdx !== null && _h.escapeCssAttribute) {
