@@ -168,15 +168,11 @@
         toggle.type = 'button';
         toggle.className = 'comment-symbol-toggle';
         toggle.textContent = 'Ω';
-        const pickerLabel = translate('Insert symbol');
-        toggle.title = translate('Insert symbol (Shift+Space to skip shortcut conversion)');
-        toggle.setAttribute('aria-label', pickerLabel);
         toggle.setAttribute('aria-haspopup', 'dialog');
         toggle.setAttribute('aria-expanded', 'false');
         const panel = document.createElement('div');
         panel.className = 'comment-symbol-panel';
         panel.setAttribute('role', 'dialog');
-        panel.setAttribute('aria-label', pickerLabel);
         panel.hidden = true;
         // The top layer avoids clipping by the PDF viewport and scrolling sidebar.
         const view = document.defaultView;
@@ -192,6 +188,22 @@
         let positionListeners;
         let rows;
         let savedSelection;
+
+        // The host catalog may load after attach, so labels are recomputed lazily.
+        function relabel() {
+            const pickerLabel = translate('Insert symbol');
+            toggle.title = translate('Insert symbol (Shift+Space to skip shortcut conversion)');
+            toggle.setAttribute('aria-label', pickerLabel);
+            panel.setAttribute('aria-label', pickerLabel);
+            panel.querySelectorAll('[data-msgid]').forEach(element => {
+                const text = translate(element.dataset.msgid);
+                element.setAttribute('aria-label', text);
+                if (element.dataset.symbol) element.title = text + ' (\\' + element.dataset.symbol + ')';
+            });
+        }
+        relabel();
+        toggle.addEventListener('focus', relabel);
+        toggle.addEventListener('pointerenter', relabel);
 
         function loadRecents() {
             try {
@@ -269,13 +281,12 @@
             const group = document.createElement('div');
             group.className = 'comment-symbol-group';
             group.setAttribute('role', 'group');
-            group.setAttribute('aria-label', translate(label));
+            group.dataset.msgid = label;
             for (let offset = 0; offset < names.length; offset += columns) {
                 const row = document.createElement('div');
                 row.className = 'comment-symbol-row';
                 const buttons = names.slice(offset, offset + columns).map(name => {
                     const { glyph, label } = symbols.get(name);
-                    const spoken = translate(label);
                     const cell = document.createElement('button');
                     cell.type = 'button';
                     cell.tabIndex = -1;
@@ -287,8 +298,8 @@
                     } else {
                         cell.textContent = glyph;
                     }
-                    cell.setAttribute('aria-label', spoken);
-                    cell.title = spoken + ' (\\' + name + ')';
+                    cell.dataset.msgid = label;
+                    cell.dataset.symbol = name;
                     cell.addEventListener('click', () => {
                         const end = editorText(editor).length;
                         const selection = savedSelection || readSelection(editor) || { start: end, end };
@@ -316,6 +327,7 @@
             commentSymbolGroups.forEach(([label, entries]) => {
                 addGroup(label, entries.map(([name]) => name));
             });
+            relabel();
             panel.hidden = false;
             if (topLayer) panel.showPopover();
             positionListeners = new view.AbortController();
