@@ -371,3 +371,53 @@ describe('round-one review regressions', () => {
         expect(toggle.getAttribute('aria-expanded')).toBe('false');
     });
 });
+
+describe('lazy translation (host catalog loads after attach)', () => {
+    const LONG = 'Insert symbol (Shift+Space to skip shortcut conversion)';
+    const makeCatalog = () => {
+        const catalog = new Map();
+        return { catalog, translate: key => catalog.get(key) ?? key };
+    };
+    const load = catalog => {
+        catalog.set('Insert symbol', 'Infoga symbol');
+        catalog.set(LONG, 'Infoga symbol (Shift+Blanksteg hoppar over genvagskonvertering)');
+        catalog.set('Greek lowercase', 'Grekiska smabokstaver');
+        catalog.set('plus-minus', 'plusminus');
+    };
+    const expectSwedish = (toggle, panel) => {
+        expect(toggle.title).toBe('Infoga symbol (Shift+Blanksteg hoppar over genvagskonvertering)');
+        expect(toggle.getAttribute('aria-label')).toBe('Infoga symbol');
+        expect(panel.getAttribute('aria-label')).toBe('Infoga symbol');
+        expect(panel.querySelector('[role="group"]').getAttribute('aria-label')).toBe('Grekiska smabokstaver');
+        const cell = [...panel.querySelectorAll('button')].find(b => b.textContent === '±');
+        expect(cell.getAttribute('aria-label')).toBe('plusminus');
+        expect(cell.title).toBe('plusminus (\\pm)');
+    };
+    const prepare = () => {
+        const { catalog, translate } = makeCatalog();
+        const ctx = setup(undefined, translate);
+        ctx.toggle.click(); // build cells while the catalog is still empty
+        ctx.toggle.click(); // close again
+        expect(ctx.toggle.getAttribute('aria-label')).toBe('Insert symbol');
+        load(catalog);
+        return ctx;
+    };
+
+    it('relabels everything on toggle focus', () => {
+        const { toggle, panel } = prepare();
+        toggle.dispatchEvent(new FocusEvent('focus'));
+        expectSwedish(toggle, panel);
+    });
+
+    it('relabels everything on toggle pointerenter', () => {
+        const { toggle, panel } = prepare();
+        toggle.dispatchEvent(new Event('pointerenter'));
+        expectSwedish(toggle, panel);
+    });
+
+    it('relabels everything when the panel opens', () => {
+        const { toggle, panel } = prepare();
+        toggle.click();
+        expectSwedish(toggle, panel);
+    });
+});
