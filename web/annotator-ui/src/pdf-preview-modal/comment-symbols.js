@@ -36,6 +36,15 @@
     const symbols = new Map(commentSymbolGroups.flatMap(([, entries]) => entries.map(
         ([name, glyph, label = name]) => [name, { glyph, label }],
     )));
+    const pickerMsgid = 'Insert symbol';
+    const toggleTitleMsgid = 'Insert symbol (Shift+Space to skip shortcut conversion)';
+    const recentsMsgid = 'Recently used symbols';
+    // Every msgid a picker can show; their translations decide whether a relabel has work to do.
+    const labelMsgids = Object.freeze([pickerMsgid, toggleTitleMsgid, recentsMsgid,
+        ...commentSymbolGroups.flatMap(([label, entries]) => [label, ...entries.map(
+            ([name, , spoken = name]) => spoken,
+        )])]);
+    const catalogEvents = ['i18nReady', 'localeChanged'];
     const storageKey = 'aems.annotation.recentSymbols';
     const columns = 10;
 
@@ -190,9 +199,15 @@
         let savedSelection;
 
         // The host catalog may load after attach, so labels are recomputed lazily.
-        function relabel() {
-            const pickerLabel = translate('Insert symbol');
-            toggle.title = translate('Insert symbol (Shift+Space to skip shortcut conversion)');
+        // A relabel with unchanged translations is skipped unless forced, which
+        // opening the panel does because it rebuilds every cell.
+        let appliedLabels;
+        function relabel(force) {
+            const translated = labelMsgids.map(msgid => translate(msgid)).join('\u0000');
+            if (!force && translated === appliedLabels) return;
+            appliedLabels = translated;
+            const pickerLabel = translate(pickerMsgid);
+            toggle.title = translate(toggleTitleMsgid);
             toggle.setAttribute('aria-label', pickerLabel);
             panel.setAttribute('aria-label', pickerLabel);
             panel.querySelectorAll('[data-msgid]').forEach(element => {
@@ -201,9 +216,24 @@
                 if (element.dataset.symbol) element.title = text + ' (\\' + element.dataset.symbol + ')';
             });
         }
-        relabel();
-        toggle.addEventListener('focus', relabel);
-        toggle.addEventListener('pointerenter', relabel);
+        const refreshLabels = () => relabel(false);
+        refreshLabels();
+        toggle.addEventListener('focus', refreshLabels);
+        toggle.addEventListener('pointerenter', refreshLabels);
+        // The host announces its catalog on window, so a screen-reader user who
+        // never touches the toggle still hears it translated. A picker that has
+        // left the document drops these listeners on the next announcement.
+        let wasConnected = root.isConnected;
+        const catalogListeners = new view.AbortController();
+        const onCatalog = () => {
+            if (root.isConnected) {
+                wasConnected = true;
+                refreshLabels();
+            } else if (wasConnected) {
+                catalogListeners.abort();
+            }
+        };
+        catalogEvents.forEach(type => view.addEventListener(type, onCatalog, { signal: catalogListeners.signal }));
 
         function loadRecents() {
             try {
@@ -323,11 +353,11 @@
             loadRecents();
             rows = [];
             panel.replaceChildren();
-            if (recent.length) addGroup('Recently used symbols', recent);
+            if (recent.length) addGroup(recentsMsgid, recent);
             commentSymbolGroups.forEach(([label, entries]) => {
                 addGroup(label, entries.map(([name]) => name));
             });
-            relabel();
+            relabel(true);
             panel.hidden = false;
             if (topLayer) panel.showPopover();
             positionListeners = new view.AbortController();

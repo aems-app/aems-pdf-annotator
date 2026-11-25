@@ -454,7 +454,12 @@ describe('lazy translation round two', () => {
 
     it('stops working for a picker that was removed from the document', () => {
         const { catalog, translate } = makeCatalog();
+        const added = vi.spyOn(window, 'addEventListener');
         const { picker, toggle } = setup(undefined, translate);
+        const signals = added.mock.calls.filter(([type]) => type === 'i18nReady' || type === 'localeChanged')
+            .map(([, , options]) => options.signal);
+        expect(signals).toHaveLength(2);
+        expect(signals.every(signal => !signal.aborted)).toBe(true);
         picker.remove();
         load(catalog);
         translate.mockClear();
@@ -462,6 +467,7 @@ describe('lazy translation round two', () => {
         window.dispatchEvent(new Event('localeChanged'));
         expect(translate).not.toHaveBeenCalled();
         expect(toggle.getAttribute('aria-label')).toBe('Insert symbol');
+        expect(signals.every(signal => signal.aborted)).toBe(true); // the listeners are gone
     });
 
     it('still relabels a picker attached before its editor was connected', () => {
