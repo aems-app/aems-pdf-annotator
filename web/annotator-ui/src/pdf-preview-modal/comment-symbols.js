@@ -141,6 +141,16 @@
         return native;
     }
 
+    function collapseCaret(editor, offset) {
+        if (editor.tagName === 'TEXTAREA') {
+            editor.setSelectionRange(offset, offset);
+            return;
+        }
+        const selection = editor.ownerDocument.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(editableRange(editor, offset, offset));
+    }
+
     function pickerFor(element) {
         return element?.closest?.('.comment-symbol-picker');
     }
@@ -234,13 +244,13 @@
             const converted = glyph + (trigger === ' ' ? delimiter : '');
             let typed = original;
             let replaceThrough = end;
-            if (trigger !== undefined) {
+            // A Tab in a contenteditable never types a character (it moves focus),
+            // and Chrome would render an inserted one as a styled span, so it
+            // gets no delimiter at all.
+            if (trigger !== undefined && !(trigger === 'Tab' && selection.caret)) {
                 // Put the actual typed delimiter into the browser history before
                 // replacing the complete token. Native Undo then restores both.
-                // Chrome can generate a styled HTML span for a Tab in a
-                // contenteditable. Insert that delimiter as plain text.
-                const inputType = trigger === 'Tab' && selection.caret ? 'insertReplacementText' : 'insertText';
-                replaceSelection(editor, delimiter, { start: end, end, range: selection.caret }, inputType, false);
+                replaceSelection(editor, delimiter, { start: end, end, range: selection.caret }, 'insertText', false);
                 typed += delimiter;
                 replaceThrough += delimiter.length;
             }
@@ -248,7 +258,7 @@
             const native = replaceSelection(editor, converted, { ...selection, end: replaceThrough });
             const token = trigger === undefined ? undefined : original;
             if (native) {
-                if (token !== undefined) nativeConversion = { start, token, typedValue };
+                if (token !== undefined) nativeConversion = { start, end: replaceThrough, token, typedValue };
             } else {
                 history = { start, typed, converted, token, value: editorText(editor), undone: false };
             }
@@ -369,8 +379,10 @@
                 suppressed = undefined;
             }
             if (event.inputType === 'historyUndo' && nativeConversion?.typedValue === value) {
-                const { start, token } = nativeConversion;
+                const { start, end, token } = nativeConversion;
                 suppressed = { start, end: start + token.length, token };
+                // Chrome selects the restored text; the next keystroke would erase it.
+                collapseCaret(editor, end);
             }
         });
         editor.addEventListener('keydown', event => {
