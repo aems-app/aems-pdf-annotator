@@ -371,3 +371,152 @@ describe('round-one review regressions', () => {
         expect(toggle.getAttribute('aria-expanded')).toBe('false');
     });
 });
+
+describe('lazy translation (host catalog loads after attach)', () => {
+    const LONG = 'Insert symbol (Shift+Space to skip shortcut conversion)';
+    const makeCatalog = () => {
+        const catalog = new Map();
+        return { catalog, translate: key => catalog.get(key) ?? key };
+    };
+    const load = catalog => {
+        catalog.set('Insert symbol', 'Infoga symbol');
+        catalog.set(LONG, 'Infoga symbol (Shift+Blanksteg hoppar over genvagskonvertering)');
+        catalog.set('Greek lowercase', 'Grekiska smabokstaver');
+        catalog.set('plus-minus', 'plusminus');
+    };
+    const expectSwedish = (toggle, panel) => {
+        expect(toggle.title).toBe('Infoga symbol (Shift+Blanksteg hoppar over genvagskonvertering)');
+        expect(toggle.getAttribute('aria-label')).toBe('Infoga symbol');
+        expect(panel.getAttribute('aria-label')).toBe('Infoga symbol');
+        expect(panel.querySelector('[role="group"]').getAttribute('aria-label')).toBe('Grekiska smabokstaver');
+        const cell = [...panel.querySelectorAll('button')].find(b => b.textContent === '±');
+        expect(cell.getAttribute('aria-label')).toBe('plusminus');
+        expect(cell.title).toBe('plusminus (\\pm)');
+    };
+    const prepare = () => {
+        const { catalog, translate } = makeCatalog();
+        const ctx = setup(undefined, translate);
+        ctx.toggle.click(); // build cells while the catalog is still empty
+        ctx.toggle.click(); // close again
+        expect(ctx.toggle.getAttribute('aria-label')).toBe('Insert symbol');
+        load(catalog);
+        return ctx;
+    };
+
+    it('relabels everything on toggle focus', () => {
+        const { toggle, panel } = prepare();
+        toggle.dispatchEvent(new FocusEvent('focus'));
+        expectSwedish(toggle, panel);
+    });
+
+    it('relabels everything on toggle pointerenter', () => {
+        const { toggle, panel } = prepare();
+        toggle.dispatchEvent(new Event('pointerenter'));
+        expectSwedish(toggle, panel);
+    });
+
+    it('relabels everything when the panel opens', () => {
+        const { toggle, panel } = prepare();
+        toggle.click();
+        expectSwedish(toggle, panel);
+    });
+});
+
+describe('lazy translation round two', () => {
+    const LONG = 'Insert symbol (Shift+Space to skip shortcut conversion)';
+    const SV_LONG = 'Infoga symbol (Shift+Blanksteg hoppar over genvagskonvertering)';
+    const makeCatalog = () => {
+        const catalog = new Map();
+        return { catalog, translate: vi.fn(key => catalog.get(key) ?? key) };
+    };
+    const load = catalog => {
+        catalog.set('Insert symbol', 'Infoga symbol');
+        catalog.set(LONG, SV_LONG);
+        catalog.set('Greek lowercase', 'Grekiska smabokstaver');
+        catalog.set('Recently used symbols', 'Senast anvanda symboler');
+        catalog.set('plus-minus', 'plusminus');
+    };
+    const expectSwedishToggle = (toggle, panel) => {
+        expect(toggle.getAttribute('aria-label')).toBe('Infoga symbol');
+        expect(toggle.title).toBe(SV_LONG);
+        expect(panel.getAttribute('aria-label')).toBe('Infoga symbol');
+    };
+    const plusMinus = panel => [...panel.querySelectorAll('button')].find(b => b.textContent === '±');
+
+    it.each(['i18nReady', 'localeChanged'])('relabels on the window %s event without any interaction', type => {
+        const { catalog, translate } = makeCatalog();
+        const { toggle, panel } = setup(undefined, translate);
+        expect(toggle.getAttribute('aria-label')).toBe('Insert symbol');
+        load(catalog);
+        window.dispatchEvent(new Event(type));
+        expectSwedishToggle(toggle, panel);
+    });
+
+    it('stops working for a picker that was removed from the document', () => {
+        const { catalog, translate } = makeCatalog();
+        const added = vi.spyOn(window, 'addEventListener');
+        const { picker, toggle } = setup(undefined, translate);
+        const signals = added.mock.calls.filter(([type]) => type === 'i18nReady' || type === 'localeChanged')
+            .map(([, , options]) => options.signal);
+        expect(signals).toHaveLength(2);
+        expect(signals.every(signal => !signal.aborted)).toBe(true);
+        picker.remove();
+        load(catalog);
+        translate.mockClear();
+        window.dispatchEvent(new Event('i18nReady'));
+        window.dispatchEvent(new Event('localeChanged'));
+        expect(translate).not.toHaveBeenCalled();
+        expect(toggle.getAttribute('aria-label')).toBe('Insert symbol');
+        expect(signals.every(signal => signal.aborted)).toBe(true); // the listeners are gone
+    });
+
+    it('still relabels a picker attached before its editor was connected', () => {
+        const { catalog, translate } = makeCatalog();
+        const host = document.createElement('div');
+        const textarea = document.createElement('textarea');
+        host.append(textarea);
+        const picker = attach(textarea, translate);
+        const [toggle, panel] = [picker.firstElementChild, picker.lastElementChild];
+        window.dispatchEvent(new Event('i18nReady')); // not connected yet: nothing to do
+        document.body.append(host);
+        load(catalog);
+        window.dispatchEvent(new Event('localeChanged'));
+        expectSwedishToggle(toggle, panel);
+    });
+
+    it('does no attribute writes on a repeated pointerenter when nothing changed', () => {
+        const { catalog, translate } = makeCatalog();
+        const { toggle } = setup(undefined, translate);
+        toggle.click();
+        toggle.click();
+        load(catalog);
+        toggle.dispatchEvent(new Event('pointerenter'));
+        const writes = vi.spyOn(Element.prototype, 'setAttribute');
+        toggle.dispatchEvent(new Event('pointerenter'));
+        expect(writes).not.toHaveBeenCalled();
+    });
+
+    it('labels cells built on open even when the catalog did not change since the last relabel', () => {
+        const { catalog, translate } = makeCatalog();
+        const { toggle, panel } = setup(undefined, translate);
+        load(catalog);
+        toggle.dispatchEvent(new FocusEvent('focus'));
+        expectSwedishToggle(toggle, panel);
+        toggle.click(); // cells are built now, after the last relabel
+        expect(panel.querySelector('[role="group"]').getAttribute('aria-label')).toBe('Grekiska smabokstaver');
+        expect(plusMinus(panel).getAttribute('aria-label')).toBe('plusminus');
+        expect(plusMinus(panel).title).toBe('plusminus (\\pm)');
+    });
+
+    it('gives the recently-used group its Swedish label after a late catalog load', () => {
+        const { catalog, translate } = makeCatalog();
+        const storage = { getItem: () => '["alpha"]', setItem: () => {} };
+        const { toggle, panel } = setup(() => storage, translate);
+        toggle.click(); // builds the recents group while the catalog is empty
+        const recents = panel.querySelector('[role="group"]');
+        expect(recents.getAttribute('aria-label')).toBe('Recently used symbols');
+        load(catalog);
+        window.dispatchEvent(new Event('i18nReady'));
+        expect(recents.getAttribute('aria-label')).toBe('Senast anvanda symboler');
+    });
+});

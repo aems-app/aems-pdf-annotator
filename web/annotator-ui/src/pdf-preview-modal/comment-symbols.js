@@ -36,6 +36,15 @@
     const symbols = new Map(commentSymbolGroups.flatMap(([, entries]) => entries.map(
         ([name, glyph, label = name]) => [name, { glyph, label }],
     )));
+    const pickerMsgid = 'Insert symbol';
+    const toggleTitleMsgid = 'Insert symbol (Shift+Space to skip shortcut conversion)';
+    const recentsMsgid = 'Recently used symbols';
+    // Every msgid a picker can show; their translations decide whether a relabel has work to do.
+    const labelMsgids = Object.freeze([pickerMsgid, toggleTitleMsgid, recentsMsgid,
+        ...commentSymbolGroups.flatMap(([label, entries]) => [label, ...entries.map(
+            ([name, , spoken = name]) => spoken,
+        )])]);
+    const catalogEvents = ['i18nReady', 'localeChanged'];
     const storageKey = 'aems.annotation.recentSymbols';
     const columns = 10;
 
@@ -168,15 +177,11 @@
         toggle.type = 'button';
         toggle.className = 'comment-symbol-toggle';
         toggle.textContent = 'Ω';
-        const pickerLabel = translate('Insert symbol');
-        toggle.title = translate('Insert symbol (Shift+Space to skip shortcut conversion)');
-        toggle.setAttribute('aria-label', pickerLabel);
         toggle.setAttribute('aria-haspopup', 'dialog');
         toggle.setAttribute('aria-expanded', 'false');
         const panel = document.createElement('div');
         panel.className = 'comment-symbol-panel';
         panel.setAttribute('role', 'dialog');
-        panel.setAttribute('aria-label', pickerLabel);
         panel.hidden = true;
         // The top layer avoids clipping by the PDF viewport and scrolling sidebar.
         const view = document.defaultView;
@@ -192,6 +197,43 @@
         let positionListeners;
         let rows;
         let savedSelection;
+
+        // The host catalog may load after attach, so labels are recomputed lazily.
+        // A relabel with unchanged translations is skipped unless forced, which
+        // opening the panel does because it rebuilds every cell.
+        let appliedLabels;
+        function relabel(force) {
+            const translated = labelMsgids.map(msgid => translate(msgid)).join('\u0000');
+            if (!force && translated === appliedLabels) return;
+            appliedLabels = translated;
+            const pickerLabel = translate(pickerMsgid);
+            toggle.title = translate(toggleTitleMsgid);
+            toggle.setAttribute('aria-label', pickerLabel);
+            panel.setAttribute('aria-label', pickerLabel);
+            panel.querySelectorAll('[data-msgid]').forEach(element => {
+                const text = translate(element.dataset.msgid);
+                element.setAttribute('aria-label', text);
+                if (element.dataset.symbol) element.title = text + ' (\\' + element.dataset.symbol + ')';
+            });
+        }
+        const refreshLabels = () => relabel(false);
+        refreshLabels();
+        toggle.addEventListener('focus', refreshLabels);
+        toggle.addEventListener('pointerenter', refreshLabels);
+        // The host announces its catalog on window, so a screen-reader user who
+        // never touches the toggle still hears it translated. A picker that has
+        // left the document drops these listeners on the next announcement.
+        let wasConnected = root.isConnected;
+        const catalogListeners = new view.AbortController();
+        const onCatalog = () => {
+            if (root.isConnected) {
+                wasConnected = true;
+                refreshLabels();
+            } else if (wasConnected) {
+                catalogListeners.abort();
+            }
+        };
+        catalogEvents.forEach(type => view.addEventListener(type, onCatalog, { signal: catalogListeners.signal }));
 
         function loadRecents() {
             try {
@@ -269,13 +311,12 @@
             const group = document.createElement('div');
             group.className = 'comment-symbol-group';
             group.setAttribute('role', 'group');
-            group.setAttribute('aria-label', translate(label));
+            group.dataset.msgid = label;
             for (let offset = 0; offset < names.length; offset += columns) {
                 const row = document.createElement('div');
                 row.className = 'comment-symbol-row';
                 const buttons = names.slice(offset, offset + columns).map(name => {
                     const { glyph, label } = symbols.get(name);
-                    const spoken = translate(label);
                     const cell = document.createElement('button');
                     cell.type = 'button';
                     cell.tabIndex = -1;
@@ -287,8 +328,8 @@
                     } else {
                         cell.textContent = glyph;
                     }
-                    cell.setAttribute('aria-label', spoken);
-                    cell.title = spoken + ' (\\' + name + ')';
+                    cell.dataset.msgid = label;
+                    cell.dataset.symbol = name;
                     cell.addEventListener('click', () => {
                         const end = editorText(editor).length;
                         const selection = savedSelection || readSelection(editor) || { start: end, end };
@@ -312,10 +353,11 @@
             loadRecents();
             rows = [];
             panel.replaceChildren();
-            if (recent.length) addGroup('Recently used symbols', recent);
+            if (recent.length) addGroup(recentsMsgid, recent);
             commentSymbolGroups.forEach(([label, entries]) => {
                 addGroup(label, entries.map(([name]) => name));
             });
+            relabel(true);
             panel.hidden = false;
             if (topLayer) panel.showPopover();
             positionListeners = new view.AbortController();
