@@ -426,6 +426,44 @@ window.PdfPreviewModalAnnotationHelpers = window.PdfPreviewModalAnnotationHelper
         return ann.is_system_generated !== false ? 'AI' : 'HUMAN';
     };
 
+    /**
+     * The source the server RECORDED for this annotation: 'AI', 'HUMAN', or null when none is
+     * recorded (a legacy marker). Unlike resolveAnnotationSource (a display default), this is
+     * the only source the UI may send back: echoing the displayed 'AI' default as provenance
+     * relabels a legacy teacher marker as an AI marker authored "AEMS" (H1-r2).
+     *
+     * @param {Object} ann - Annotation object
+     * @returns {('AI'|'HUMAN'|null)}
+     */
+    exports.recordedAnnotationSource = function recordedAnnotationSource(ann) {
+        const source = ann && ann.source;
+        return source === 'AI' || source === 'HUMAN' ? source : null;
+    };
+
+    /**
+     * The update body for a verdict toggle: the new verdict, plus the recorded source so the
+     * toggle never reclassifies the marker; nothing is sent when no source is recorded.
+     */
+    exports.verdictToggleBody = function verdictToggleBody(ann, isVerdict) {
+        const body = { is_verdict: isVerdict };
+        const source = exports.recordedAnnotationSource(ann);
+        if (source) body.source = source;
+        return body;
+    };
+
+    // MASTER 539a: ONE rule for "a comment the teacher created in this session and never gave text".
+    // _newDraft survives the priority/verdict/move rewrites that strip _isTemporary; it is dropped
+    // when a save returns the server copy (which carries no client flags).
+    const DRAFT_PLACEHOLDERS = ['', 'New comment...', 'New comment'];
+
+    exports.isNewDraft = function isNewDraft(ann) {
+        return !!ann && (ann._isTemporary === true || ann._newDraft === true);
+    };
+
+    exports.isNeverTypedDraft = function isNeverTypedDraft(ann, text) {
+        return exports.isNewDraft(ann) && DRAFT_PLACEHOLDERS.includes(String(text == null ? '' : text).trim());
+    };
+
 })(window.PdfPreviewModalAnnotationHelpers);
 
 // Export constants for testing

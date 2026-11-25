@@ -246,6 +246,22 @@ describe('real modal sidebar controller lifecycle', () => {
     if (expectedBody) expect(hostMethod.mock.calls[0][3]).toEqual(expectedBody);
   });
 
+  // H1-r2: a legacy marker records no source. The toggle must not echo the displayed "AI"
+  // default back as provenance (the writer would relabel the teacher's marker "AEMS").
+  it.each([
+    ['unrecorded', { source: null, original_source: null, can_revert_to_ai: false }, { is_verdict: true }],
+    ['recorded AI', { source: 'AI', original_source: 'AI', can_revert_to_ai: false }, { is_verdict: true, source: 'AI' }],
+  ])('a verdict toggle on a %s marker sends %j', async (_name, provenance, expectedBody) => {
+    const current = await createModal();
+    current.options.setAnnotationsData({ 0: [{ ...annotation, ...provenance }] });
+    current.controller.renderSidebar();
+    list.querySelector('.verdict-indicator').click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(adapter.updateAnnotation).toHaveBeenCalledOnce();
+    expect(adapter.updateAnnotation.mock.calls[0][3]).toEqual(expectedBody);
+  });
+
   it('Cancel and textarea synchronization still work after reopening and 50 editing render attempts', async () => {
     const current = await reopen();
     current.controller.beginEdit(0, 'Q1-04', list.querySelector('.list-group-item').dataset.annotationId);

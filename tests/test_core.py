@@ -468,7 +468,8 @@ class TestPDFAnnotator:
             ann = annotator.get_annotations_on_page(0)[0]
             assert ann["source"] == "HUMAN"
             assert ann["original_source"] == "AI"
-            assert ann["grader_name"] == "Reader Grader"
+            # AI markers stay authored by AEMS after a teacher edit (MASTER 502).
+            assert ann["grader_name"] == "AEMS"
 
     @pytest.mark.parametrize("kind,cross_page,explicit_source,move", [
         (AnnotationType.TEXT, False, False, True),
@@ -480,7 +481,7 @@ class TestPDFAnnotator:
         (AnnotationType.HIGHLIGHT, False, True, False),
         (AnnotationType.TEXT, False, False, False),
     ])
-    def test_ownership_move_roundtrip_preserves_teacher_author(
+    def test_ownership_move_roundtrip_preserves_ai_author(
         self, sample_pdf, tmp_path, kind, cross_page, explicit_source, move,
     ):
         with PDFAnnotator(sample_pdf) as annotator:
@@ -495,7 +496,7 @@ class TestPDFAnnotator:
             page = annotator.doc[0]
             pdf_annotation = next(page.annots())
             original_author = pdf_annotation.info["title"]
-            assert original_author == "Artem Kulachenko"
+            assert original_author == "AEMS"  # AI-created: never the grading account's name
             old_rect = tuple(pdf_annotation.rect)
             kwargs = {}
             if move:

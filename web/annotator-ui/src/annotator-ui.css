@@ -1083,7 +1083,9 @@
     transition: all 0.15s ease;
 }
 
-.source-badge.source-ai {
+/* ONE comment style (MASTER 547a): the teacher badge keeps its text, not a second colour. */
+.source-badge.source-ai,
+.source-badge.source-human {
     background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
     color: #1d4ed8;
     border: 1px solid #93c5fd;
@@ -1091,23 +1093,10 @@
         inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
-.source-badge.source-ai:hover {
+.source-badge.source-ai:hover,
+.source-badge.source-human:hover {
     background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
     box-shadow: 0 2px 4px rgba(29, 78, 216, 0.15),
-        inset 0 1px 0 rgba(255, 255, 255, 0.7);
-}
-
-.source-badge.source-human {
-    background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
-    color: #c2410c;
-    border: 1px solid #fdba74;
-    box-shadow: 0 1px 2px rgba(194, 65, 12, 0.1),
-        inset 0 1px 0 rgba(255, 255, 255, 0.7);
-}
-
-.source-badge.source-human:hover {
-    background: linear-gradient(135deg, #ffedd5 0%, #fed7aa 100%);
-    box-shadow: 0 2px 4px rgba(194, 65, 12, 0.15),
         inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
@@ -1141,28 +1130,21 @@
     border-left: 2px solid var(--bs-purple, #6f42c1);
 }
 
-.annotation-marker.source-ai {
+/* ONE comment style (MASTER 547a): a teacher-created comment looks exactly like an AI one.
+   The source-ai / source-human classes stay for logic and the list badge, not for styling. */
+.annotation-marker.source-ai,
+.annotation-marker.source-human {
     box-shadow: 0 0 0 2px rgba(21, 101, 192, 0.3);
 }
 
-.annotation-marker.source-ai .annotation-label {
-    border-left: 3px solid #1565c0;
-}
-
-.annotation-marker.source-human {
-    box-shadow: 0 0 0 2px rgba(230, 81, 0, 0.3);
-}
-
+.annotation-marker.source-ai .annotation-label,
 .annotation-marker.source-human .annotation-label {
-    border-left: 3px solid #e65100;
-}
-
-.list-group-item.source-ai {
     border-left: 3px solid #1565c0;
 }
 
+.list-group-item.source-ai,
 .list-group-item.source-human {
-    border-left: 3px solid #e65100;
+    border-left: 3px solid #1565c0;
 }
 
 .annotation-marker.ownership-transferred {
@@ -1171,11 +1153,11 @@
 
 @keyframes ownership-flash {
     0% {
-        box-shadow: 0 0 0 4px rgba(230, 81, 0, 0.8);
+        box-shadow: 0 0 0 4px rgba(21, 101, 192, 0.8);
     }
 
     100% {
-        box-shadow: 0 0 0 2px rgba(230, 81, 0, 0.3);
+        box-shadow: 0 0 0 2px rgba(21, 101, 192, 0.3);
     }
 }
 
@@ -1190,12 +1172,9 @@
     transform: scale(1.1);
 }
 
-.comments-panel-ai .panel-title-icon {
-    color: #2563eb;
-}
-
+.comments-panel-ai .panel-title-icon,
 .comments-panel-human .panel-title-icon {
-    color: #ea580c;
+    color: #2563eb;
 }
 
 /* Split Panel Mode (works in both reduced and fullscreen modes) */
@@ -1241,8 +1220,8 @@
 
 #pdfPreviewModal.split-panel-mode .comments-panel-human {
     order: 3;
-    border-left: 2px solid #e65100;
-    background: #fffbf5;
+    border-left: 2px solid #1565c0;
+    background: #f8fbff;
 }
 
 #pdfPreviewModal.split-panel-mode .pdf-center-panel {
@@ -1775,16 +1754,11 @@
 }
 
 /* Dark mode: Source badges */
-:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .source-badge.source-ai {
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .source-badge.source-ai,
+:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .source-badge.source-human {
     background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(59, 130, 246, 0.15) 100%);
     color: #60a5fa;
     border-color: rgba(59, 130, 246, 0.3);
-}
-
-:is([data-theme="dark"], .dark-mode) #pdfPreviewModal .source-badge.source-human {
-    background: linear-gradient(135deg, rgba(251, 146, 60, 0.2) 0%, rgba(251, 146, 60, 0.15) 100%);
-    color: #fb923c;
-    border-color: rgba(251, 146, 60, 0.3);
 }
 
 /* Dark mode: Priority dots */
@@ -1864,17 +1838,14 @@
 }
 
 :is([data-theme="dark"], .dark-mode) #pdfPreviewModal.preview-fullscreen.split-panel-mode .comments-panel-human {
-    background: rgba(251, 146, 60, 0.05);
-    border-left-color: rgba(251, 146, 60, 0.4);
+    background: rgba(59, 130, 246, 0.05);
+    border-left-color: rgba(59, 130, 246, 0.4);
 }
 
 /* Dark mode: Panel title icons */
-:is([data-theme="dark"], .dark-mode) .comments-panel-ai .panel-title-icon {
-    color: #60a5fa;
-}
-
+:is([data-theme="dark"], .dark-mode) .comments-panel-ai .panel-title-icon,
 :is([data-theme="dark"], .dark-mode) .comments-panel-human .panel-title-icon {
-    color: #fb923c;
+    color: #60a5fa;
 }
 
 /* Dark mode: Alert banner */

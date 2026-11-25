@@ -33,6 +33,12 @@
     const debugLog = UtilsModule.debugLog || function () { };
     const PLACEHOLDER_STRINGS = UtilsModule.PLACEHOLDER_STRINGS || ['', 'New comment...', 'New comment'];
 
+    // MASTER 539a: the one "never-typed new draft" rule, shared with annotation-controller.js.
+    function isNeverTypedDraft(annotation, text) {
+        const rule = window.PdfPreviewModalAnnotationHelpers?.isNeverTypedDraft;
+        return rule ? rule(annotation, text) : false;
+    }
+
     function translatePdfPreviewText(key, params) {
         if (UtilsModule.translateText) return UtilsModule.translateText(key, params);
         var translator = window.i18n && typeof window.i18n.t === 'function'
@@ -1856,6 +1862,44 @@
         return etag ? { offline, ifMatch: etag } : { offline };
     }
 
+    // A comment the host delivered without a tag would be written with no If-Match, which the hosted server
+    // refuses (428). Ask the host's own load path for the current copy and adopt its tag, but only when that
+    // copy still has the text, colour and position this page last saw: a changed copy means the page is
+    // stale, so the write is refused instead of silently replacing it. A comment the host no longer lists is
+    // written as before. A host that issues no tags at all (desktop agents) answers without one and keeps
+    // its existing protocol. The lookup is retried until one list call succeeds.
+    const SEEN_RECT_TOLERANCE = 0.01;
+    function sameRect(a, b) {
+        if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return !Array.isArray(a) && !Array.isArray(b);
+        return a.every((value, i) => Math.abs(Number(value) - Number(b[i])) <= SEEN_RECT_TOLERANCE);
+    }
+    async function fetchMissingAnnotationEtag(annotationId, epoch) {
+        const local = findLocalAnnotation(annotationId);
+        if (!local || local._etagLookedUp || typeof _annotationAdapter?.listAnnotations !== 'function') return undefined;
+        const unsafe = () => new Error(t('This comment could not be saved safely. Copy your text and reload the document.'));
+        let data;
+        try {
+            data = await listAnnotationsRequest();
+        } catch (_error) {
+            throw unsafe();
+        }
+        if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
+        if (data?.success) local._etagLookedUp = true;
+        const current = data?.success && data.annotations && Object.values(data.annotations).flat().find((ann) =>
+            buildApiAnnotationIdentifier({ identifier: ann.stable_id || ann.id, canonicalStableId: ann.stable_id ?? ann.stableId, xref: ann.xref }) === annotationId);
+        // Not listed: it was deleted, which the write's own refusal reports through the existing deleted-comment flow.
+        if (!current || !current.etag) return undefined;
+        const seen = local._originalContent !== undefined ? local._originalContent : local.content;
+        // The baseline is what the host last delivered (enhanceAnnotationEntry), never an optimistic local edit.
+        const seenPriority = local._seenPriority ?? deriveAnnotationPriority(local);
+        const seenRect = local._seenRect ?? local.rect;
+        if ((current.content || '') !== (seen || '') ||
+            deriveAnnotationPriority(current) !== seenPriority ||
+            !sameRect(current.rect, seenRect)) throw unsafe();
+        local.etag = current.etag;
+        return current.etag;
+    }
+
     function chainAnnotationWrite(writes, annotationId, epoch, send) {
         const completeMutation = captureAnnotationMutation();
         const previous = writes.tail;
@@ -1864,8 +1908,9 @@
             const dataBefore = previous ? await previous : null; // A refusal cancels queued writes.
             if (!isCurrentHistoryEpoch(epoch)) throw STALE_HISTORY_STEP;
             if (deletedAnnotationIdentities.has(String(annotationId))) throw CANCELED_ANNOTATION_WRITE;
-            const options = annotationWriteOptions(previous ? dataBefore?.annotation?.etag : displayedEtag,
-                _isOfflineMode(), Boolean(previous && displayedEtag));
+            const etag = previous ? dataBefore?.annotation?.etag
+                : (displayedEtag || await fetchMissingAnnotationEtag(annotationId, epoch));
+            const options = annotationWriteOptions(etag, _isOfflineMode(), Boolean(previous && displayedEtag));
             const data = await completeMutation(() => send(options));
             if (isCurrentHistoryEpoch(epoch)) rememberAnnotationEtag(annotationId, data);
             return data;
@@ -3819,8 +3864,6 @@
 
         // Get annotation to check if temporary
         const annotation = findAnnotationEntry(pageIdx, identifier);
-        const isTemporary = annotation?._isTemporary === true;
-        const hasEditedFlags = annotation?._hasBeenEdited === true || annotation?._priorityChanged === true;
 
         // If content is empty/unchanged AND temporary AND no other edits → DELETE
         const contentIsEmpty = trimmedContent === '';
@@ -3829,7 +3872,7 @@
             (contentIsEmpty && originalIsPlaceholder));
 
         if (contentIsEmpty || contentUnchanged) {
-            if (isTemporary && (contentIsEmpty || !hasEditedFlags)) {
+            if (isNeverTypedDraft(annotation, trimmedContent)) {
                 // Focus can move during browser fullscreen/layout work. Only a
                 // teacher's explicit close/cancel may discard an empty comment.
                 if (options.explicitClose === false) return;
@@ -5476,16 +5519,17 @@
 
     // The create request that rebuilds a pen stroke or text box as the page shows it now, which can differ from
     // when it was created (a text box's text, a moved stroke). A stored rect is top-left; the request takes PDF
-    // space, while drawing points are stored in PDF space already. The source is named, so the markup keeps
-    // its ownership.
+    // space, while drawing points are stored in PDF space already. A RECORDED source is named, so the markup
+    // keeps its ownership; an unrecorded one is not invented (the displayed 'AI' default is not provenance).
     async function markupCreateRequest(annotation, pageIdx) {
         const body = {
             page_index: pageIdx,
             content: annotation.content || '',
             type: annotation.type,
             color: deriveAnnotationPriority(annotation) || 'amber',
-            source: resolveAnnotationSource(annotation),
         };
+        const recordedSource = recordedAnnotationSource(annotation);
+        if (recordedSource) body.source = recordedSource;
         const authorName = annotation.grader_name || annotation.author_name;
         if (authorName) body.author_name = authorName;
         if (annotation.stroke_color_rgb) body.stroke_color_rgb = annotation.stroke_color_rgb;
@@ -5732,6 +5776,25 @@
             return ann.source;
         }
         return ann.is_system_generated !== false ? 'AI' : 'HUMAN';
+    }
+
+    /** The source the server recorded ('AI' | 'HUMAN'), or null; the only source the UI may send back. */
+    function recordedAnnotationSource(ann) {
+        if (_helpers.recordedAnnotationSource) {
+            return _helpers.recordedAnnotationSource(ann);
+        }
+        const source = ann && ann.source;
+        return source === 'AI' || source === 'HUMAN' ? source : null;
+    }
+
+    function verdictToggleBody(ann, isVerdict) {
+        if (_helpers.verdictToggleBody) {
+            return _helpers.verdictToggleBody(ann, isVerdict);
+        }
+        const body = { is_verdict: isVerdict };
+        const source = recordedAnnotationSource(ann);
+        if (source) body.source = source;
+        return body;
     }
 
     function resolveAnnotationIdentifierValue(entry) {
@@ -6004,6 +6067,9 @@
             // Preserve original content snapshot for cancel/undo purposes
             _originalContent: entry._originalContent !== undefined ? entry._originalContent : (entry.content || ''),
             _createdAtSession: entry._createdAtSession === true,
+            // What the host last delivered; the etag lookup compares against it, not against optimistic edits.
+            _seenPriority: entry._seenPriority ?? deriveAnnotationPriority(entry),
+            _seenRect: entry._seenRect ?? (Array.isArray(entry.rect) ? entry.rect.slice() : entry.rect),
         };
     }
 
@@ -7976,8 +8042,8 @@
             return;
         }
 
-        const currentSource = resolveAnnotationSource(ann);
-        const newVerdict = !ann.is_verdict;
+        const toggleBody = verdictToggleBody(ann, !ann.is_verdict);
+        const newVerdict = toggleBody.is_verdict;
 
         // Optimistic update
         ann.is_verdict = newVerdict;
@@ -8003,9 +8069,10 @@
         }) || stableIdentifier;
 
         try {
-            // Preserve existing source explicitly. Verdict toggling should not reclassify AI comments as HUMAN.
+            // Preserve the RECORDED source so a verdict toggle never reclassifies the marker; an unrecorded
+            // source is not sent (echoing the displayed 'AI' default would relabel a teacher marker).
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
-            const data = await updateAnnotationRequest(requestId, { is_verdict: newVerdict, source: currentSource });
+            const data = await updateAnnotationRequest(requestId, toggleBody);
             if (!isCurrentHistoryEpoch(requestEpoch)) return;
             if (!data.success) {
                 throw new Error(data.error || t('Failed to toggle verdict'));
@@ -8019,6 +8086,7 @@
                 updatedAnn._hasBeenEdited = ann._hasBeenEdited;
                 updatedAnn._priorityChanged = ann._priorityChanged;
                 updatedAnn._isTemporary = ann._isTemporary;
+                if (ann._newDraft) updatedAnn._newDraft = true;
                 if (ann._originalContent !== undefined) {
                     updatedAnn._originalContent = ann._originalContent;
                 }
@@ -8226,6 +8294,8 @@
 
                             // CRITICAL FIX: Remove temporary flag when priority is changed - this marks annotation as "edited"
                             delete updatedAnn._isTemporary;
+                            // A recolour is not text: the draft stays a never-typed draft (MASTER 539a).
+                            if (existingAnn?._newDraft || existingAnn?._isTemporary) updatedAnn._newDraft = true;
                             // Preserve _hasBeenEdited and _priorityChanged flags from click handler
                             if (existingAnn?._hasBeenEdited) {
                                 updatedAnn._hasBeenEdited = true;
@@ -8269,6 +8339,7 @@
                             }
                             existingAnn.priority = priority;
                             existingAnn.color = priority;
+                            if (existingAnn._isTemporary) existingAnn._newDraft = true;
                             existingAnn._hasBeenEdited = true;
                             existingAnn._priorityChanged = true;
                             delete existingAnn._isTemporary;
@@ -8886,6 +8957,7 @@
                             // The API response doesn't include these client-side flags, but they're needed
                             // to prevent the moved annotation from being filtered out by the placeholder check
                             // Note: originalAnn was captured before the move via findAnnotationEntry()
+                            if (originalAnn?._newDraft) normalizedAnn._newDraft = true;
                             if (originalAnn?._isTemporary) {
                                 normalizedAnn._isTemporary = true;
                                 logCrossPage('[CROSS-PAGE] Preserved _isTemporary flag on moved annotation');
@@ -9776,7 +9848,8 @@
 
                     // Only delete if: (temporary OR never edited OR placeholder) AND no edits made AND no text changes
                     // If user edited the text or changed priority, keep the annotation
-                    if ((ann._isTemporary || neverEdited || isPlaceholder) && !hasBeenEdited && !contentWasEdited) {
+                    if (isNeverTypedDraft(ann, currentContent) ||
+                        ((neverEdited || isPlaceholder) && !hasBeenEdited && !contentWasEdited)) {
                         const requestId = ann.requestIdentifier || matchedId;
                         await deleteAnnotationSilently(idx, requestId);
                         if (!isCurrentHistoryEpoch(requestEpoch)) return;
@@ -9784,6 +9857,7 @@
                         // User typed something - preserve the content by updating the annotation
                         ann.content = currentContent;
                         ann._isTemporary = false; // No longer temporary since it has user content
+                        ann._newDraft = false;
                         ann._hasBeenEdited = true;
                         debugLog('[MODAL-ESCAPE] Preserved user content on Escape:', currentContent.substring(0, 50));
                     }
